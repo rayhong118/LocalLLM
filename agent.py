@@ -1,23 +1,39 @@
 import asyncio
-from browser_use import Agent, Browser, ChatOllama
+import utils
+from browser_use import Agent, BrowserSession, ChatOllama
 
 async def main():
-    # Use browser_use's built-in ChatOllama (not langchain's)
+    # Reverting to standard ChatOllama to ensure it runs.
+    # num_ctx is not supported directly in this constructor version.
     llm = ChatOllama(
-        model="qwen2.5-coder:14b",
+        model="qwen3.5-32k",
     )
 
-
-
-    # 3. Pass headless config directly to Browser
-    browser = Browser(headless=False)
+    # Use BrowserSession with JS-friendly settings for dynamic sites
+    browser = BrowserSession(
+        headless=False,
+        disable_security=True,                     # Allow cross-origin JS
+        enable_default_extensions=False,            # Disable uBlock Origin (blocks Safeway's JS)
+        minimum_wait_page_load_time=3,             # Wait 3s for JS to render
+        wait_for_network_idle_page_load_time=5,    # Wait 5s for network idle
+        args=[
+            "--disable-blink-features=AutomationControlled",  # Hide automation
+            "--disable-features=IsolateOrigins,site-per-process",  # Allow cross-origin
+        ],
+    )
     
     agent = Agent(
-        task="1. Go to https://news.ycombinator.com\n2. Use the 'evaluate' tool to run: `document.querySelector('.titleline a').innerText`.\n3. Return the EXACT string result of that evaluation using the 'done' tool.",
+        task=(
+            "Go to https://www.safeway.com/shop/deals/sale-prices.html.\n"
+            "First, interact with an element containing '5100 Broadway' to open the store selection modal.\n"
+            "Then, search for and select the nearest Safeway store to zip code 98008.\n"
+            "Then find the current sale/promotion items in the ice-cream category.\n"
+            "List the product names and their sale prices in Markdown format."
+        ),
         llm=llm,
         browser=browser,
         use_vision=False,
-        max_steps=5
+        max_steps=15  # Safeway needs more steps for store selection + navigation
     )
     
     history = await agent.run()
@@ -34,7 +50,10 @@ async def main():
     if not final_res:
         final_res = "No result extracted"
         
-    print(f"\nFinal Result: {final_res}")
+    print(f"\nFinal Result:\n{final_res}")
+    
+    # Save result to markdown
+    utils.save_to_markdown(final_res)
     
     await browser.stop()
 
