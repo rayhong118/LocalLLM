@@ -1,0 +1,11 @@
+[project]
+name = "localllm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "browser-use>=0.12.2",
+    "langchain-ollama>=1.0.1",
+    "playwright>=1.58.0",
+]
