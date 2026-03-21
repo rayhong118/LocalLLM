@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LocalLLM Agent Dashboard</title>
+    <link rel="stylesheet" href="/static/index.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <app-root></app-root>
+
+    <!-- Load Lit from CDN -->
+    <script type="module">
+        import { LitElement, html, css } from 'https://cdn.jsdelivr.net/gh/lit/dist@3/core/lit-core.min.js';
+        window.LitElement = LitElement;
+        window.html = html;
+        window.css = css;
+    </script>
+
+    <!-- Components -->
+    <script type="module" src="/static/components/task-form.js"></script>
+    <script type="module" src="/static/components/task-list.js"></script>
+    <script type="module" src="/static/components/app-root.js"></script>
+</body>
+</html>
