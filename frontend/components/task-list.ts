@@ -11,6 +11,9 @@ interface Task {
     id: number;
     prompt: string;
     status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+    frequency: 'ONCE' | 'DAILY';
+    hour_of_day: number | null;
+    next_run_at: string | null;
     created_at: string;
     updated_at: string;
     outputs: TaskOutput[];
@@ -74,9 +77,21 @@ export class TaskList extends LitElement {
                     <div class="glass-card task-item animate-in">
                         <div class="task-header">
                             <span class="prompt-text">${task.prompt}</span>
-                            <span class="status-badge ${task.status}">${task.status}</span>
+                            <div style="display: flex; gap: 0.5rem; align-items: center;">
+                                <span style="font-size: 0.7rem; color: #64748b; background: #f1f5f9; padding: 0.2rem 0.5rem; border-radius: 4px;">
+                                    ${task.frequency === 'DAILY' ? `DAILY @ ${task.hour_of_day}:00` : 'ONE-TIME'}
+                                </span>
+                                <span class="status-badge ${task.status}">${task.status}</span>
+                            </div>
                         </div>
-                        <span class="time">${new Date(task.created_at).toLocaleString()}</span>
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span class="time">Created: ${new Date(task.created_at).toLocaleString()}</span>
+                            ${task.next_run_at ? html`
+                                <span class="time" style="color: #2563eb; font-weight: 600;">
+                                    Next Run: ${new Date(task.next_run_at).toLocaleString()}
+                                </span>
+                            ` : ''}
+                        </div>
                         
                         ${task.outputs && task.outputs.length > 0 ? html`
                             <div class="output-container">

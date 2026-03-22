@@ -9,8 +9,96 @@ from database import SessionLocal, Task as DBTask, Output as DBOutput
 import agent
 import uvicorn
 import os
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from datetime import datetime, timedelta
+import contextlib
 
-app = FastAPI(title="LocalLLM Agent API")
+# Pydantic models
+class TaskCreate(BaseModel):
+    prompt: str
+    frequency: str = "ONCE" # ONCE, DAILY
+    hour_of_day: Optional[int] = None
+
+class OutputSchema(BaseModel):
+    id: int
+    content: str
+    created_at: str
+
+    class Config:
+        orm_mode = True
+
+class TaskSchema(BaseModel):
+    id: int
+    prompt: str
+    status: str
+    frequency: str
+    hour_of_day: Optional[int]
+    next_run_at: Optional[str]
+    created_at: str
+    updated_at: str
+    outputs: List[OutputSchema] = []
+
+    class Config:
+        orm_mode = True
+
+def calculate_next_run(frequency: str, hour: Optional[int]) -> Optional[datetime]:
+    now = datetime.utcnow()
+    if frequency == "ONCE":
+        return now
+    if frequency == "DAILY" and hour is not None:
+        target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if target <= now:
+            target += timedelta(days=1)
+        return target
+    return None
+
+async def check_scheduled_tasks():
+    db = SessionLocal()
+    try:
+        now = datetime.utcnow()
+        # Find tasks that are due and not currently running
+        tasks = db.query(DBTask).filter(
+            DBTask.next_run_at <= now,
+            DBTask.status != "RUNNING"
+        ).all()
+        
+        for task in tasks:
+            print(f"Triggering scheduled task {task.id}: {task.prompt}")
+            # Reset status to PENDING so agent picks it up (though we trigger it directly here)
+            # Actually, agent.run_agent_task sets it to RUNNING
+            
+            # If it was a recurring task, schedule the next one before running
+            if task.frequency == "DAILY":
+                task.next_run_at = calculate_next_run(task.frequency, task.hour_of_day)
+            else:
+                # If it was ONCE, clear next_run_at so it doesn't run again
+                task.next_run_at = None
+                
+            db.commit()
+            
+            # Start the task
+            # Using asyncio.create_task because we are in an async function
+            import asyncio
+            asyncio.create_task(agent.run_agent_task(task.id, task.prompt))
+            
+    except Exception as e:
+        print(f"Error in scheduler: {e}")
+    finally:
+        db.close()
+
+scheduler = AsyncIOScheduler()
+scheduler.add_job(check_scheduled_tasks, 'interval', minutes=1)
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    database.init_db()
+    scheduler.start()
+    yield
+    # Shutdown
+    scheduler.shutdown()
+
+app = FastAPI(title="LocalLLM Agent API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,32 +116,6 @@ async def read_index():
     from fastapi.responses import FileResponse
     return FileResponse(os.path.join("frontend", "index.html"))
 
-# Initialize DB on startup
-database.init_db()
-
-# Pydantic models
-class TaskCreate(BaseModel):
-    prompt: str
-
-class OutputSchema(BaseModel):
-    id: int
-    content: str
-    created_at: str
-
-    class Config:
-        orm_mode = True
-
-class TaskSchema(BaseModel):
-    id: int
-    prompt: str
-    status: str
-    created_at: str
-    updated_at: str
-    outputs: List[OutputSchema] = []
-
-    class Config:
-        orm_mode = True
-
 # Dependency
 def get_db():
     db = SessionLocal()
@@ -63,20 +125,30 @@ def get_db():
         db.close()
 
 @app.post("/tasks", response_model=TaskSchema)
-async def create_task(task: TaskCreate, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    db_task = DBTask(prompt=task.prompt, status="PENDING")
+async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
+    next_run = calculate_next_run(task.frequency, task.hour_of_day)
+    
+    db_task = DBTask(
+        prompt=task.prompt, 
+        status="PENDING",
+        frequency=task.frequency,
+        hour_of_day=task.hour_of_day,
+        next_run_at=next_run
+    )
     db.add(db_task)
     db.commit()
     db.refresh(db_task)
     
-    # Run agent in background
-    background_tasks.add_task(agent.run_agent_task, db_task.id, db_task.prompt)
+    # We don't trigger it here anymore, the scheduler will pick it up on its next tick
+    # If it's "ONCE", next_run is "now", so it will run within 1 minute.
     
-    # Manually convert datetime to string for schema (pydantic handles this usually but let's be safe)
     return {
         "id": db_task.id,
         "prompt": db_task.prompt,
         "status": db_task.status,
+        "frequency": db_task.frequency,
+        "hour_of_day": db_task.hour_of_day,
+        "next_run_at": db_task.next_run_at.isoformat() if db_task.next_run_at else None,
         "created_at": db_task.created_at.isoformat(),
         "updated_at": db_task.updated_at.isoformat(),
         "outputs": []
@@ -91,6 +163,9 @@ def list_tasks(db: Session = Depends(get_db)):
             "id": t.id,
             "prompt": t.prompt,
             "status": t.status,
+            "frequency": t.frequency,
+            "hour_of_day": t.hour_of_day,
+            "next_run_at": t.next_run_at.isoformat() if t.next_run_at else None,
             "created_at": t.created_at.isoformat(),
             "updated_at": t.updated_at.isoformat(),
             "outputs": [{"id": o.id, "content": o.content, "created_at": o.created_at.isoformat()} for o in t.outputs]
@@ -106,6 +181,9 @@ def get_task(task_id: int, db: Session = Depends(get_db)):
         "id": t.id,
         "prompt": t.prompt,
         "status": t.status,
+        "frequency": t.frequency,
+        "hour_of_day": t.hour_of_day,
+        "next_run_at": t.next_run_at.isoformat() if t.next_run_at else None,
         "created_at": t.created_at.isoformat(),
         "updated_at": t.updated_at.isoformat(),
         "outputs": [{"id": o.id, "content": o.content, "created_at": o.created_at.isoformat()} for o in t.outputs]

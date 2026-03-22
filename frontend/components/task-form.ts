@@ -50,6 +50,12 @@ export class TaskForm extends LitElement {
     @state()
     private loading = false;
 
+    @state()
+    private frequency: 'ONCE' | 'DAILY' = 'ONCE';
+
+    @state()
+    private hourOfDay: number = new Date().getHours();
+
     @query('textarea')
     private textarea!: HTMLTextAreaElement;
 
@@ -63,7 +69,11 @@ export class TaskForm extends LitElement {
             const res = await fetch('http://localhost:8000/tasks', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt })
+                body: JSON.stringify({ 
+                    prompt,
+                    frequency: this.frequency,
+                    hour_of_day: this.frequency === 'DAILY' ? Number(this.hourOfDay) : null
+                })
             });
             if (res.ok) {
                 this.textarea.value = '';
@@ -81,6 +91,33 @@ export class TaskForm extends LitElement {
             <div class="glass-card form-container animate-in">
                 <h2 style="margin-bottom: 0.5rem">Schedule New Task</h2>
                 <textarea placeholder="e.g., Search for Häagen-Dazs deals on Safeway and list flavors..."></textarea>
+                
+                <div style="display: flex; gap: 1rem; align-items: flex-end; margin-bottom: 0.5rem;">
+                    <div style="flex: 1;">
+                        <label style="display: block; font-size: 0.8rem; margin-bottom: 0.4rem; color: #64748b;">Frequency</label>
+                        <select 
+                            style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #e2e8f0; background: #fff;"
+                            @change=${(e: any) => this.frequency = e.target.value}>
+                            <option value="ONCE">One-time (Run Now)</option>
+                            <option value="DAILY">Daily Recurring</option>
+                        </select>
+                    </div>
+
+                    ${this.frequency === 'DAILY' ? html`
+                        <div style="width: 120px;">
+                            <label style="display: block; font-size: 0.8rem; margin-bottom: 0.4rem; color: #64748b;">Hour (0-23)</label>
+                            <input 
+                                type="number" 
+                                min="0" 
+                                max="23" 
+                                .value=${String(this.hourOfDay)}
+                                style="width: 100%; padding: 0.6rem; border-radius: 8px; border: 1px solid #e2e8f0;"
+                                @input=${(e: any) => this.hourOfDay = e.target.value}
+                            >
+                        </div>
+                    ` : ''}
+                </div>
+
                 <button ?disabled=${this.loading} @click=${this._handleSubmit}>
                     ${this.loading ? 'Scheduling...' : 'Schedule Task'}
                 </button>

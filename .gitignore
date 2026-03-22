@@ -5,15 +5,28 @@ build/
 dist/
 wheels/
 *.egg-info
+.python-version
 
 # Virtual environments
 .venv
+
+# Databases
+tasks.db
+
+# Migration scripts
+migrate.py
 
 # Output and error files
 output.txt
 error.txt
 *.log
-*.md
+scraped_data.md
+
+# Browser automation
 .browser_session
 .browser_session_web
-node_modules
+
+# Frontend
+node_modules/
+frontend/dist/
+frontend/node_modules/

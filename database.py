@@ -13,6 +13,12 @@ class Task(Base):
     id = Column(Integer, primary_key=True, index=True)
     prompt = Column(Text, nullable=False)
     status = Column(String, default="PENDING") # PENDING, RUNNING, COMPLETED, FAILED
+    
+    # Scheduling fields
+    frequency = Column(String, default="ONCE") # ONCE, DAILY
+    hour_of_day = Column(Integer, nullable=True) # 0-23
+    next_run_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
