@@ -44,7 +44,7 @@ Write-Host "  Dependencies synced." -ForegroundColor Green
 
 # ── 4. Start Frontend Dev Server (Vite) ───────────────────────────────────────
 Write-Host "`n[4/5] Starting Frontend dev server..." -ForegroundColor Yellow
-$viteJob = Start-Process -FilePath "npm" -ArgumentList "run", "dev" `
+$viteJob = Start-Process -FilePath "npm.cmd" -ArgumentList "run", "dev" `
     -WorkingDirectory "$PSScriptRoot\frontend" -PassThru -WindowStyle Hidden
 Write-Host "  Vite dev server started (PID: $($viteJob.Id))" -ForegroundColor Green
 
