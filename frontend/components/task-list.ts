@@ -1,5 +1,5 @@
 import { LitElement, html, css } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
+import { customElement, property, state } from 'lit/decorators.js';
 
 interface TaskOutput {
     id: number;
@@ -23,20 +23,40 @@ interface Task {
 export class TaskList extends LitElement {
     static override styles = css`
         :host { display: block; }
-        .list-container { display: flex; flex-direction: column; gap: 1rem; }
+        .section-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin: 2rem 0 1rem 0;
+            color: #0f172a;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .section-count {
+            font-size: 0.8rem;
+            background: #e2e8f0;
+            padding: 0.1rem 0.5rem;
+            border-radius: 999px;
+            color: #64748b;
+        }
+        .list-container { display: flex; flex-direction: column; gap: 0.75rem; }
         .task-item {
-            padding: 1.5rem;
+            padding: 1.25rem;
             display: flex;
             flex-direction: column;
             gap: 0.5rem;
-            transition: transform 0.2s;
+            transition: all 0.2s;
         }
+        .task-item.history { cursor: pointer; }
+        .task-item.history:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        
         .task-header {
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
+            gap: 1rem;
         }
-        .prompt-text { font-weight: 500; color: #0f172a; }
+        .prompt-text { font-weight: 500; color: #0f172a; flex: 1; }
         .status-badge {
             padding: 0.25rem 0.75rem;
             border-radius: 999px;
@@ -59,48 +79,109 @@ export class TaskList extends LitElement {
             white-space: pre-wrap;
             border-left: 3px solid #cbd5e1;
             color: #334155;
+            animation: slideDown 0.2s ease-out;
+        }
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
         .time { font-size: 0.75rem; color: #64748b; }
+        .empty-state {
+            padding: 2rem;
+            text-align: center;
+            color: #94a3b8;
+            border: 2px dashed #e2e8f0;
+            border-radius: 12px;
+        }
     `;
 
     @property({ type: Array })
     tasks: Task[] = [];
 
-    override render() {
-        if (!this.tasks || this.tasks.length === 0) {
-            return html`<div class="glass-card" style="padding: 2rem; text-align: center; color: #94a3b8;">No tasks scheduled yet.</div>`;
+    @state()
+    private expandedTasks = new Set<number>();
+
+    private _toggleExpand(taskId: number) {
+        const newSet = new Set(this.expandedTasks);
+        if (newSet.has(taskId)) {
+            newSet.delete(taskId);
+        } else {
+            newSet.add(taskId);
         }
+        this.expandedTasks = newSet;
+    }
+
+    override render() {
+        if (!this.tasks) return html``;
+
+        const scheduledTasks = this.tasks.filter(t => t.next_run_at !== null);
+        const historyTasks = this.tasks.filter(t => t.status !== 'PENDING' || (t.outputs && t.outputs.length > 0));
 
         return html`
+            <div class="section-title">
+                Scheduled Runs <span class="section-count">${scheduledTasks.length}</span>
+            </div>
             <div class="list-container">
-                ${this.tasks.map(task => html`
-                    <div class="glass-card task-item animate-in">
-                        <div class="task-header">
-                            <span class="prompt-text">${task.prompt}</span>
-                            <div style="display: flex; gap: 0.5rem; align-items: center;">
-                                <span style="font-size: 0.7rem; color: #64748b; background: #f1f5f9; padding: 0.2rem 0.5rem; border-radius: 4px;">
-                                    ${task.frequency === 'DAILY' ? `DAILY @ ${task.hour_of_day}:00` : 'ONE-TIME'}
-                                </span>
-                                <span class="status-badge ${task.status}">${task.status}</span>
-                            </div>
+                ${scheduledTasks.length === 0 
+                    ? html`<div class="empty-state">No upcoming runs scheduled.</div>`
+                    : scheduledTasks.map(task => this._renderScheduledTask(task))}
+            </div>
+
+            <div class="section-title">
+                Task History <span class="section-count">${historyTasks.length}</span>
+            </div>
+            <div class="list-container">
+                ${historyTasks.length === 0 
+                    ? html`<div class="empty-state">No execution history yet.</div>`
+                    : historyTasks.map(task => this._renderHistoryTask(task))}
+            </div>
+        `;
+    }
+
+    private _renderScheduledTask(task: Task) {
+        return html`
+            <div class="glass-card task-item">
+                <div class="task-header">
+                    <span class="prompt-text">${task.prompt}</span>
+                    <span style="font-size: 0.7rem; color: #64748b; background: #fff; padding: 0.2rem 0.5rem; border: 1px solid #e2e8f0; border-radius: 4px;">
+                        ${task.frequency === 'DAILY' ? `RECURRING DAILY @ ${task.hour_of_day}:00` : 'ONE-TIME'}
+                    </span>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span class="time">Added: ${new Date(task.created_at).toLocaleString()}</span>
+                    <span class="time" style="color: #2563eb; font-weight: 600;">
+                        Next: ${new Date(task.next_run_at!).toLocaleString()}
+                    </span>
+                </div>
+            </div>
+        `;
+    }
+
+    private _renderHistoryTask(task: Task) {
+        const isExpanded = this.expandedTasks.has(task.id);
+        return html`
+            <div class="glass-card task-item history" @click=${() => this._toggleExpand(task.id)}>
+                <div class="task-header">
+                    <span class="prompt-text">${task.prompt}</span>
+                    <span class="status-badge ${task.status}">${task.status}</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span class="time">Last Run: ${new Date(task.updated_at).toLocaleString()}</span>
+                    <span style="font-size: 0.75rem; color: #3b82f6;">
+                        ${isExpanded ? 'Hide Result ↑' : 'View Result ↓'}
+                    </span>
+                </div>
+
+                ${isExpanded ? html`
+                    <div class="output-container" @click=${(e: Event) => e.stopPropagation()}>
+                        <strong>Agent Output:</strong>
+                        <div style="margin-top: 0.5rem;">
+                            ${task.outputs && task.outputs.length > 0 
+                                ? task.outputs[0].content 
+                                : 'No output available.'}
                         </div>
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <span class="time">Created: ${new Date(task.created_at).toLocaleString()}</span>
-                            ${task.next_run_at ? html`
-                                <span class="time" style="color: #2563eb; font-weight: 600;">
-                                    Next Run: ${new Date(task.next_run_at).toLocaleString()}
-                                </span>
-                            ` : ''}
-                        </div>
-                        
-                        ${task.outputs && task.outputs.length > 0 ? html`
-                            <div class="output-container">
-                                <strong>Agent Output:</strong>
-                                <div>${task.outputs[0].content}</div>
-                            </div>
-                        ` : ''}
                     </div>
-                `)}
+                ` : ''}
             </div>
         `;
     }
