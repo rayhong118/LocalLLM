@@ -1,17 +1,9 @@
-var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
-    var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
-    if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
-    else for (var i = decorators.length - 1; i >= 0; i--) if (d = decorators[i]) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
-    return c > 3 && r && Object.defineProperty(target, key, r), r;
-};
 import { LitElement, html, css } from 'lit';
 import { customElement, state, query } from 'lit/decorators.js';
-let TaskForm = class TaskForm extends LitElement {
-    constructor() {
-        super(...arguments);
-        this.loading = false;
-    }
-    static { this.styles = css `
+
+@customElement('task-form')
+export class TaskForm extends LitElement {
+    static override styles = css`
         :host {
             display: block;
             margin-bottom: 2rem;
@@ -53,12 +45,19 @@ let TaskForm = class TaskForm extends LitElement {
             opacity: 0.5;
             cursor: not-allowed;
         }
-    `; }
-    async _handleSubmit(e) {
+    `;
+
+    @state()
+    private loading = false;
+
+    @query('textarea')
+    private textarea!: HTMLTextAreaElement;
+
+    private async _handleSubmit(e: Event) {
         e.preventDefault();
         const prompt = this.textarea.value;
-        if (!prompt)
-            return;
+        if (!prompt) return;
+
         this.loading = true;
         try {
             const res = await fetch('http://localhost:8000/tasks', {
@@ -70,16 +69,15 @@ let TaskForm = class TaskForm extends LitElement {
                 this.textarea.value = '';
                 this.dispatchEvent(new CustomEvent('task-created', { bubbles: true, composed: true }));
             }
-        }
-        catch (err) {
+        } catch (err) {
             console.error(err);
-        }
-        finally {
+        } finally {
             this.loading = false;
         }
     }
-    render() {
-        return html `
+
+    override render() {
+        return html`
             <div class="glass-card form-container animate-in">
                 <h2 style="margin-bottom: 0.5rem">Schedule New Task</h2>
                 <textarea placeholder="e.g., Search for Häagen-Dazs deals on Safeway and list flavors..."></textarea>
@@ -89,15 +87,10 @@ let TaskForm = class TaskForm extends LitElement {
             </div>
         `;
     }
-};
-__decorate([
-    state()
-], TaskForm.prototype, "loading", void 0);
-__decorate([
-    query('textarea')
-], TaskForm.prototype, "textarea", void 0);
-TaskForm = __decorate([
-    customElement('task-form')
-], TaskForm);
-export { TaskForm };
-//# sourceMappingURL=task-form.js.map
+}
+
+declare global {
+    interface HTMLElementTagNameMap {
+        'task-form': TaskForm;
+    }
+}

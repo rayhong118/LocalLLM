@@ -42,10 +42,18 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "  Dependencies synced." -ForegroundColor Green
 
-# ── 4. Run agent.py ────────────────────────────────────────────────────────────
-Write-Host "`n[4/4] Running agent.py..." -ForegroundColor Yellow
+# ── 4. Start Frontend Dev Server (Vite) ───────────────────────────────────────
+Write-Host "`n[4/5] Starting Frontend dev server..." -ForegroundColor Yellow
+$viteJob = Start-Process -FilePath "npm" -ArgumentList "run", "dev" `
+    -WorkingDirectory "$PSScriptRoot\frontend" -PassThru -WindowStyle Hidden
+Write-Host "  Vite dev server started (PID: $($viteJob.Id))" -ForegroundColor Green
+
+# ── 5. Run main.py (Starts the FastAPI server) ──────────────────────────────
+Write-Host "`n[5/5] Starting LocalLLM Server..." -ForegroundColor Yellow
+Write-Host "  Backend API: http://localhost:8000" -ForegroundColor Cyan
+Write-Host "  Dashboard (Vite): http://localhost:5173" -ForegroundColor Cyan
 Write-Host ("-" * 50) -ForegroundColor DarkGray
-uv run python agent.py
+uv run python main.py
 $agentExit = $LASTEXITCODE
 Pop-Location
 

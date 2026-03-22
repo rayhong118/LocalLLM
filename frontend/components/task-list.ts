@@ -1,17 +1,24 @@
-var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
-    var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
-    if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
-    else for (var i = decorators.length - 1; i >= 0; i--) if (d = decorators[i]) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
-    return c > 3 && r && Object.defineProperty(target, key, r), r;
-};
 import { LitElement, html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
-let TaskList = class TaskList extends LitElement {
-    constructor() {
-        super(...arguments);
-        this.tasks = [];
-    }
-    static { this.styles = css `
+
+interface TaskOutput {
+    id: number;
+    content: string;
+    created_at: string;
+}
+
+interface Task {
+    id: number;
+    prompt: string;
+    status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+    created_at: string;
+    updated_at: string;
+    outputs: TaskOutput[];
+}
+
+@customElement('task-list')
+export class TaskList extends LitElement {
+    static override styles = css`
         :host { display: block; }
         .list-container { display: flex; flex-direction: column; gap: 1rem; }
         .task-item {
@@ -51,14 +58,19 @@ let TaskList = class TaskList extends LitElement {
             color: #334155;
         }
         .time { font-size: 0.75rem; color: #64748b; }
-    `; }
-    render() {
+    `;
+
+    @property({ type: Array })
+    tasks: Task[] = [];
+
+    override render() {
         if (!this.tasks || this.tasks.length === 0) {
-            return html `<div class="glass-card" style="padding: 2rem; text-align: center; color: #94a3b8;">No tasks scheduled yet.</div>`;
+            return html`<div class="glass-card" style="padding: 2rem; text-align: center; color: #94a3b8;">No tasks scheduled yet.</div>`;
         }
-        return html `
+
+        return html`
             <div class="list-container">
-                ${this.tasks.map(task => html `
+                ${this.tasks.map(task => html`
                     <div class="glass-card task-item animate-in">
                         <div class="task-header">
                             <span class="prompt-text">${task.prompt}</span>
@@ -66,7 +78,7 @@ let TaskList = class TaskList extends LitElement {
                         </div>
                         <span class="time">${new Date(task.created_at).toLocaleString()}</span>
                         
-                        ${task.outputs && task.outputs.length > 0 ? html `
+                        ${task.outputs && task.outputs.length > 0 ? html`
                             <div class="output-container">
                                 <strong>Agent Output:</strong>
                                 <div>${task.outputs[0].content}</div>
@@ -77,12 +89,10 @@ let TaskList = class TaskList extends LitElement {
             </div>
         `;
     }
-};
-__decorate([
-    property({ type: Array })
-], TaskList.prototype, "tasks", void 0);
-TaskList = __decorate([
-    customElement('task-list')
-], TaskList);
-export { TaskList };
-//# sourceMappingURL=task-list.js.map
+}
+
+declare global {
+    interface HTMLElementTagNameMap {
+        'task-list': TaskList;
+    }
+}

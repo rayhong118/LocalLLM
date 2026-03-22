@@ -16,3 +16,4 @@ error.txt
 *.md
 .browser_session
 .browser_session_web
+node_modules

@@ -1,21 +1,21 @@
 :root {
-    --primary: #6366f1;
-    --primary-hover: #4f46e5;
-    --bg-dark: #0f172a;
-    --card-bg: rgba(30, 41, 59, 0.7);
-    --glass-border: rgba(255, 255, 255, 0.1);
-    --text-main: #f8fafc;
-    --text-muted: #94a3b8;
-    --success: #10b981;
-    --pending: #f59e0b;
-    --failed: #ef4444;
+    --primary: #2563eb;
+    --primary-hover: #1d4ed8;
+    --bg-light: #ffffff;
+    --card-bg: #ffffff;
+    --border: #e2e8f0;
+    --text-main: #0f172a;
+    --text-muted: #64748b;
+    --success: #16a34a;
+    --pending: #d97706;
+    --failed: #dc2626;
 }
 
 body {
     margin: 0;
     padding: 0;
     font-family: 'Outfit', sans-serif;
-    background: radial-gradient(circle at top left, #1e293b, #0f172a);
+    background-color: var(--bg-light);
     color: var(--text-main);
     min-height: 100vh;
 }
@@ -27,10 +27,9 @@ h1, h2, h3 {
 
 .glass-card {
     background: var(--card-bg);
-    backdrop-filter: blur(12px);
-    border: 1px solid var(--glass-border);
-    border-radius: 16px;
-    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
 }
 
 .container {
@@ -61,11 +60,11 @@ button.primary:hover {
 }
 
 input, textarea {
-    background: rgba(15, 23, 42, 0.5);
-    border: 1px solid var(--glass-border);
+    background: #fff;
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0.75rem;
-    color: white;
+    color: var(--text-main);
     font-family: inherit;
     width: 100%;
     box-sizing: border-box;
@@ -74,6 +73,7 @@ input, textarea {
 input:focus, textarea:focus {
     outline: none;
     border-color: var(--primary);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
 }
 
 .badge {

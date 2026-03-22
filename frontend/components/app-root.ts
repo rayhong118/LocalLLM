@@ -1,19 +1,11 @@
-var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
-    var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
-    if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
-    else for (var i = decorators.length - 1; i >= 0; i--) if (d = decorators[i]) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
-    return c > 3 && r && Object.defineProperty(target, key, r), r;
-};
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import './task-form.ts';
 import './task-list.ts';
-let AppRoot = class AppRoot extends LitElement {
-    constructor() {
-        super(...arguments);
-        this._tasks = [];
-    }
-    static { this.styles = css `
+
+@customElement('app-root')
+export class AppRoot extends LitElement {
+    static override styles = css`
         :host {
             display: block;
             max-width: 1000px;
@@ -47,31 +39,39 @@ let AppRoot = class AppRoot extends LitElement {
             background: #f8fafc;
             color: #0f172a;
         }
-    `; }
-    connectedCallback() {
+    `;
+
+    @state()
+    private _tasks: any[] = [];
+
+    private _pollInterval?: number;
+
+    override connectedCallback() {
         super.connectedCallback();
         this._fetchTasks();
         this._pollInterval = window.setInterval(() => this._fetchTasks(), 5000);
     }
-    disconnectedCallback() {
+
+    override disconnectedCallback() {
         super.disconnectedCallback();
         if (this._pollInterval) {
             clearInterval(this._pollInterval);
         }
     }
-    async _fetchTasks() {
+
+    private async _fetchTasks() {
         try {
             const res = await fetch('http://localhost:8000/tasks');
             if (res.ok) {
                 this._tasks = await res.json();
             }
-        }
-        catch (err) {
+        } catch (err) {
             console.error("Failed to fetch tasks:", err);
         }
     }
-    render() {
-        return html `
+
+    override render() {
+        return html`
             <header>
                 <div class="logo">
                     <h1>LocalLLM <span>Agent</span></h1>
@@ -87,12 +87,10 @@ let AppRoot = class AppRoot extends LitElement {
             </main>
         `;
     }
-};
-__decorate([
-    state()
-], AppRoot.prototype, "_tasks", void 0);
-AppRoot = __decorate([
-    customElement('app-root')
-], AppRoot);
-export { AppRoot };
-//# sourceMappingURL=app-root.js.map
+}
+
+declare global {
+    interface HTMLElementTagNameMap {
+        'app-root': AppRoot;
+    }
+}
