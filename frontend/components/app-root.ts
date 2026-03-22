@@ -11,6 +11,7 @@ export class AppRoot extends LitElement {
             max-width: 1000px;
             margin: 0 auto;
             padding: 2rem;
+            font-family: inherit;
         }
         header {
             display: flex;

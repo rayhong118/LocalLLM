@@ -1,5 +1,7 @@
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
+import { marked } from 'marked';
+import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 
 interface TaskOutput {
     id: number;
@@ -22,7 +24,10 @@ interface Task {
 @customElement('task-list')
 export class TaskList extends LitElement {
     static override styles = css`
-        :host { display: block; }
+        :host { 
+            display: block; 
+            font-family: inherit;
+        }
         .section-title {
             font-size: 1.25rem;
             font-weight: 600;
@@ -71,16 +76,75 @@ export class TaskList extends LitElement {
         
         .output-container {
             margin-top: 1rem;
-            padding: 1rem;
+            padding: 1.5rem;
             background: #f8fafc;
             border-radius: 8px;
-            font-family: 'Courier New', Courier, monospace;
-            font-size: 0.9rem;
-            white-space: pre-wrap;
-            border-left: 3px solid #cbd5e1;
-            color: #334155;
+            font-size: 0.95rem;
+            border-left: 4px solid #3b82f6;
+            color: #1e293b;
             animation: slideDown 0.2s ease-out;
+            overflow-x: auto;
         }
+
+        /* Markdown Styles */
+        .markdown-body {
+            line-height: 1.6;
+        }
+        .markdown-body h1, .markdown-body h2, .markdown-body h3 {
+            margin-top: 1.5rem;
+            margin-bottom: 1rem;
+            font-weight: 600;
+            line-height: 1.25;
+            color: #0f172a;
+        }
+        .markdown-body h1 { font-size: 1.5rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.3rem; }
+        .markdown-body h2 { font-size: 1.25rem; }
+        .markdown-body p { margin-bottom: 1rem; }
+        .markdown-body code {
+            padding: 0.2rem 0.4rem;
+            margin: 0;
+            font-size: 85%;
+            background-color: #f1f5f9;
+            border-radius: 6px;
+            font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
+        }
+        .markdown-body pre {
+            padding: 1rem;
+            overflow: auto;
+            font-size: 85%;
+            line-height: 1.45;
+            background-color: #f1f5f9;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+        .markdown-body pre code {
+            padding: 0;
+            background-color: transparent;
+            font-size: 100%;
+        }
+        .markdown-body ul, .markdown-body ol {
+            padding-left: 2rem;
+            margin-bottom: 1rem;
+        }
+        .markdown-body blockquote {
+            padding: 0 1rem;
+            color: #64748b;
+            border-left: 0.25rem solid #e2e8f0;
+            margin: 0 0 1rem 0;
+        }
+        .markdown-body table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-bottom: 1rem;
+        }
+        .markdown-body table th, .markdown-body table td {
+            border: 1px solid #e2e8f0;
+            padding: 0.5rem 0.75rem;
+        }
+        .markdown-body table tr:nth-child(2n) {
+            background-color: #f8fafc;
+        }
+
         @keyframes slideDown {
             from { opacity: 0; transform: translateY(-10px); }
             to { opacity: 1; transform: translateY(0); }
@@ -159,6 +223,20 @@ export class TaskList extends LitElement {
 
     private _renderHistoryTask(task: Task) {
         const isExpanded = this.expandedTasks.has(task.id);
+        const hasOutput = task.outputs && task.outputs.length > 0;
+        
+        let contentHtml = html`No output available.`;
+        if (hasOutput) {
+            try {
+                const rawContent = task.outputs[0].content;
+                const parsedContent = marked.parse(rawContent) as string;
+                contentHtml = html`${unsafeHTML(parsedContent)}`;
+            } catch (e) {
+                console.error("Failed to parse markdown:", e);
+                contentHtml = html`${task.outputs[0].content}`;
+            }
+        }
+
         return html`
             <div class="glass-card task-item history" @click=${() => this._toggleExpand(task.id)}>
                 <div class="task-header">
@@ -174,11 +252,11 @@ export class TaskList extends LitElement {
 
                 ${isExpanded ? html`
                     <div class="output-container" @click=${(e: Event) => e.stopPropagation()}>
-                        <strong>Agent Output:</strong>
-                        <div style="margin-top: 0.5rem;">
-                            ${task.outputs && task.outputs.length > 0 
-                                ? task.outputs[0].content 
-                                : 'No output available.'}
+                        <div style="margin-bottom: 0.5rem; color: #64748b; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">
+                            Agent Output
+                        </div>
+                        <div class="markdown-body">
+                            ${contentHtml}
                         </div>
                     </div>
                 ` : ''}

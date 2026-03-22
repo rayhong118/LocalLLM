@@ -24,8 +24,9 @@ class OutputSchema(BaseModel):
     content: str
     created_at: str
 
-    class Config:
-        orm_mode = True
+    model_config = {
+        "from_attributes": True
+    }
 
 class TaskSchema(BaseModel):
     id: int
@@ -38,8 +39,9 @@ class TaskSchema(BaseModel):
     updated_at: str
     outputs: List[OutputSchema] = []
 
-    class Config:
-        orm_mode = True
+    model_config = {
+        "from_attributes": True
+    }
 
 def calculate_next_run(frequency: str, hour: Optional[int]) -> Optional[datetime]:
     now = datetime.utcnow()

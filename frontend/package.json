@@ -12,7 +12,9 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "lit": "^3.3.2"
+    "@types/marked": "^5.0.2",
+    "lit": "^3.3.2",
+    "marked": "^17.0.5"
   },
   "devDependencies": {
     "@types/node": "^22.13.9",

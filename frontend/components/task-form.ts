@@ -7,6 +7,7 @@ export class TaskForm extends LitElement {
         :host {
             display: block;
             margin-bottom: 2rem;
+            font-family: inherit;
         }
         .form-container {
             display: flex;
