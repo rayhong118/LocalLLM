@@ -64,6 +64,7 @@ Write-Host "`n[5/5] Starting LocalLLM Server..." -ForegroundColor Yellow
 Write-Host "  Backend API: http://localhost:8000" -ForegroundColor Cyan
 Write-Host "  Dashboard (Vite): http://localhost:5173" -ForegroundColor Cyan
 Write-Host ("-" * 50) -ForegroundColor DarkGray
+Start-Process "http://localhost:5173"
 uv run python main.py
 $agentExit = $LASTEXITCODE
 Pop-Location
