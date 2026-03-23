@@ -18,6 +18,7 @@ async def run_agent_task(task_id: int, prompt: str):
         return
 
     task.status = "RUNNING"
+    task.started_at = datetime.utcnow()
     db.commit()
 
     llm = ChatOllama(model="qwen3.5-32k")

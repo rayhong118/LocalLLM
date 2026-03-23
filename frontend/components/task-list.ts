@@ -12,10 +12,11 @@ interface TaskOutput {
 interface Task {
     id: number;
     prompt: string;
-    status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'DAILY';
+    status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'DAILY' | 'CANCELLED';
     frequency: 'ONCE' | 'DAILY';
     hour_of_day: number | null;
     next_run_at: string | null;
+    started_at: string | null;
     created_at: string;
     updated_at: string;
     outputs: TaskOutput[];
@@ -61,7 +62,6 @@ export class TaskList extends LitElement {
             border: 1px solid #e2e8f0;
             border-radius: 12px;
             transition: all 0.2s;
-            cursor: pointer;
         }
         .task-item:hover {
             transform: translateY(-2px);
@@ -104,11 +104,12 @@ export class TaskList extends LitElement {
             text-transform: uppercase;
             white-space: nowrap;
         }
-        .COMPLETED { background: #dcfce7; color: #16a34a; }
-        .RUNNING { background: #fef3c7; color: #d97706; }
-        .PENDING { background: #f1f5f9; color: #64748b; }
-        .FAILED { background: #fee2e2; color: #dc2626; }
-        .DAILY { background: #eff6ff; color: #2563eb; }
+        .status-badge.COMPLETED { background: #dcfce7; color: #16a34a; }
+        .status-badge.RUNNING { background: #fef3c7; color: #d97706; }
+        .status-badge.PENDING { background: #f1f5f9; color: #64748b; }
+        .status-badge.FAILED { background: #fee2e2; color: #dc2626; }
+        .status-badge.DAILY { background: #eff6ff; color: #2563eb; }
+        .status-badge.CANCELLED { background: #f1f5f9; color: #94a3b8; }
 
         .delete-btn {
             position: absolute;
@@ -148,6 +149,27 @@ export class TaskList extends LitElement {
             margin-right: 0.5rem;
         }
         .retry-btn:hover { background: #b91c1c; }
+        
+        .view-result-btn {
+            background: none;
+            border: none;
+            padding: 0;
+            margin: 0;
+            font-family: inherit;
+            font-size: 0.75rem;
+            color: #3b82f6;
+            font-weight: 600;
+            cursor: pointer;
+            transition: color 0.1s;
+        }
+        .view-result-btn:hover {
+            color: #2563eb;
+        }
+        .view-result-btn:focus-visible {
+            outline: 2px solid #3b82f6;
+            outline-offset: 4px;
+            border-radius: 2px;
+        }
 
         .time { font-size: 0.75rem; color: #64748b; }
 
@@ -209,10 +231,22 @@ export class TaskList extends LitElement {
         }
     }
 
+    private async _cancelTask(taskId: number) {
+        try {
+            const res = await fetch(`http://localhost:8000/tasks/${taskId}/cancel`, { method: 'POST' });
+            if (res.ok) {
+                const updatedTask = await res.json();
+                this.tasks = this.tasks.map(t => t.id === taskId ? updatedTask : t);
+            }
+        } catch (error) {
+            console.error('Failed to cancel task:', error);
+        }
+    }
+
     override render() {
         if (!this.tasks) return html``;
 
-        const active = this.tasks.filter(t => t.status === 'RUNNING');
+        const active = this.tasks.filter(t => t.status === 'RUNNING' || t.status === 'CANCELLED');
         const scheduled = this.tasks.filter(t => t.status === 'PENDING' || t.status === 'DAILY');
         const history = this.tasks.filter(t => t.status === 'COMPLETED' || t.status === 'FAILED');
 
@@ -245,7 +279,7 @@ export class TaskList extends LitElement {
         const hasOutput = task.outputs && task.outputs.length > 0;
 
         return html`
-            <div class="task-item ${task.status}" @click=${() => this._expandedTaskId = isExpanded ? null : task.id}>
+            <div class="task-item ${task.status}">
                 <button class="delete-btn" title="Delete" @click=${(e: Event) => { e.stopPropagation(); this._deleteTask(task.id); }}>&times;</button>
                 
                 <div class="task-header">
@@ -253,22 +287,26 @@ export class TaskList extends LitElement {
                         ${task.status === 'FAILED' ? html`
                             <button class="retry-btn" @click=${(e: Event) => { e.stopPropagation(); this._retryTask(task.id); }}>Retry</button>
                         ` : ''}
+                        ${task.status === 'RUNNING' ? html`
+                            <button class="retry-btn" style="background: #94a3b8;" @click=${(e: Event) => { e.stopPropagation(); this._cancelTask(task.id); }}>Cancel</button>
+                        ` : ''}
                         <span class="status-badge ${task.status}">${task.status}</span>
+                        <span class="prompt-text">${task.prompt}</span>
                     </div>
-                    <span class="prompt-text">${task.prompt}</span>
-                    
                 </div>
 
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <span class="time">
                         ${task.status === 'DAILY' ? `Every day at ${task.hour_of_day}:00` :
-                task.status === 'RUNNING' ? 'Running now...' :
+                task.status === 'RUNNING' ? `Started: ${new Date(task.started_at!).toLocaleTimeString()}` :
+                task.status === 'CANCELLED' ? `Cancelled at: ${new Date(task.updated_at).toLocaleTimeString()}` :
                     `Last Run: ${new Date(task.updated_at).toLocaleString()}`}
                     </span>
                     ${hasOutput ? html`
-                        <span style="font-size: 0.75rem; color: #3b82f6; font-weight: 600;">
+                        <button class="view-result-btn"
+                              @click=${() => this._expandedTaskId = isExpanded ? null : task.id}>
                             ${isExpanded ? 'Hide Result ↑' : 'View Result ↓'}
-                        </span>
+                        </button>
                     ` : ''}
                 </div>
 

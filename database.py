@@ -18,6 +18,7 @@ class Task(Base):
     frequency = Column(String, default="ONCE") # ONCE, DAILY
     hour_of_day = Column(Integer, nullable=True) # 0-23
     next_run_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

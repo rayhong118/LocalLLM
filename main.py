@@ -55,6 +55,7 @@ class TaskSchema(BaseModel):
     frequency: str
     hour_of_day: Optional[int]
     next_run_at: Optional[datetime]
+    started_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime
     outputs: List[OutputSchema] = []
@@ -160,6 +161,12 @@ def get_db():
 async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
     next_run = calculate_next_run(task.frequency, task.hour_of_day)
     
+    # If it's a "ONCE" task, we trigger it manually in a moment,
+    # so we set next_run_at to None to prevent the scheduler from picking it up.
+    is_once = task.frequency == "ONCE"
+    if is_once:
+        next_run = None
+    
     db_task = DBTask(
         prompt=task.prompt, 
         status="PENDING",
@@ -171,8 +178,8 @@ async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_task)
     
-    # If it's ONCE, trigger it immediately in a new thread
-    if task.frequency == "ONCE":
+    # Trigger immediately in a new thread
+    if is_once:
         threading.Thread(target=run_agent_thread, args=(db_task.id, db_task.prompt), daemon=True).start()
     
     return db_task
@@ -248,6 +255,19 @@ async def retry_task(task_id: int, db: Session = Depends(get_db)):
     # Trigger immediately in a new thread
     threading.Thread(target=run_agent_thread, args=(db_task.id, db_task.prompt), daemon=True).start()
     
+    return db_task
+
+@app.post("/tasks/{task_id}/cancel", response_model=TaskSchema)
+async def cancel_task(task_id: int, db: Session = Depends(get_db)):
+    db_task = db.query(DBTask).filter(DBTask.id == task_id).first()
+    if not db_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # In a real system, we would signal the agent thread to stop.
+    # For now, we update the status so the UI reflects it.
+    db_task.status = "CANCELLED"
+    db.commit()
+    db.refresh(db_task)
     return db_task
 
 if __name__ == "__main__":
