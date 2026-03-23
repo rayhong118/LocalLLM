@@ -22,7 +22,7 @@ class Task(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    outputs = relationship("Output", back_populates="task")
+    outputs = relationship("Output", back_populates="task", cascade="all, delete-orphan")
 
 class Output(Base):
     __tablename__ = "outputs"

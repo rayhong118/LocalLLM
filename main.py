@@ -191,5 +191,15 @@ def get_task(task_id: int, db: Session = Depends(get_db)):
         "outputs": [{"id": o.id, "content": o.content, "created_at": o.created_at.isoformat()} for o in t.outputs]
     }
 
+# Delete a task by ID
+@app.delete("/tasks/{task_id}")
+def delete_task(task_id: int, db: Session = Depends(get_db)):
+    task = db.query(DBTask).filter(DBTask.id == task_id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    db.delete(task)
+    db.commit()
+    return {"message": "Task deleted successfully"}
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

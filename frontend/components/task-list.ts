@@ -145,6 +145,31 @@ export class TaskList extends LitElement {
             background-color: #f8fafc;
         }
 
+        .delete-btn {
+            position: absolute;
+            top: 0.75rem;
+            right: 0.75rem;
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            color: #94a3b8;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 1.2rem;
+            line-height: 1;
+            z-index: 10;
+        }
+        .delete-btn:hover {
+            background: #fee2e2;
+            color: #dc2626;
+            border-color: #fecaca;
+            transform: scale(1.1);
+        }
         @keyframes slideDown {
             from { opacity: 0; transform: translateY(-10px); }
             to { opacity: 1; transform: translateY(0); }
@@ -175,6 +200,17 @@ export class TaskList extends LitElement {
         this.expandedTasks = newSet;
     }
 
+    private async _deleteTask(taskId: number) {
+        if (!confirm('Are you sure you want to delete this task?')) return;
+
+        try {
+            await fetch(`http://localhost:8000/tasks/${taskId}`, { method: 'DELETE' });
+            this.tasks = this.tasks.filter(t => t.id !== taskId);
+        } catch (error) {
+            console.error('Failed to delete task:', error);
+        }
+    }
+
     override render() {
         if (!this.tasks) return html``;
 
@@ -186,32 +222,33 @@ export class TaskList extends LitElement {
                 Scheduled Runs <span class="section-count">${scheduledTasks.length}</span>
             </div>
             <div class="list-container">
-                ${scheduledTasks.length === 0 
-                    ? html`<div class="empty-state">No upcoming runs scheduled.</div>`
-                    : scheduledTasks.map(task => this._renderScheduledTask(task))}
+                ${scheduledTasks.length === 0
+                ? html`<div class="empty-state">No upcoming runs scheduled.</div>`
+                : scheduledTasks.map(task => this._renderScheduledTask(task))}
             </div>
 
             <div class="section-title">
                 Task History <span class="section-count">${historyTasks.length}</span>
             </div>
             <div class="list-container">
-                ${historyTasks.length === 0 
-                    ? html`<div class="empty-state">No execution history yet.</div>`
-                    : historyTasks.map(task => this._renderHistoryTask(task))}
+                ${historyTasks.length === 0
+                ? html`<div class="empty-state">No execution history yet.</div>`
+                : historyTasks.map(task => this._renderHistoryTask(task))}
             </div>
         `;
     }
 
     private _renderScheduledTask(task: Task) {
         return html`
-            <div class="glass-card task-item">
-                <div class="task-header">
+            <div class="glass-card task-item" style="position: relative;">
+                <button class="delete-btn" title="Delete Task" @click=${(e: Event) => { e.stopPropagation(); this._deleteTask(task.id); }}>&times;</button>
+                <div class="task-header" style="margin-right: 2rem;">
                     <span class="prompt-text">${task.prompt}</span>
-                    <span style="font-size: 0.7rem; color: #64748b; background: #fff; padding: 0.2rem 0.5rem; border: 1px solid #e2e8f0; border-radius: 4px;">
-                        ${task.frequency === 'DAILY' ? `RECURRING DAILY @ ${task.hour_of_day}:00` : 'ONE-TIME'}
+                    <span style="font-size: 0.7rem; color: #64748b; background: #fff; padding: 0.2rem 0.5rem; border: 1px solid #e2e8f0; border-radius: 4px; white-space: nowrap;">
+                        ${task.frequency === 'DAILY' ? `DAILY @ ${task.hour_of_day}:00` : 'ONE-TIME'}
                     </span>
                 </div>
-                <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="display: flex; flex-direction: column; margin-top: 0.5rem;">
                     <span class="time">Added: ${new Date(task.created_at).toLocaleString()}</span>
                     <span class="time" style="color: #2563eb; font-weight: 600;">
                         Next: ${new Date(task.next_run_at!).toLocaleString()}
@@ -224,7 +261,7 @@ export class TaskList extends LitElement {
     private _renderHistoryTask(task: Task) {
         const isExpanded = this.expandedTasks.has(task.id);
         const hasOutput = task.outputs && task.outputs.length > 0;
-        
+
         let contentHtml = html`No output available.`;
         if (hasOutput) {
             try {
@@ -238,14 +275,15 @@ export class TaskList extends LitElement {
         }
 
         return html`
-            <div class="glass-card task-item history" @click=${() => this._toggleExpand(task.id)}>
-                <div class="task-header">
+            <div class="glass-card task-item history" style="position: relative;" @click=${() => this._toggleExpand(task.id)}>
+                <button class="delete-btn" title="Delete Task" @click=${(e: Event) => { e.stopPropagation(); this._deleteTask(task.id); }}>&times;</button>
+                <div class="task-header" style="margin-right: 2rem;">
                     <span class="prompt-text">${task.prompt}</span>
                     <span class="status-badge ${task.status}">${task.status}</span>
                 </div>
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <span class="time">Last Run: ${new Date(task.updated_at).toLocaleString()}</span>
-                    <span style="font-size: 0.75rem; color: #3b82f6;">
+                    <span style="font-size: 0.75rem; color: #3b82f6; font-weight: 600;">
                         ${isExpanded ? 'Hide Result ↑' : 'View Result ↓'}
                     </span>
                 </div>
