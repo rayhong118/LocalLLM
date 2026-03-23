@@ -58,22 +58,22 @@ export class TaskList extends LitElement {
         .task-item {
             position: relative;
             padding: 1.25rem;
-            background: #ffffff;
-            border: 1px solid #e2e8f0;
+            background: var(--color-card-bg);
+            border: 1px solid var(--color-border);
             border-radius: 12px;
             transition: all 0.2s;
         }
         .task-item:hover {
             transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
-            border-color: #cbd5e1;
+            box-shadow: var(--color-shadow-md);
+            border-color: var(--color-border-hover);
         }
 
         /* Pulsing animation for active tasks */
         @keyframes pulse-border {
-            0% { border-color: #e2e8f0; box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.1); }
-            50% { border-color: #3b82f6; box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.2); }
-            100% { border-color: #e2e8f0; box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.1); }
+            0% { border-color: var(--color-border); box-shadow: 0 0 0 0 var(--color-primary-soft); }
+            50% { border-color: var(--color-primary); box-shadow: 0 0 0 4px var(--color-primary-soft); }
+            100% { border-color: var(--color-border); box-shadow: 0 0 0 0 var(--color-primary-soft); }
         }
         .task-item.RUNNING {
             animation: pulse-border 2s infinite ease-in-out;
@@ -84,16 +84,17 @@ export class TaskList extends LitElement {
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
-            gap: 1rem;
-            margin-bottom: 0.5rem;
+            gap: 1.5rem;
+            margin-bottom: 0.75rem;
+            padding-right: 2rem; /* Make room for absolute delete button */
         }
 
         .prompt-text {
-            font-weight: 500;
-            color: #0f172a;
+            font-weight: 600;
+            color: var(--color-text-body);
             flex: 1;
-            line-height: 1.5;
-            padding-right: 1rem;
+            line-height: 1.4;
+            font-size: 0.95rem;
         }
 
         .status-badge {
@@ -104,20 +105,20 @@ export class TaskList extends LitElement {
             text-transform: uppercase;
             white-space: nowrap;
         }
-        .status-badge.COMPLETED { background: #dcfce7; color: #16a34a; }
-        .status-badge.RUNNING { background: #fef3c7; color: #d97706; }
-        .status-badge.PENDING { background: #f1f5f9; color: #64748b; }
-        .status-badge.FAILED { background: #fee2e2; color: #dc2626; }
-        .status-badge.DAILY { background: #eff6ff; color: #2563eb; }
-        .status-badge.CANCELLED { background: #f1f5f9; color: #94a3b8; }
+        .status-badge.COMPLETED { background: var(--color-success-bg); color: var(--color-success); }
+        .status-badge.RUNNING { background: var(--color-warning-bg); color: var(--color-warning); }
+        .status-badge.PENDING { background: var(--color-neutral-bg); color: var(--color-text-muted); }
+        .status-badge.FAILED { background: var(--color-error-bg); color: var(--color-error); }
+        .status-badge.DAILY { background: var(--color-info-bg); color: var(--color-info); }
+        .status-badge.CANCELLED { background: var(--color-neutral-bg); color: var(--color-neutral); }
 
         .delete-btn {
             position: absolute;
             top: 0.75rem;
             right: 0.75rem;
-            background: #fff;
-            border: 1px solid #e2e8f0;
-            color: #94a3b8;
+            background: var(--color-bg);
+            border: 1px solid var(--color-border);
+            color: var(--color-text-light);
             width: 24px;
             height: 24px;
             border-radius: 50%;
@@ -131,24 +132,47 @@ export class TaskList extends LitElement {
             z-index: 10;
         }
         .delete-btn:hover {
-            background: #fee2e2;
-            color: #dc2626;
-            border-color: #fecaca;
+            background: var(--color-error-bg);
+            color: var(--color-error);
+            border-color: var(--color-error-bg);
         }
 
-        .retry-btn {
-            background: #dc2626;
-            color: white;
+        .task-actions {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+            flex-shrink: 0;
+        }
+
+        .action-btn {
             border: none;
-            padding: 0.2rem 0.6rem;
-            border-radius: 4px;
-            font-size: 0.65rem;
+            padding: 0.35rem 0.75rem;
+            border-radius: 8px;
+            font-size: 0.7rem;
             font-weight: 700;
             text-transform: uppercase;
             cursor: pointer;
-            margin-right: 0.5rem;
+            transition: all 0.2s;
+            white-space: nowrap;
         }
-        .retry-btn:hover { background: #b91c1c; }
+
+        .retry-btn {
+            background: var(--color-primary);
+            color: white;
+            box-shadow: 0 2px 4px var(--color-primary-soft);
+        }
+        .retry-btn:hover { background: var(--color-primary-hover); transform: translateY(-1px); }
+
+        .cancel-btn {
+            background: var(--color-bg-alt);
+            color: var(--color-text-muted);
+            border: 1px solid var(--color-border);
+        }
+        .cancel-btn:hover { 
+            background: var(--color-neutral-bg); 
+            color: var(--color-text-body);
+            transform: translateY(-1px); 
+        }
         
         .view-result-btn {
             background: none;
@@ -157,28 +181,28 @@ export class TaskList extends LitElement {
             margin: 0;
             font-family: inherit;
             font-size: 0.75rem;
-            color: #3b82f6;
+            color: var(--color-info);
             font-weight: 600;
             cursor: pointer;
             transition: color 0.1s;
         }
         .view-result-btn:hover {
-            color: #2563eb;
+            color: var(--color-primary);
         }
         .view-result-btn:focus-visible {
-            outline: 2px solid #3b82f6;
+            outline: 2px solid var(--color-info);
             outline-offset: 4px;
             border-radius: 2px;
         }
 
-        .time { font-size: 0.75rem; color: #64748b; }
+        .time { font-size: 0.75rem; color: var(--color-text-muted); }
 
         .output-container {
             margin-top: 1rem;
             padding: 1.25rem;
-            background: #f8fafc;
+            background: var(--color-bg-alt);
             border-radius: 8px;
-            border-left: 4px solid #3b82f6;
+            border-left: 4px solid var(--color-info);
             animation: slideDown 0.2s ease-out;
         }
         @keyframes slideDown {
@@ -186,16 +210,16 @@ export class TaskList extends LitElement {
             to { opacity: 1; transform: translateY(0); }
         }
 
-        .markdown-body { font-size: 0.95rem; line-height: 1.6; color: #1e293b; }
-        .markdown-body h1, .markdown-body h2 { border-bottom: 1px solid #e2e8f0; padding-bottom: 0.3rem; margin-top: 1.5rem; }
-        .markdown-body code { background: #f1f5f9; padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 85%; }
-        .markdown-body pre { background: #f1f5f9; padding: 1rem; border-radius: 8px; overflow-x: auto; }
+        .markdown-body { font-size: 0.95rem; line-height: 1.6; color: var(--color-text-body); }
+        .markdown-body h1, .markdown-body h2 { border-bottom: 1px solid var(--color-border); padding-bottom: 0.3rem; margin-top: 1.5rem; }
+        .markdown-body code { background: var(--color-neutral-bg); padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 85%; }
+        .markdown-body pre { background: var(--color-neutral-bg); padding: 1rem; border-radius: 8px; overflow-x: auto; }
         
         .empty-state {
             padding: 3rem;
             text-align: center;
-            color: #94a3b8;
-            border: 2px dashed #e2e8f0;
+            color: var(--color-text-light);
+            border: 2px dashed var(--color-border);
             border-radius: 12px;
             font-size: 0.9rem;
         }
@@ -283,15 +307,17 @@ export class TaskList extends LitElement {
                 <button class="delete-btn" title="Delete" @click=${(e: Event) => { e.stopPropagation(); this._deleteTask(task.id); }}>&times;</button>
                 
                 <div class="task-header">
-                    <div style="display: flex; gap: 0.5rem; align-items: center;">
-                        ${task.status === 'FAILED' ? html`
-                            <button class="retry-btn" @click=${(e: Event) => { e.stopPropagation(); this._retryTask(task.id); }}>Retry</button>
-                        ` : ''}
-                        ${task.status === 'RUNNING' ? html`
-                            <button class="retry-btn" style="background: #94a3b8;" @click=${(e: Event) => { e.stopPropagation(); this._cancelTask(task.id); }}>Cancel</button>
-                        ` : ''}
+                    <div style="display: flex; gap: 0.75rem; align-items: center; flex: 1; min-width: 0;">
                         <span class="status-badge ${task.status}">${task.status}</span>
                         <span class="prompt-text">${task.prompt}</span>
+                    </div>
+                    <div class="task-actions">
+                        ${(task.status === 'FAILED' || task.status === 'CANCELLED') ? html`
+                            <button class="action-btn retry-btn" @click=${(e: Event) => { e.stopPropagation(); this._retryTask(task.id); }}>Retry</button>
+                        ` : ''}
+                        ${task.status === 'RUNNING' ? html`
+                            <button class="action-btn cancel-btn" @click=${(e: Event) => { e.stopPropagation(); this._cancelTask(task.id); }}>Cancel</button>
+                        ` : ''}
                     </div>
                 </div>
 

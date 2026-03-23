@@ -1,14 +1,38 @@
 :root {
-    --primary: #2563eb;
-    --primary-hover: #1d4ed8;
-    --bg-light: #ffffff;
-    --card-bg: #ffffff;
-    --border: #e2e8f0;
-    --text-main: #0f172a;
-    --text-muted: #64748b;
-    --success: #16a34a;
-    --pending: #d97706;
-    --failed: #dc2626;
+    /* Main Colors */
+    --color-primary: #2563eb;
+    --color-primary-hover: #1d4ed8;
+    --color-primary-soft: rgba(37, 99, 235, 0.1);
+    
+    /* Backgrounds */
+    --color-bg: #ffffff;
+    --color-bg-alt: #f8fafc;
+    --color-card-bg: #ffffff;
+    
+    /* Borders & Shadows */
+    --color-border: #e2e8f0;
+    --color-border-hover: #cbd5e1;
+    --color-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+    --color-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    --color-shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+    
+    /* Typography */
+    --color-text-main: #0f172a;
+    --color-text-body: #1e293b;
+    --color-text-muted: #64748b;
+    --color-text-light: #94a3b8;
+    
+    /* Status Colors */
+    --color-success: #16a34a;
+    --color-success-bg: #dcfce7;
+    --color-warning: #d97706;
+    --color-warning-bg: #fef3c7;
+    --color-error: #dc2626;
+    --color-error-bg: #fee2e2;
+    --color-info: #3b82f6;
+    --color-info-bg: #eff6ff;
+    --color-neutral: #94a3b8;
+    --color-neutral-bg: #f1f5f9;
 }
 
 body {
@@ -16,8 +40,8 @@ body {
     padding: 0;
     font-family: 'Inter', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', -apple-system, BlinkMacSystemFont, sans-serif;
     letter-spacing: -0.011em;
-    background-color: var(--bg-light);
-    color: var(--text-main);
+    background-color: var(--color-bg);
+    color: var(--color-text-main);
     min-height: 100vh;
 }
 
@@ -29,10 +53,10 @@ h3 {
 }
 
 .glass-card {
-    background: var(--card-bg);
-    border: 1px solid var(--border);
+    background: var(--color-card-bg);
+    border: 1px solid var(--color-border);
     border-radius: 12px;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    box-shadow: var(--color-shadow-md);
 }
 
 .container {
@@ -52,23 +76,23 @@ button {
 }
 
 button.primary {
-    background: var(--primary);
+    background: var(--color-primary);
     color: white;
 }
 
 button.primary:hover {
-    background: var(--primary-hover);
+    background: var(--color-primary-hover);
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
 }
 
 input,
 textarea {
     background: #fff;
-    border: 1px solid var(--border);
+    border: 1px solid var(--color-border);
     border-radius: 8px;
     padding: 0.75rem;
-    color: var(--text-main);
+    color: var(--color-text-main);
     font-family: inherit;
     width: 100%;
     box-sizing: border-box;
@@ -77,8 +101,8 @@ textarea {
 input:focus,
 textarea:focus {
     outline: none;
-    border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--color-primary-soft);
 }
 
 .badge {
@@ -90,23 +114,23 @@ textarea:focus {
 }
 
 .badge.completed {
-    background: rgba(16, 185, 129, 0.2);
-    color: var(--success);
+    background: var(--color-success-bg);
+    color: var(--color-success);
 }
 
 .badge.running {
-    background: rgba(245, 158, 11, 0.2);
-    color: var(--pending);
+    background: var(--color-warning-bg);
+    color: var(--color-warning);
 }
 
 .badge.pending {
-    background: rgba(148, 163, 184, 0.2);
-    color: var(--text-muted);
+    background: var(--color-neutral-bg);
+    color: var(--color-text-muted);
 }
 
 .badge.failed {
-    background: rgba(239, 68, 68, 0.2);
-    color: var(--failed);
+    background: var(--color-error-bg);
+    color: var(--color-error);
 }
 
 /* Animations */
