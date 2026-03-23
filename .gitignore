@@ -30,3 +30,6 @@ scraped_data.md
 node_modules/
 frontend/dist/
 frontend/node_modules/
+
+# Database
+tasks.db

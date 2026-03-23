@@ -16,6 +16,17 @@ if ($ollamaProcs) {
     Write-Host "  No existing Ollama processes found." -ForegroundColor Green
 }
 
+# ── 1.5. Kill orphaned headless browser processes ──────────────────────────────
+Write-Host "`n[1.5/4] Cleaning up orphaned headless Chrome processes..." -ForegroundColor Yellow
+$headlessChrome = Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe' AND CommandLine LIKE '%--headless%'"
+if ($headlessChrome) {
+    Write-Host "  Found $($headlessChrome.Count) headless Chrome process(es). Stopping..." -ForegroundColor Red
+    $headlessChrome | Invoke-CimMethod -MethodName Terminate | Out-Null
+    Write-Host "  Headless Chrome processes terminated." -ForegroundColor Green
+} else {
+    Write-Host "  No orphaned headless Chrome processes found." -ForegroundColor Green
+}
+
 # ── 2. Start Ollama server in the background ───────────────────────────────────
 Write-Host "`n[2/4] Starting Ollama server..." -ForegroundColor Yellow
 $ollamaJob = Start-Process -FilePath "ollama" -ArgumentList "serve" `

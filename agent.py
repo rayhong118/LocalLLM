@@ -21,6 +21,17 @@ async def run_agent_task(task_id: int, prompt: str):
     task.started_at = datetime.utcnow()
     db.commit()
 
+    # Clean up lingering headless Chrome processes on Windows to prevent CDP timeout errors
+    if sys.platform == 'win32':
+        import subprocess
+        try:
+            # Safely terminate only the chrome processes running in headless mode
+            # This prevents killing the user's regular browser Windows
+            kill_cmd = 'wmic process where "name=\'chrome.exe\' and commandline like \'%--headless%\'" call terminate'
+            subprocess.run(kill_cmd, shell=True, capture_output=True)
+        except Exception as e:
+            print(f"Warning: Failed to clean up headless chrome processes: {e}")
+
     llm = ChatOllama(model="qwen3.5-32k")
     browser = BrowserSession(
         headless=True,
@@ -32,6 +43,9 @@ async def run_agent_task(task_id: int, prompt: str):
         args=[
             "--disable-blink-features=AutomationControlled",
             "--disable-features=IsolateOrigins,site-per-process",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
         ],
     )
     
@@ -40,10 +54,38 @@ async def run_agent_task(task_id: int, prompt: str):
         contexts = db.query(Context).all()
         context_str = ""
         if contexts:
-            context_str = "RELEVANT CONTEXTS AND PRIOR KNOWLEDGE:\n"
-            for c in contexts:
-                context_str += f"--- {c.name} ---\n{c.content}\n\n"
-            context_str += "PLEASE USE THE ABOVE CONTEXTS TO INFORM YOUR ACTIONS FOR THE FOLLOWING TASK.\n\n"
+            eval_prompt = f"User task: {prompt}\n\nAvailable contexts:\n"
+            for i, c in enumerate(contexts):
+                content_preview = c.content[:500] + ("..." if len(c.content) > 500 else "")
+                eval_prompt += f"[{i}] {c.name}: {content_preview}\n"
+                
+            eval_prompt += "\nRespond ONLY with a comma-separated list of the numbers (e.g. 0, 2) of the most relevant contexts for the task. If none are relevant, reply with 'NONE'."
+            
+            try:
+                eval_resp = await llm.ainvoke(eval_prompt)
+                resp_text = eval_resp.content if hasattr(eval_resp, "content") else str(eval_resp)
+                
+                # Extract numbers correctly (e.g. '0', '1, 2')
+                import re
+                numbers_found = re.findall(r'\b\d+\b', resp_text)
+                
+                relevant_indices = []
+                for i, c in enumerate(contexts):
+                    if str(i) in numbers_found:
+                        relevant_indices.append(i)
+                        
+                if relevant_indices:
+                    context_str = "RELEVANT CONTEXTS AND PRIOR KNOWLEDGE:\n"
+                    for i in relevant_indices:
+                        c = contexts[i]
+                        context_str += f"--- {c.name} ---\n{c.content}\n\n"
+                    context_str += "PLEASE USE THE ABOVE CONTEXTS TO INFORM YOUR ACTIONS FOR THE FOLLOWING TASK.\n\n"
+            except Exception as e:
+                print(f"Failed to evaluate contexts with LLM: {e}. Injecting all contexts as fallback.")
+                context_str = "RELEVANT CONTEXTS AND PRIOR KNOWLEDGE:\n"
+                for c in contexts:
+                    context_str += f"--- {c.name} ---\n{c.content}\n\n"
+                context_str += "PLEASE USE THE ABOVE CONTEXTS TO INFORM YOUR ACTIONS FOR THE FOLLOWING TASK.\n\n"
 
         full_task = context_str + "USER TASK: " + prompt
 
