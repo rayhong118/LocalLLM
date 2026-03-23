@@ -34,6 +34,14 @@ class Output(Base):
 
     task = relationship("Task", back_populates="outputs")
 
+class Context(Base):
+    __tablename__ = "contexts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
 )

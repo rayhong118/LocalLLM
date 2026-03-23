@@ -2,13 +2,14 @@ import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import './task-form.ts';
 import './task-list.ts';
+import './context-manager.ts';
 
 @customElement('app-root')
 export class AppRoot extends LitElement {
     static override styles = css`
         :host {
             display: block;
-            max-width: 1000px;
+            max-width: 1100px;
             margin: 0 auto;
             padding: 2rem;
             font-family: inherit;
@@ -18,32 +19,77 @@ export class AppRoot extends LitElement {
             justify-content: space-between;
             align-items: center;
             margin-bottom: 3rem;
+            padding-bottom: 1.5rem;
+            border-bottom: 1px solid #e2e8f0;
         }
         .logo h1 {
             color: #0f172a;
-            font-size: 2.2rem;
+            font-size: 1.8rem;
             letter-spacing: -0.025em;
+            margin: 0;
         }
         .logo h1 span {
             color: #2563eb;
         }
+        
+        nav {
+            display: flex;
+            gap: 1.5rem;
+            align-items: center;
+        }
+        .nav-link {
+            text-decoration: none;
+            color: #64748b;
+            font-weight: 500;
+            font-size: 0.95rem;
+            padding: 0.5rem 0.25rem;
+            position: relative;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+        .nav-link:hover { color: #0f172a; }
+        .nav-link.active {
+            color: #2563eb;
+        }
+        .nav-link.active::after {
+            content: '';
+            position: absolute;
+            bottom: -1rem;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: #2563eb;
+        }
+
         .refresh-btn {
-            background: #fff;
+            background: #f8fafc;
             color: #64748b;
             border: 1px solid #e2e8f0;
             padding: 0.5rem 1rem;
             border-radius: 8px;
             cursor: pointer;
             font-size: 0.875rem;
+            font-weight: 600;
         }
         .refresh-btn:hover {
-            background: #f8fafc;
+            background: #f1f5f9;
             color: #0f172a;
+        }
+        
+        main {
+            animation: fadeIn 0.3s ease-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
     `;
 
     @state()
     private _tasks: any[] = [];
+
+    @state()
+    private _currentPage: 'dashboard' | 'contexts' = 'dashboard';
 
     private _pollInterval?: number;
 
@@ -77,14 +123,27 @@ export class AppRoot extends LitElement {
                 <div class="logo">
                     <h1>LocalLLM <span>Agent</span></h1>
                 </div>
-                <button class="refresh-btn" @click=${this._fetchTasks}>Refresh Status</button>
+                <nav>
+                    <span 
+                        class="nav-link ${this._currentPage === 'dashboard' ? 'active' : ''}" 
+                        @click=${() => this._currentPage = 'dashboard'}
+                    >Dashboard</span>
+                    <span 
+                        class="nav-link ${this._currentPage === 'contexts' ? 'active' : ''}" 
+                        @click=${() => this._currentPage = 'contexts'}
+                    >Context Manager</span>
+                    <button class="refresh-btn" @click=${this._fetchTasks}>Refresh Status</button>
+                </nav>
             </header>
 
             <main>
-                <task-form @task-created=${this._fetchTasks}></task-form>
-                
-                <h2 style="margin-bottom: 1.5rem; color: #f8fafc;">Task History</h2>
-                <task-list .tasks=${this._tasks}></task-list>
+                ${this._currentPage === 'dashboard' ? html`
+                    <task-form @task-created=${this._fetchTasks}></task-form>
+                    <h2 style="margin: 2rem 0 1.5rem 0; color: #0f172a; font-size: 1.5rem;">Tasks</h2>
+                    <task-list .tasks=${this._tasks}></task-list>
+                ` : html`
+                    <context-manager></context-manager>
+                `}
             </main>
         `;
     }

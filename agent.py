@@ -29,8 +29,19 @@ async def run_agent_task(task_id: int, prompt: str):
     )
     
     try:
+        # Fetch contexts
+        contexts = db.query(database.Context).all()
+        context_str = ""
+        if contexts:
+            context_str = "RELEVANT CONTEXTS AND PRIOR KNOWLEDGE:\n"
+            for c in contexts:
+                context_str += f"--- {c.name} ---\n{c.content}\n\n"
+            context_str += "PLEASE USE THE ABOVE CONTEXTS TO INFORM YOUR ACTIONS FOR THE FOLLOWING TASK.\n\n"
+
+        full_task = context_str + "USER TASK: " + prompt
+
         agent = Agent(
-            task=prompt,
+            task=full_task,
             llm=llm,
             browser=browser,
             use_vision=False,

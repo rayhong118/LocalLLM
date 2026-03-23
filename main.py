@@ -5,7 +5,7 @@ from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import database
-from database import SessionLocal, Task as DBTask, Output as DBOutput
+from database import SessionLocal, Task as DBTask, Output as DBOutput, Context as DBContext
 import agent
 import uvicorn
 import os
@@ -19,10 +19,24 @@ class TaskCreate(BaseModel):
     frequency: str = "ONCE" # ONCE, DAILY
     hour_of_day: Optional[int] = None
 
+class ContextCreate(BaseModel):
+    name: str
+    content: str
+
+class ContextSchema(BaseModel):
+    id: int
+    name: str
+    content: str
+    created_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
+
 class OutputSchema(BaseModel):
     id: int
     content: str
-    created_at: str
+    created_at: datetime
 
     model_config = {
         "from_attributes": True
@@ -34,9 +48,9 @@ class TaskSchema(BaseModel):
     status: str
     frequency: str
     hour_of_day: Optional[int]
-    next_run_at: Optional[str]
-    created_at: str
-    updated_at: str
+    next_run_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
     outputs: List[OutputSchema] = []
 
     model_config = {
@@ -156,40 +170,17 @@ async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
         "outputs": []
     }
 
-@app.get("/tasks")
+@app.get("/tasks", response_model=List[TaskSchema])
 def list_tasks(db: Session = Depends(get_db)):
     tasks = db.query(DBTask).order_by(DBTask.created_at.desc()).all()
-    result = []
-    for t in tasks:
-        result.append({
-            "id": t.id,
-            "prompt": t.prompt,
-            "status": t.status,
-            "frequency": t.frequency,
-            "hour_of_day": t.hour_of_day,
-            "next_run_at": t.next_run_at.isoformat() if t.next_run_at else None,
-            "created_at": t.created_at.isoformat(),
-            "updated_at": t.updated_at.isoformat(),
-            "outputs": [{"id": o.id, "content": o.content, "created_at": o.created_at.isoformat()} for o in t.outputs]
-        })
-    return result
+    return tasks
 
-@app.get("/tasks/{task_id}")
+@app.get("/tasks/{task_id}", response_model=TaskSchema)
 def get_task(task_id: int, db: Session = Depends(get_db)):
     t = db.query(DBTask).filter(DBTask.id == task_id).first()
     if not t:
         raise HTTPException(status_code=404, detail="Task not found")
-    return {
-        "id": t.id,
-        "prompt": t.prompt,
-        "status": t.status,
-        "frequency": t.frequency,
-        "hour_of_day": t.hour_of_day,
-        "next_run_at": t.next_run_at.isoformat() if t.next_run_at else None,
-        "created_at": t.created_at.isoformat(),
-        "updated_at": t.updated_at.isoformat(),
-        "outputs": [{"id": o.id, "content": o.content, "created_at": o.created_at.isoformat()} for o in t.outputs]
-    }
+    return t
 
 # Delete a task by ID
 @app.delete("/tasks/{task_id}")
@@ -200,6 +191,40 @@ def delete_task(task_id: int, db: Session = Depends(get_db)):
     db.delete(task)
     db.commit()
     return {"message": "Task deleted successfully"}
+
+# Context endpoints
+@app.get("/contexts", response_model=List[ContextSchema])
+def list_contexts(db: Session = Depends(get_db)):
+    contexts = db.query(DBContext).all()
+    return contexts
+
+@app.post("/contexts", response_model=ContextSchema)
+def create_context(context: ContextCreate, db: Session = Depends(get_db)):
+    db_context = DBContext(name=context.name, content=context.content)
+    db.add(db_context)
+    db.commit()
+    db.refresh(db_context)
+    return db_context
+
+@app.delete("/contexts/{context_id}")
+def delete_context(context_id: int, db: Session = Depends(get_db)):
+    db_context = db.query(DBContext).filter(DBContext.id == context_id).first()
+    if not db_context:
+        raise HTTPException(status_code=404, detail="Context not found")
+    db.delete(db_context)
+    db.commit()
+    return {"message": "Context deleted successfully"}
+
+@app.put("/contexts/{context_id}", response_model=ContextSchema)
+def update_context(context_id: int, context: ContextCreate, db: Session = Depends(get_db)):
+    db_context = db.query(DBContext).filter(DBContext.id == context_id).first()
+    if not db_context:
+        raise HTTPException(status_code=404, detail="Context not found")
+    db_context.name = context.name
+    db_context.content = context.content
+    db.commit()
+    db.refresh(db_context)
+    return db_context
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
