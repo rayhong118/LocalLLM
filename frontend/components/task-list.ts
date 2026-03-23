@@ -231,9 +231,12 @@ export class TaskList extends LitElement {
     @state()
     private _expandedTaskId: number | null = null;
 
-    private async _deleteTask(taskId: number) {
+    private async _deleteTask(taskId: number, needCancel: boolean) {
         if (!confirm('Are you sure you want to delete this task?')) return;
         try {
+            if (needCancel) {
+                await this._cancelTask(taskId);
+            }
             const res = await fetch(`http://localhost:8000/tasks/${taskId}`, { method: 'DELETE' });
             if (res.ok) {
                 this.tasks = this.tasks.filter(t => t.id !== taskId);
@@ -304,7 +307,7 @@ export class TaskList extends LitElement {
 
         return html`
             <div class="task-item ${task.status}">
-                <button class="delete-btn" title="Delete" @click=${(e: Event) => { e.stopPropagation(); this._deleteTask(task.id); }}>&times;</button>
+                <button class="delete-btn" title="Delete" @click=${(e: Event) => { e.stopPropagation(); this._deleteTask(task.id, task.status !== 'RUNNING'); }}>&times;</button>
                 
                 <div class="task-header">
                     <div style="display: flex; gap: 0.75rem; align-items: center; flex: 1; min-width: 0;">
@@ -325,8 +328,8 @@ export class TaskList extends LitElement {
                     <span class="time">
                         ${task.status === 'DAILY' ? `Every day at ${task.hour_of_day}:00` :
                 task.status === 'RUNNING' ? `Started: ${new Date(task.started_at!).toLocaleTimeString()}` :
-                task.status === 'CANCELLED' ? `Cancelled at: ${new Date(task.updated_at).toLocaleTimeString()}` :
-                    `Last Run: ${new Date(task.updated_at).toLocaleString()}`}
+                    task.status === 'CANCELLED' ? `Cancelled at: ${new Date(task.updated_at).toLocaleTimeString()}` :
+                        `Last Run: ${new Date(task.updated_at).toLocaleString()}`}
                     </span>
                     ${hasOutput ? html`
                         <button class="view-result-btn"

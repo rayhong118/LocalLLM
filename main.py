@@ -103,6 +103,12 @@ def run_agent_thread(task_id: int, prompt: str):
 async def check_scheduled_tasks():
     db = SessionLocal()
     try:
+        # Check if ANY task is currently running
+        running_task = db.query(DBTask).filter(DBTask.status == "RUNNING").first()
+        if running_task:
+            print(f"Skipping scheduled tasks: Task {running_task.id} is currently running.")
+            return
+
         now = datetime.utcnow()
         # Find tasks that are due and not currently running
         tasks = db.query(DBTask).filter(

@@ -62,9 +62,19 @@ async def run_agent_task(task_id: int, prompt: str):
             eval_prompt += "\nRespond ONLY with a comma-separated list of the numbers (e.g. 0, 2) of the most relevant contexts for the task. If none are relevant, reply with 'NONE'."
             
             try:
-                from langchain_core.messages import HumanMessage
-                eval_resp = await llm.ainvoke([HumanMessage(content=eval_prompt)])
-                resp_text = eval_resp.content if hasattr(eval_resp, "content") else str(eval_resp)
+                import requests
+                # Bypass LangChain abstraction completely and hit the local API directly
+                ollama_resp = requests.post(
+                    "http://localhost:11434/api/generate",
+                    json={
+                        "model": "qwen3.5-32k",
+                        "prompt": eval_prompt,
+                        "stream": False
+                    },
+                    timeout=30
+                )
+                ollama_resp.raise_for_status()
+                resp_text = ollama_resp.json().get("response", "")
                 
                 # Extract numbers correctly (e.g. '0', '1, 2')
                 import re
@@ -88,7 +98,16 @@ async def run_agent_task(task_id: int, prompt: str):
                     context_str += f"--- {c.name} ---\n{c.content}\n\n"
                 context_str += "PLEASE USE THE ABOVE CONTEXTS TO INFORM YOUR ACTIONS FOR THE FOLLOWING TASK.\n\n"
 
-        full_task = context_str + "USER TASK: " + prompt
+        anti_hallucination_prompt = (
+            "\n\n=== CRITICAL INSTRUCTIONS ===\n"
+            "1. IF A TOOL FAILS (e.g., the extract tool), YOU MUST NOT invent or hallucinate information.\n"
+            "2. You must either retry the tool, try a different search method, or explicitly report the error.\n"
+            "3. DO NOT output fabricated news, events, or facts under any circumstances. Rely EXACTLY on the text visible on the page.\n"
+            "4. Make sure your extraction output is completely finished and not cut off.\n"
+            "============================="
+        )
+
+        full_task = context_str + "USER TASK: " + prompt + anti_hallucination_prompt
 
         agent = Agent(
             task=full_task,
@@ -105,13 +124,25 @@ async def run_agent_task(task_id: int, prompt: str):
             if last_step.result:
                 final_res = last_step.result[-1].extracted_content
                 
+        is_success = True
+        
+        # Check if the built-in browser-use evaluator/judge marked it as failed
+        if hasattr(history, 'is_successful') and not history.is_successful():
+            is_success = False
+
         if not final_res:
             final_res = "No result extracted"
+            is_success = False
             
         # Save output to DB
         output = Output(task_id=task_id, content=final_res)
         db.add(output)
-        task.status = "COMPLETED"
+        
+        if is_success:
+            task.status = "COMPLETED"
+        else:
+            task.status = "FAILED"
+            
         db.commit()
         
     except Exception as e:
