@@ -77,6 +77,8 @@ def calculate_next_run(frequency: str, hour: Optional[int]) -> Optional[datetime
 
 import threading
 
+active_agent_tasks = {}
+
 def run_agent_thread(task_id: int, prompt: str):
     """Run the agent in a dedicated thread with its own Proactor event loop on Windows."""
     if sys.platform == 'win32':
@@ -84,9 +86,18 @@ def run_agent_thread(task_id: int, prompt: str):
     
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    
+    task = loop.create_task(agent.run_agent_task(task_id, prompt))
+    active_agent_tasks[task_id] = {"loop": loop, "task": task}
+    
     try:
-        loop.run_until_complete(agent.run_agent_task(task_id, prompt))
+        loop.run_until_complete(task)
+    except asyncio.CancelledError:
+        print(f"Agent task {task_id} successfully cancelled.")
+    except Exception as e:
+        print(f"Agent task {task_id} exception: {e}")
     finally:
+        active_agent_tasks.pop(task_id, None)
         loop.close()
 
 async def check_scheduled_tasks():
@@ -263,8 +274,15 @@ async def cancel_task(task_id: int, db: Session = Depends(get_db)):
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    # In a real system, we would signal the agent thread to stop.
-    # For now, we update the status so the UI reflects it.
+    # Cancel the running asyncio Task safely from another thread
+    import time
+    agent_info = active_agent_tasks.get(task_id)
+    if agent_info:
+        agent_loop = agent_info["loop"]
+        agent_task = agent_info["task"]
+        agent_loop.call_soon_threadsafe(agent_task.cancel)
+        time.sleep(0.5) # Give it a moment to begin aborting
+    
     db_task.status = "CANCELLED"
     db.commit()
     db.refresh(db_task)

@@ -62,7 +62,8 @@ async def run_agent_task(task_id: int, prompt: str):
             eval_prompt += "\nRespond ONLY with a comma-separated list of the numbers (e.g. 0, 2) of the most relevant contexts for the task. If none are relevant, reply with 'NONE'."
             
             try:
-                eval_resp = await llm.ainvoke(eval_prompt)
+                from langchain_core.messages import HumanMessage
+                eval_resp = await llm.ainvoke([HumanMessage(content=eval_prompt)])
                 resp_text = eval_resp.content if hasattr(eval_resp, "content") else str(eval_resp)
                 
                 # Extract numbers correctly (e.g. '0', '1, 2')
