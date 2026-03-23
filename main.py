@@ -1,3 +1,9 @@
+import asyncio
+import sys
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 from fastapi import FastAPI, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -68,6 +74,20 @@ def calculate_next_run(frequency: str, hour: Optional[int]) -> Optional[datetime
         return target
     return None
 
+import threading
+
+def run_agent_thread(task_id: int, prompt: str):
+    """Run the agent in a dedicated thread with its own Proactor event loop on Windows."""
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(agent.run_agent_task(task_id, prompt))
+    finally:
+        loop.close()
+
 async def check_scheduled_tasks():
     db = SessionLocal()
     try:
@@ -80,8 +100,6 @@ async def check_scheduled_tasks():
         
         for task in tasks:
             print(f"Triggering scheduled task {task.id}: {task.prompt}")
-            # Reset status to PENDING so agent picks it up (though we trigger it directly here)
-            # Actually, agent.run_agent_task sets it to RUNNING
             
             # If it was a recurring task, schedule the next one before running
             if task.frequency == "DAILY":
@@ -92,10 +110,8 @@ async def check_scheduled_tasks():
                 
             db.commit()
             
-            # Start the task
-            # Using asyncio.create_task because we are in an async function
-            import asyncio
-            asyncio.create_task(agent.run_agent_task(task.id, task.prompt))
+            # Start the task in a new thread to ensure Proactor loop on Windows
+            threading.Thread(target=run_agent_thread, args=(task.id, task.prompt), daemon=True).start()
             
     except Exception as e:
         print(f"Error in scheduler: {e}")
@@ -155,20 +171,11 @@ async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_task)
     
-    # We don't trigger it here anymore, the scheduler will pick it up on its next tick
-    # If it's "ONCE", next_run is "now", so it will run within 1 minute.
+    # If it's ONCE, trigger it immediately in a new thread
+    if task.frequency == "ONCE":
+        threading.Thread(target=run_agent_thread, args=(db_task.id, db_task.prompt), daemon=True).start()
     
-    return {
-        "id": db_task.id,
-        "prompt": db_task.prompt,
-        "status": db_task.status,
-        "frequency": db_task.frequency,
-        "hour_of_day": db_task.hour_of_day,
-        "next_run_at": db_task.next_run_at.isoformat() if db_task.next_run_at else None,
-        "created_at": db_task.created_at.isoformat(),
-        "updated_at": db_task.updated_at.isoformat(),
-        "outputs": []
-    }
+    return db_task
 
 @app.get("/tasks", response_model=List[TaskSchema])
 def list_tasks(db: Session = Depends(get_db)):
@@ -225,6 +232,23 @@ def update_context(context_id: int, context: ContextCreate, db: Session = Depend
     db.commit()
     db.refresh(db_context)
     return db_context
+
+@app.post("/tasks/{task_id}/retry", response_model=TaskSchema)
+async def retry_task(task_id: int, db: Session = Depends(get_db)):
+    db_task = db.query(DBTask).filter(DBTask.id == task_id).first()
+    if not db_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Reset status and trigger now
+    db_task.status = "PENDING"
+    db_task.next_run_at = None # Since we run it now, we don't need a scheduled time
+    db.commit()
+    db.refresh(db_task)
+    
+    # Trigger immediately in a new thread
+    threading.Thread(target=run_agent_thread, args=(db_task.id, db_task.prompt), daemon=True).start()
+    
+    return db_task
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

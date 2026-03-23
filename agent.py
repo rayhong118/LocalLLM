@@ -1,7 +1,13 @@
 import asyncio
+import sys
+
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 import utils
 from browser_use import Agent, BrowserSession, ChatOllama
-from database import SessionLocal, Task as DBTask, Output
+import database
+from database import SessionLocal, Task as DBTask, Output, Context
 from datetime import datetime
 
 async def run_agent_task(task_id: int, prompt: str):
@@ -30,7 +36,7 @@ async def run_agent_task(task_id: int, prompt: str):
     
     try:
         # Fetch contexts
-        contexts = db.query(database.Context).all()
+        contexts = db.query(Context).all()
         context_str = ""
         if contexts:
             context_str = "RELEVANT CONTEXTS AND PRIOR KNOWLEDGE:\n"

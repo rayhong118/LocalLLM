@@ -12,7 +12,7 @@ interface TaskOutput {
 interface Task {
     id: number;
     prompt: string;
-    status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED';
+    status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'DAILY';
     frequency: 'ONCE' | 'DAILY';
     hour_of_day: number | null;
     next_run_at: string | null;
@@ -28,122 +28,87 @@ export class TaskList extends LitElement {
             display: block; 
             font-family: inherit;
         }
-        .section-title {
-            font-size: 1.25rem;
+        
+        .section-header {
+            font-size: 0.9rem;
             font-weight: 600;
-            margin: 2rem 0 1rem 0;
-            color: #0f172a;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin: 2.5rem 0 1rem 0;
             display: flex;
             align-items: center;
             gap: 0.5rem;
         }
-        .section-count {
-            font-size: 0.8rem;
-            background: #e2e8f0;
+        .section-header span {
+            background: #f1f5f9;
             padding: 0.1rem 0.5rem;
-            border-radius: 999px;
-            color: #64748b;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            color: #475569;
         }
-        .list-container { display: flex; flex-direction: column; gap: 0.75rem; }
+
+        .list-container { 
+            display: flex; 
+            flex-direction: column; 
+            gap: 1rem; 
+        }
+
         .task-item {
+            position: relative;
             padding: 1.25rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
             transition: all 0.2s;
+            cursor: pointer;
         }
-        .task-item.history { cursor: pointer; }
-        .task-item.history:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
-        
+        .task-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+            border-color: #cbd5e1;
+        }
+
+        /* Pulsing animation for active tasks */
+        @keyframes pulse-border {
+            0% { border-color: #e2e8f0; box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.1); }
+            50% { border-color: #3b82f6; box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.2); }
+            100% { border-color: #e2e8f0; box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.1); }
+        }
+        .task-item.RUNNING {
+            animation: pulse-border 2s infinite ease-in-out;
+            border-width: 2px;
+        }
+
         .task-header {
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
             gap: 1rem;
+            margin-bottom: 0.5rem;
         }
-        .prompt-text { font-weight: 500; color: #0f172a; flex: 1; }
+
+        .prompt-text {
+            font-weight: 500;
+            color: #0f172a;
+            flex: 1;
+            line-height: 1.5;
+            padding-right: 1rem;
+        }
+
         .status-badge {
             padding: 0.25rem 0.75rem;
             border-radius: 999px;
             font-size: 0.7rem;
             font-weight: 700;
             text-transform: uppercase;
+            white-space: nowrap;
         }
         .COMPLETED { background: #dcfce7; color: #16a34a; }
         .RUNNING { background: #fef3c7; color: #d97706; }
         .PENDING { background: #f1f5f9; color: #64748b; }
         .FAILED { background: #fee2e2; color: #dc2626; }
-        
-        .output-container {
-            margin-top: 1rem;
-            padding: 1.5rem;
-            background: #f8fafc;
-            border-radius: 8px;
-            font-size: 0.95rem;
-            border-left: 4px solid #3b82f6;
-            color: #1e293b;
-            animation: slideDown 0.2s ease-out;
-            overflow-x: auto;
-        }
-
-        /* Markdown Styles */
-        .markdown-body {
-            line-height: 1.6;
-        }
-        .markdown-body h1, .markdown-body h2, .markdown-body h3 {
-            margin-top: 1.5rem;
-            margin-bottom: 1rem;
-            font-weight: 600;
-            line-height: 1.25;
-            color: #0f172a;
-        }
-        .markdown-body h1 { font-size: 1.5rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 0.3rem; }
-        .markdown-body h2 { font-size: 1.25rem; }
-        .markdown-body p { margin-bottom: 1rem; }
-        .markdown-body code {
-            padding: 0.2rem 0.4rem;
-            margin: 0;
-            font-size: 85%;
-            background-color: #f1f5f9;
-            border-radius: 6px;
-            font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
-        }
-        .markdown-body pre {
-            padding: 1rem;
-            overflow: auto;
-            font-size: 85%;
-            line-height: 1.45;
-            background-color: #f1f5f9;
-            border-radius: 8px;
-            margin-bottom: 1rem;
-        }
-        .markdown-body pre code {
-            padding: 0;
-            background-color: transparent;
-            font-size: 100%;
-        }
-        .markdown-body ul, .markdown-body ol {
-            padding-left: 2rem;
-            margin-bottom: 1rem;
-        }
-        .markdown-body blockquote {
-            padding: 0 1rem;
-            color: #64748b;
-            border-left: 0.25rem solid #e2e8f0;
-            margin: 0 0 1rem 0;
-        }
-        .markdown-body table {
-            border-collapse: collapse;
-            width: 100%;
-            margin-bottom: 1rem;
-        }
-        .markdown-body table th, .markdown-body table td {
-            border: 1px solid #e2e8f0;
-            padding: 0.5rem 0.75rem;
-        }
-        .markdown-body table tr:nth-child(2n) {
-            background-color: #f8fafc;
-        }
+        .DAILY { background: #eff6ff; color: #2563eb; }
 
         .delete-btn {
             position: absolute;
@@ -160,7 +125,7 @@ export class TaskList extends LitElement {
             justify-content: center;
             cursor: pointer;
             transition: all 0.2s;
-            font-size: 1.2rem;
+            font-size: 1.1rem;
             line-height: 1;
             z-index: 10;
         }
@@ -168,19 +133,49 @@ export class TaskList extends LitElement {
             background: #fee2e2;
             color: #dc2626;
             border-color: #fecaca;
-            transform: scale(1.1);
+        }
+
+        .retry-btn {
+            background: #dc2626;
+            color: white;
+            border: none;
+            padding: 0.2rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.65rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            cursor: pointer;
+            margin-right: 0.5rem;
+        }
+        .retry-btn:hover { background: #b91c1c; }
+
+        .time { font-size: 0.75rem; color: #64748b; }
+
+        .output-container {
+            margin-top: 1rem;
+            padding: 1.25rem;
+            background: #f8fafc;
+            border-radius: 8px;
+            border-left: 4px solid #3b82f6;
+            animation: slideDown 0.2s ease-out;
         }
         @keyframes slideDown {
             from { opacity: 0; transform: translateY(-10px); }
             to { opacity: 1; transform: translateY(0); }
         }
-        .time { font-size: 0.75rem; color: #64748b; }
+
+        .markdown-body { font-size: 0.95rem; line-height: 1.6; color: #1e293b; }
+        .markdown-body h1, .markdown-body h2 { border-bottom: 1px solid #e2e8f0; padding-bottom: 0.3rem; margin-top: 1.5rem; }
+        .markdown-body code { background: #f1f5f9; padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 85%; }
+        .markdown-body pre { background: #f1f5f9; padding: 1rem; border-radius: 8px; overflow-x: auto; }
+        
         .empty-state {
-            padding: 2rem;
+            padding: 3rem;
             text-align: center;
             color: #94a3b8;
             border: 2px dashed #e2e8f0;
             border-radius: 12px;
+            font-size: 0.9rem;
         }
     `;
 
@@ -188,113 +183,99 @@ export class TaskList extends LitElement {
     tasks: Task[] = [];
 
     @state()
-    private expandedTasks = new Set<number>();
-
-    private _toggleExpand(taskId: number) {
-        const newSet = new Set(this.expandedTasks);
-        if (newSet.has(taskId)) {
-            newSet.delete(taskId);
-        } else {
-            newSet.add(taskId);
-        }
-        this.expandedTasks = newSet;
-    }
+    private _expandedTaskId: number | null = null;
 
     private async _deleteTask(taskId: number) {
         if (!confirm('Are you sure you want to delete this task?')) return;
-
         try {
-            await fetch(`http://localhost:8000/tasks/${taskId}`, { method: 'DELETE' });
-            this.tasks = this.tasks.filter(t => t.id !== taskId);
+            const res = await fetch(`http://localhost:8000/tasks/${taskId}`, { method: 'DELETE' });
+            if (res.ok) {
+                this.tasks = this.tasks.filter(t => t.id !== taskId);
+            }
         } catch (error) {
             console.error('Failed to delete task:', error);
+        }
+    }
+
+    private async _retryTask(taskId: number) {
+        try {
+            const res = await fetch(`http://localhost:8000/tasks/${taskId}/retry`, { method: 'POST' });
+            if (res.ok) {
+                const updatedTask = await res.json();
+                this.tasks = this.tasks.map(t => t.id === taskId ? updatedTask : t);
+            }
+        } catch (error) {
+            console.error('Failed to retry task:', error);
         }
     }
 
     override render() {
         if (!this.tasks) return html``;
 
-        const scheduledTasks = this.tasks.filter(t => t.next_run_at !== null);
-        const historyTasks = this.tasks.filter(t => t.status !== 'PENDING' || (t.outputs && t.outputs.length > 0));
+        const active = this.tasks.filter(t => t.status === 'RUNNING');
+        const scheduled = this.tasks.filter(t => t.status === 'PENDING' || t.status === 'DAILY');
+        const history = this.tasks.filter(t => t.status === 'COMPLETED' || t.status === 'FAILED');
 
         return html`
-            <div class="section-title">
-                Scheduled Runs <span class="section-count">${scheduledTasks.length}</span>
-            </div>
-            <div class="list-container">
-                ${scheduledTasks.length === 0
-                ? html`<div class="empty-state">No upcoming runs scheduled.</div>`
-                : scheduledTasks.map(task => this._renderScheduledTask(task))}
-            </div>
+            ${active.length > 0 ? html`
+                <div class="section-header">Active Tasks <span>${active.length}</span></div>
+                <div class="list-container">
+                    ${active.map(t => this._renderTaskItem(t))}
+                </div>
+            ` : ''}
 
-            <div class="section-title">
-                Task History <span class="section-count">${historyTasks.length}</span>
-            </div>
+            ${scheduled.length > 0 ? html`
+                <div class="section-header">Scheduled <span>${scheduled.length}</span></div>
+                <div class="list-container">
+                    ${scheduled.map(t => this._renderTaskItem(t))}
+                </div>
+            ` : ''}
+
+            <div class="section-header">History <span>${history.length}</span></div>
             <div class="list-container">
-                ${historyTasks.length === 0
-                ? html`<div class="empty-state">No execution history yet.</div>`
-                : historyTasks.map(task => this._renderHistoryTask(task))}
+                ${history.length === 0 ? html`
+                    <div class="empty-state">No task history yet.</div>
+                ` : history.map(t => this._renderTaskItem(t))}
             </div>
         `;
     }
 
-    private _renderScheduledTask(task: Task) {
-        return html`
-            <div class="glass-card task-item" style="position: relative;">
-                <button class="delete-btn" title="Delete Task" @click=${(e: Event) => { e.stopPropagation(); this._deleteTask(task.id); }}>&times;</button>
-                <div class="task-header" style="margin-right: 2rem;">
-                    <span class="prompt-text">${task.prompt}</span>
-                    <span style="font-size: 0.7rem; color: #64748b; background: #fff; padding: 0.2rem 0.5rem; border: 1px solid #e2e8f0; border-radius: 4px; white-space: nowrap;">
-                        ${task.frequency === 'DAILY' ? `DAILY @ ${task.hour_of_day}:00` : 'ONE-TIME'}
-                    </span>
-                </div>
-                <div style="display: flex; flex-direction: column; margin-top: 0.5rem;">
-                    <span class="time">Added: ${new Date(task.created_at).toLocaleString()}</span>
-                    <span class="time" style="color: #2563eb; font-weight: 600;">
-                        Next: ${new Date(task.next_run_at!).toLocaleString()}
-                    </span>
-                </div>
-            </div>
-        `;
-    }
-
-    private _renderHistoryTask(task: Task) {
-        const isExpanded = this.expandedTasks.has(task.id);
+    private _renderTaskItem(task: Task) {
+        const isExpanded = this._expandedTaskId === task.id;
         const hasOutput = task.outputs && task.outputs.length > 0;
 
-        let contentHtml = html`No output available.`;
-        if (hasOutput) {
-            try {
-                const rawContent = task.outputs[0].content;
-                const parsedContent = marked.parse(rawContent) as string;
-                contentHtml = html`${unsafeHTML(parsedContent)}`;
-            } catch (e) {
-                console.error("Failed to parse markdown:", e);
-                contentHtml = html`${task.outputs[0].content}`;
-            }
-        }
-
         return html`
-            <div class="glass-card task-item history" style="position: relative;" @click=${() => this._toggleExpand(task.id)}>
-                <button class="delete-btn" title="Delete Task" @click=${(e: Event) => { e.stopPropagation(); this._deleteTask(task.id); }}>&times;</button>
-                <div class="task-header" style="margin-right: 2rem;">
+            <div class="task-item ${task.status}" @click=${() => this._expandedTaskId = isExpanded ? null : task.id}>
+                <button class="delete-btn" title="Delete" @click=${(e: Event) => { e.stopPropagation(); this._deleteTask(task.id); }}>&times;</button>
+                
+                <div class="task-header">
+                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        ${task.status === 'FAILED' ? html`
+                            <button class="retry-btn" @click=${(e: Event) => { e.stopPropagation(); this._retryTask(task.id); }}>Retry</button>
+                        ` : ''}
+                        <span class="status-badge ${task.status}">${task.status}</span>
+                    </div>
                     <span class="prompt-text">${task.prompt}</span>
-                    <span class="status-badge ${task.status}">${task.status}</span>
-                </div>
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span class="time">Last Run: ${new Date(task.updated_at).toLocaleString()}</span>
-                    <span style="font-size: 0.75rem; color: #3b82f6; font-weight: 600;">
-                        ${isExpanded ? 'Hide Result ↑' : 'View Result ↓'}
-                    </span>
+                    
                 </div>
 
-                ${isExpanded ? html`
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span class="time">
+                        ${task.status === 'DAILY' ? `Every day at ${task.hour_of_day}:00` :
+                task.status === 'RUNNING' ? 'Running now...' :
+                    `Last Run: ${new Date(task.updated_at).toLocaleString()}`}
+                    </span>
+                    ${hasOutput ? html`
+                        <span style="font-size: 0.75rem; color: #3b82f6; font-weight: 600;">
+                            ${isExpanded ? 'Hide Result ↑' : 'View Result ↓'}
+                        </span>
+                    ` : ''}
+                </div>
+
+                ${isExpanded && hasOutput ? html`
                     <div class="output-container" @click=${(e: Event) => e.stopPropagation()}>
-                        <div style="margin-bottom: 0.5rem; color: #64748b; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">
-                            Agent Output
-                        </div>
                         <div class="markdown-body">
-                            ${contentHtml}
+                            ${unsafeHTML(marked.parse(task.outputs[0].content, { async: false }) as string)}
                         </div>
                     </div>
                 ` : ''}
