@@ -282,6 +282,12 @@ export class TaskList extends LitElement {
         }
     }
 
+    private _getTimezoneAbbreviation() {
+        return new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' })
+            .formatToParts(new Date())
+            .find(p => p.type === 'timeZoneName')?.value || '';
+    }
+
     override render() {
         if (!this.tasks) return html``;
 
@@ -341,7 +347,7 @@ export class TaskList extends LitElement {
 
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <span class="time">
-                        ${task.frequency === 'DAILY' ? `Every day at ${task.hour_of_day}:00` :
+                        ${task.frequency === 'DAILY' ? `Every day at ${String(task.hour_of_day).padStart(2, '0')}:00 ${this._getTimezoneAbbreviation()}` :
                 task.status === 'RUNNING' ? `Started: ${new Date(task.started_at!).toLocaleTimeString()}` :
                     task.status === 'CANCELLED' ? `Cancelled at: ${new Date(task.updated_at).toLocaleTimeString()}` :
                         `Last Run: ${new Date(task.updated_at).toLocaleString()}`}
