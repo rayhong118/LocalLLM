@@ -58,6 +58,7 @@ class TaskSchema(BaseModel):
     started_at: Optional[datetime]
     created_at: datetime
     updated_at: datetime
+    parent_id: Optional[int] = None
     outputs: List[OutputSchema] = []
 
     model_config = {
@@ -113,36 +114,49 @@ def run_agent_thread(task_id: int, prompt: str):
         active_agent_tasks.pop(task_id, None)
         loop.close()
 
+import time
+
+def background_worker_loop():
+    while True:
+        try:
+            db = SessionLocal()
+            running = db.query(DBTask).filter(DBTask.status == "RUNNING").first()
+            if not running:
+                task = db.query(DBTask).filter(DBTask.status == "PENDING", DBTask.frequency == "ONCE").order_by(DBTask.created_at.asc()).first()
+                if task:
+                    task_id = task.id
+                    prompt = task.prompt
+                    db.close()
+                    # Run the task synchronously in this background thread.
+                    run_agent_thread(task_id, prompt)
+                    continue
+            db.close()
+        except Exception as e:
+            print(f"Error in background worker: {e}")
+            
+        time.sleep(2)
+
 async def check_scheduled_tasks():
     db = SessionLocal()
     try:
-        # Check if ANY task is currently running
-        running_task = db.query(DBTask).filter(DBTask.status == "RUNNING").first()
-        if running_task:
-            print(f"Skipping scheduled tasks: Task {running_task.id} is currently running.")
-            return
-
         now = datetime.utcnow()
-        # Find tasks that are due and not currently running
+        # Find DAILY tasks that are due
         tasks = db.query(DBTask).filter(
-            DBTask.next_run_at <= now,
-            DBTask.status != "RUNNING"
+            DBTask.frequency == "DAILY",
+            DBTask.next_run_at <= now
         ).all()
         
         for task in tasks:
-            print(f"Triggering scheduled task {task.id}: {task.prompt}")
+            print(f"Triggering scheduled daily task {task.id}: {task.prompt}")
             
-            # If it was a recurring task, schedule the next one before running
-            if task.frequency == "DAILY":
-                task.next_run_at = calculate_next_run(task.frequency, task.hour_of_day)
-            else:
-                # If it was ONCE, clear next_run_at so it doesn't run again
-                task.next_run_at = None
-                
-            db.commit()
+            # Spawn ONCE task
+            run_task = DBTask(prompt=task.prompt, status="PENDING", frequency="ONCE", parent_id=task.id)
+            db.add(run_task)
             
-            # Start the task in a new thread to ensure Proactor loop on Windows
-            threading.Thread(target=run_agent_thread, args=(task.id, task.prompt), daemon=True).start()
+            # Update next_run_at for DAILY
+            task.next_run_at = calculate_next_run(task.frequency, task.hour_of_day)
+            
+        db.commit()
             
     except Exception as e:
         print(f"Error in scheduler: {e}")
@@ -156,6 +170,7 @@ scheduler.add_job(check_scheduled_tasks, 'interval', minutes=1)
 async def lifespan(app: FastAPI):
     # Startup
     database.init_db()
+    threading.Thread(target=background_worker_loop, daemon=True).start()
     scheduler.start()
     yield
     # Shutdown
@@ -208,9 +223,7 @@ async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_task)
     
-    # Trigger immediately in a new thread
-    if is_once:
-        threading.Thread(target=run_agent_thread, args=(db_task.id, db_task.prompt), daemon=True).start()
+    # Task will be picked up by the background worker loop automatically
     
     return db_task
 
@@ -276,14 +289,24 @@ async def retry_task(task_id: int, db: Session = Depends(get_db)):
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    # Reset status and trigger now
+    # Reset status
     db_task.status = "PENDING"
-    db_task.next_run_at = None # Since we run it now, we don't need a scheduled time
+    db_task.next_run_at = None 
     db.commit()
     db.refresh(db_task)
     
-    # Trigger immediately in a new thread
-    threading.Thread(target=run_agent_thread, args=(db_task.id, db_task.prompt), daemon=True).start()
+    return db_task
+
+@app.post("/tasks/{task_id}/run_now", response_model=TaskSchema)
+async def run_task_now(task_id: int, db: Session = Depends(get_db)):
+    db_task = db.query(DBTask).filter(DBTask.id == task_id).first()
+    if not db_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Spawn a ONCE task for it
+    run_task = DBTask(prompt=db_task.prompt, status="PENDING", frequency="ONCE", parent_id=db_task.id)
+    db.add(run_task)
+    db.commit()
     
     return db_task
 

@@ -19,6 +19,8 @@ class Task(Base):
     hour_of_day = Column(Integer, nullable=True) # 0-23
     next_run_at = Column(DateTime, nullable=True)
     started_at = Column(DateTime, nullable=True)
+    
+    parent_id = Column(Integer, ForeignKey("tasks.id"), nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

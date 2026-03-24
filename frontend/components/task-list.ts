@@ -258,6 +258,18 @@ export class TaskList extends LitElement {
         }
     }
 
+    private async _runNowTask(taskId: number) {
+        try {
+            const res = await fetch(`http://localhost:8000/tasks/${taskId}/run_now`, { method: 'POST' });
+            if (res.ok) {
+                const updatedTask = await res.json();
+                this.tasks = this.tasks.map(t => t.id === taskId ? updatedTask : t);
+            }
+        } catch (error) {
+            console.error('Failed to run task now:', error);
+        }
+    }
+
     private async _cancelTask(taskId: number) {
         try {
             const res = await fetch(`http://localhost:8000/tasks/${taskId}/cancel`, { method: 'POST' });
@@ -273,26 +285,26 @@ export class TaskList extends LitElement {
     override render() {
         if (!this.tasks) return html``;
 
-        const active = this.tasks.filter(t => t.status === 'RUNNING' || t.status === 'CANCELLED');
-        const scheduled = this.tasks.filter(t => t.status === 'PENDING' || t.status === 'DAILY');
-        const history = this.tasks.filter(t => t.status === 'COMPLETED' || t.status === 'FAILED');
+        const recurring = this.tasks.filter(t => t.frequency === 'DAILY');
+        const pending = [...this.tasks].filter(t => t.frequency === 'ONCE' && (t.status === 'PENDING' || t.status === 'RUNNING' || t.status === 'CANCELLED')).sort((a,b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+        const history = this.tasks.filter(t => t.frequency === 'ONCE' && (t.status === 'COMPLETED' || t.status === 'FAILED'));
 
         return html`
-            ${active.length > 0 ? html`
-                <div class="section-header">Active Tasks <span>${active.length}</span></div>
+            ${recurring.length > 0 ? html`
+                <div class="section-header">Recurring Tasks <span>${recurring.length}</span></div>
                 <div class="list-container">
-                    ${active.map(t => this._renderTaskItem(t))}
+                    ${recurring.map(t => this._renderTaskItem(t))}
                 </div>
             ` : ''}
 
-            ${scheduled.length > 0 ? html`
-                <div class="section-header">Scheduled <span>${scheduled.length}</span></div>
+            ${pending.length > 0 ? html`
+                <div class="section-header">Pending Tasks Queue <span>${pending.length}</span></div>
                 <div class="list-container">
-                    ${scheduled.map(t => this._renderTaskItem(t))}
+                    ${pending.map(t => this._renderTaskItem(t))}
                 </div>
             ` : ''}
 
-            <div class="section-header">History <span>${history.length}</span></div>
+            <div class="section-header">Completed Tasks History <span>${history.length}</span></div>
             <div class="list-container">
                 ${history.length === 0 ? html`
                     <div class="empty-state">No task history yet.</div>
@@ -311,11 +323,15 @@ export class TaskList extends LitElement {
                 
                 <div class="task-header">
                     <div style="display: flex; gap: 0.75rem; align-items: center; flex: 1; min-width: 0;">
-                        <span class="status-badge ${task.status}">${task.status}</span>
+                        <span class="status-badge ${task.frequency === 'DAILY' ? 'DAILY' : task.status}">${task.frequency === 'DAILY' ? 'DAILY' : task.status}</span>
                         <span class="prompt-text">${task.prompt}</span>
                     </div>
                     <div class="task-actions">
-                        ${(task.status === 'FAILED' || task.status === 'CANCELLED') ? html`
+                        ${task.frequency === 'DAILY' && task.status !== 'RUNNING' ? html`
+                            <button class="action-btn retry-btn" @click=${(e: Event) => { e.stopPropagation(); this._runNowTask(task.id); }}>Run Now</button>
+                            <button class="action-btn cancel-btn" @click=${(e: Event) => { e.stopPropagation(); this._deleteTask(task.id, false); }}>Delete</button>
+                        ` : ''}
+                        ${(task.status === 'FAILED' || task.status === 'CANCELLED') && task.frequency !== 'DAILY' ? html`
                             <button class="action-btn retry-btn" @click=${(e: Event) => { e.stopPropagation(); this._retryTask(task.id); }}>Retry</button>
                         ` : ''}
                         ${task.status === 'RUNNING' ? html`
@@ -326,7 +342,7 @@ export class TaskList extends LitElement {
 
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <span class="time">
-                        ${task.status === 'DAILY' ? `Every day at ${task.hour_of_day}:00` :
+                        ${task.frequency === 'DAILY' ? `Every day at ${task.hour_of_day}:00` :
                 task.status === 'RUNNING' ? `Started: ${new Date(task.started_at!).toLocaleTimeString()}` :
                     task.status === 'CANCELLED' ? `Cancelled at: ${new Date(task.updated_at).toLocaleTimeString()}` :
                         `Last Run: ${new Date(task.updated_at).toLocaleString()}`}
