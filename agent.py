@@ -125,13 +125,28 @@ async def run_agent_task(task_id: int, prompt: str):
                 
         is_success = True
         
-        # Check if the built-in browser-use evaluator/judge marked it as failed
-        if hasattr(history, 'is_successful') and not history.is_successful():
+        # history.is_successful() returns True if success, False if explicitly failed by judge, 
+        # and None if missing/incomplete. So we strictly check for `False`.
+        if hasattr(history, 'is_successful') and history.is_successful() is False:
             is_success = False
-
+            
+        if hasattr(history, 'has_errors') and history.has_errors():
+            is_success = False
+            
+        if hasattr(history, 'is_done') and not history.is_done():
+            is_success = False
+            
+        # Often the AI returns a valid final extraction but forgets to set 'success=True'
+        # So if we have a valid final_res, we only mark it failed if it explicitly reported errors.
         if not final_res:
             final_res = "No result extracted"
             is_success = False
+            
+        # If the final result literally says it failed or couldn't find it, consider it a failure.
+        if final_res and isinstance(final_res, str):
+            lower_res = final_res.lower()
+            if "i failed" in lower_res or "could not find" in lower_res or "unable to" in lower_res:
+                is_success = False
             
         # Save output to DB
         output = Output(task_id=task_id, content=final_res)

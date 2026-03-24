@@ -65,15 +65,40 @@ Write-Host "  Backend API: http://localhost:8000" -ForegroundColor Cyan
 Write-Host "  Dashboard (Vite): http://localhost:5173" -ForegroundColor Cyan
 Write-Host ("-" * 50) -ForegroundColor DarkGray
 Start-Process "http://localhost:5173"
-uv run python main.py
-$agentExit = $LASTEXITCODE
-Pop-Location
+try {
+    uv run python main.py
+} finally {
+    $agentExit = $LASTEXITCODE
+    Pop-Location
+    
+    Write-Host ("-" * 50) -ForegroundColor DarkGray
+    Write-Host "`nPerforming cleanup..." -ForegroundColor Yellow
+    
+    # 1. Kill Ollama
+    $ollamaProcs = Get-Process -Name "ollama*" -ErrorAction SilentlyContinue
+    if ($ollamaProcs) {
+        $ollamaProcs | Stop-Process -Force
+        Write-Host "  [OK] Killed Ollama processes." -ForegroundColor Green
+    }
+    
+    # 2. Kill Vite
+    if ($viteJob -and (Get-Process -Id $viteJob.Id -ErrorAction SilentlyContinue)) {
+        Stop-Process -Id $viteJob.Id -Force
+        Write-Host "  [OK] Killed Vite dev server." -ForegroundColor Green
+    }
+    
+    # 3. Kill orphaned headless Chrome
+    $headlessChrome = Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe' AND CommandLine LIKE '%--headless%'"
+    if ($headlessChrome) {
+        $headlessChrome | Invoke-CimMethod -MethodName Terminate | Out-Null
+        Write-Host "  [OK] Killed headless Chrome processes." -ForegroundColor Green
+    }
 
-Write-Host ("-" * 50) -ForegroundColor DarkGray
-if ($agentExit -eq 0) {
-    Write-Host "`nAgent finished successfully." -ForegroundColor Green
-} else {
-    Write-Host "`nAgent exited with code $agentExit." -ForegroundColor Red
+    if ($agentExit -eq 0) {
+        Write-Host "`nLocalLLM Server finished successfully." -ForegroundColor Green
+    } else {
+        Write-Host "`nLocalLLM Server exited with code $agentExit." -ForegroundColor Red
+    }
 }
 
 exit $agentExit
