@@ -286,7 +286,7 @@ export class TaskList extends LitElement {
         if (!this.tasks) return html``;
 
         const recurring = this.tasks.filter(t => t.frequency === 'DAILY');
-        const pending = [...this.tasks].filter(t => t.frequency === 'ONCE' && (t.status === 'PENDING' || t.status === 'RUNNING' || t.status === 'CANCELLED')).sort((a,b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+        const pending = [...this.tasks].filter(t => t.frequency === 'ONCE' && (t.status === 'PENDING' || t.status === 'RUNNING' || t.status === 'CANCELLED')).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
         const history = this.tasks.filter(t => t.frequency === 'ONCE' && (t.status === 'COMPLETED' || t.status === 'FAILED'));
 
         return html`
@@ -329,7 +329,6 @@ export class TaskList extends LitElement {
                     <div class="task-actions">
                         ${task.frequency === 'DAILY' && task.status !== 'RUNNING' ? html`
                             <button class="action-btn retry-btn" @click=${(e: Event) => { e.stopPropagation(); this._runNowTask(task.id); }}>Run Now</button>
-                            <button class="action-btn cancel-btn" @click=${(e: Event) => { e.stopPropagation(); this._deleteTask(task.id, false); }}>Delete</button>
                         ` : ''}
                         ${(task.status === 'FAILED' || task.status === 'CANCELLED') && task.frequency !== 'DAILY' ? html`
                             <button class="action-btn retry-btn" @click=${(e: Event) => { e.stopPropagation(); this._retryTask(task.id); }}>Retry</button>
