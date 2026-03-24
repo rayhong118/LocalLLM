@@ -59,44 +59,43 @@ async def run_agent_task(task_id: int, prompt: str):
                 content_preview = c.content[:500] + ("..." if len(c.content) > 500 else "")
                 eval_prompt += f"[{i}] {c.name}: {content_preview}\n"
                 
-            eval_prompt += "\nRespond ONLY with a comma-separated list of the numbers (e.g. 0, 2) of the most relevant contexts for the task. If none are relevant, reply with 'NONE'."
+            eval_prompt += "\nOutput a valid JSON object with a single key 'relevant_indices' containing a list of integers (e.g. [0, 2]) of the most relevant contexts for the task. If none are relevant, output an empty list."
             
             try:
                 import requests
-                # Bypass LangChain abstraction completely and hit the local API directly
+                # Bypass LangChain abstraction completely and hit the local API directly using JSON format
                 ollama_resp = requests.post(
                     "http://localhost:11434/api/generate",
                     json={
                         "model": "qwen3.5-32k",
                         "prompt": eval_prompt,
-                        "stream": False
+                        "stream": False,
+                        "format": "json"
                     },
                     timeout=30
                 )
                 ollama_resp.raise_for_status()
-                resp_text = ollama_resp.json().get("response", "")
+                resp_text = ollama_resp.json().get("response", "{}")
                 
-                # Extract numbers correctly (e.g. '0', '1, 2')
-                import re
-                numbers_found = re.findall(r'\b\d+\b', resp_text)
+                import json
+                try:
+                    parsed_json = json.loads(resp_text)
+                    relevant_indices = parsed_json.get("relevant_indices", [])
+                    # Filter out any invalid numbers
+                    relevant_indices = [int(i) for i in relevant_indices if isinstance(i, (int, str)) and str(i).isdigit() and 0 <= int(i) < len(contexts)]
+                except json.JSONDecodeError:
+                    relevant_indices = []
                 
-                relevant_indices = []
-                for i, c in enumerate(contexts):
-                    if str(i) in numbers_found:
-                        relevant_indices.append(i)
-                        
                 if relevant_indices:
                     context_str = "RELEVANT CONTEXTS AND PRIOR KNOWLEDGE:\n"
                     for i in relevant_indices:
-                        c = contexts[i]
+                        c = contexts[int(i)]
                         context_str += f"--- {c.name} ---\n{c.content}\n\n"
                     context_str += "PLEASE USE THE ABOVE CONTEXTS TO INFORM YOUR ACTIONS FOR THE FOLLOWING TASK.\n\n"
             except Exception as e:
-                print(f"Failed to evaluate contexts with LLM: {e}. Injecting all contexts as fallback.")
-                context_str = "RELEVANT CONTEXTS AND PRIOR KNOWLEDGE:\n"
-                for c in contexts:
-                    context_str += f"--- {c.name} ---\n{c.content}\n\n"
-                context_str += "PLEASE USE THE ABOVE CONTEXTS TO INFORM YOUR ACTIONS FOR THE FOLLOWING TASK.\n\n"
+                print(f"Failed to evaluate contexts with LLM: {e}. Injecting NO contexts as fallback to avoid noise.")
+                # We do NOT inject all contexts as fallback, as that creates massive noise issues.
+                context_str = ""
 
         anti_hallucination_prompt = (
             "\n\n=== CRITICAL INSTRUCTIONS ===\n"
