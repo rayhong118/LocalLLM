@@ -154,5 +154,12 @@ async def run_agent_task(task_id: int, prompt: str):
         db.close()
 
 if __name__ == "__main__":
-    # For testing: run manually
-    asyncio.run(run_agent_task(1, "Search for ice cream deals on Safeway"))
+    import asyncio
+    import sys
+    if len(sys.argv) > 2:
+        task_id = int(sys.argv[1])
+        prompt = sys.argv[2]
+        asyncio.run(run_agent_task(task_id, prompt))
+    else:
+        # Fallback for testing
+        asyncio.run(run_agent_task(1, "Search for ice cream deals on Safeway"))

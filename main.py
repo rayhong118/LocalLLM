@@ -93,26 +93,20 @@ import threading
 
 active_agent_tasks = {}
 
-def run_agent_thread(task_id: int, prompt: str):
-    """Run the agent in a dedicated thread with its own Proactor event loop on Windows."""
-    if sys.platform == 'win32':
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+def run_agent_process(task_id: int, prompt: str):
+    """Run the agent in a totally separate process to preserve logs and prevent event loop crashes."""
+    import subprocess
     
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    task = loop.create_task(agent.run_agent_task(task_id, prompt))
-    active_agent_tasks[task_id] = {"loop": loop, "task": task}
+    # We pass the sys.executable so it uses the same python binary (venv)
+    proc = subprocess.Popen([sys.executable, "agent.py", str(task_id), prompt])
+    active_agent_tasks[task_id] = {"process": proc}
     
     try:
-        loop.run_until_complete(task)
-    except asyncio.CancelledError:
-        print(f"Agent task {task_id} successfully cancelled.")
+        proc.wait() # Block until the agent finishes
     except Exception as e:
-        print(f"Agent task {task_id} exception: {e}")
+        print(f"Agent process exception: {e}")
     finally:
         active_agent_tasks.pop(task_id, None)
-        loop.close()
 
 import time
 
@@ -127,8 +121,17 @@ def background_worker_loop():
                     task_id = task.id
                     prompt = task.prompt
                     db.close()
-                    # Run the task synchronously in this background thread.
-                    run_agent_thread(task_id, prompt)
+                    
+                    print(f"\n================================================")
+                    print(f" QUEUE: Starting task {task_id}: {prompt}")
+                    print(f"================================================\n", flush=True)
+
+                    # Process blocks here, giving us sequential queue behavior automatically
+                    run_agent_process(task_id, prompt)
+                    
+                    print(f"\n================================================")
+                    print(f" QUEUE: Finished task {task_id}")
+                    print(f"================================================\n", flush=True)
                     continue
             db.close()
         except Exception as e:
@@ -316,14 +319,13 @@ async def cancel_task(task_id: int, db: Session = Depends(get_db)):
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    # Cancel the running asyncio Task safely from another thread
-    import time
+    # Cancel the running process safely
     agent_info = active_agent_tasks.get(task_id)
-    if agent_info:
-        agent_loop = agent_info["loop"]
-        agent_task = agent_info["task"]
-        agent_loop.call_soon_threadsafe(agent_task.cancel)
-        time.sleep(0.5) # Give it a moment to begin aborting
+    if agent_info and "process" in agent_info:
+        try:
+            agent_info["process"].terminate()
+        except:
+            pass
     
     db_task.status = "CANCELLED"
     db.commit()
