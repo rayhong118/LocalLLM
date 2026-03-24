@@ -64,15 +64,28 @@ class TaskSchema(BaseModel):
         "from_attributes": True
     }
 
+from datetime import datetime, timedelta, timezone
+
 def calculate_next_run(frequency: str, hour: Optional[int]) -> Optional[datetime]:
-    now = datetime.utcnow()
+    now_utc = datetime.utcnow()
+    
     if frequency == "ONCE":
-        return now
+        return now_utc
     if frequency == "DAILY" and hour is not None:
-        target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
-        if target <= now:
-            target += timedelta(days=1)
-        return target
+        # Get current local time
+        now_local = datetime.now().astimezone()
+        
+        # Determine the target hour today in local time
+        target_local = now_local.replace(hour=hour, minute=0, second=0, microsecond=0)
+        
+        # If the target hour has already passed today, schedule for tomorrow
+        if target_local <= now_local:
+            target_local += timedelta(days=1)
+            
+        # Convert the calculated local target time back to naive UTC for storage/scheduler
+        target_utc = target_local.astimezone(timezone.utc).replace(tzinfo=None)
+        return target_utc
+        
     return None
 
 import threading
