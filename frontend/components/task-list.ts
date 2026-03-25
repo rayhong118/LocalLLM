@@ -288,11 +288,20 @@ export class TaskList extends LitElement {
             .find(p => p.type === 'timeZoneName')?.value || '';
     }
 
+    private _toLocalDate(dateStr: string | null) {
+        if (!dateStr) return new Date();
+        // If the string doesn't end with 'Z' and doesn't contain an offset, assume UTC
+        if (!dateStr.endsWith('Z') && !/[+-]\d{2}(?::?\d{2})?$/.test(dateStr)) {
+            return new Date(dateStr + 'Z');
+        }
+        return new Date(dateStr);
+    }
+
     override render() {
         if (!this.tasks) return html``;
 
         const recurring = this.tasks.filter(t => t.frequency === 'DAILY');
-        const pending = [...this.tasks].filter(t => t.frequency === 'ONCE' && (t.status === 'PENDING' || t.status === 'RUNNING' || t.status === 'CANCELLED')).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+        const pending = [...this.tasks].filter(t => t.frequency === 'ONCE' && (t.status === 'PENDING' || t.status === 'RUNNING' || t.status === 'CANCELLED')).sort((a, b) => this._toLocalDate(a.created_at).getTime() - this._toLocalDate(b.created_at).getTime());
         const history = this.tasks.filter(t => t.frequency === 'ONCE' && (t.status === 'COMPLETED' || t.status === 'FAILED'));
 
         return html`
@@ -348,9 +357,9 @@ export class TaskList extends LitElement {
                 <div style="display: flex; justify-content: space-between; align-items: center;">
                     <span class="time">
                         ${task.frequency === 'DAILY' ? `Every day at ${String(task.hour_of_day).padStart(2, '0')}:00 ${this._getTimezoneAbbreviation()}` :
-                task.status === 'RUNNING' ? `Started: ${new Date(task.started_at!).toLocaleTimeString()}` :
-                    task.status === 'CANCELLED' ? `Cancelled at: ${new Date(task.updated_at).toLocaleTimeString()}` :
-                        `Last Run: ${new Date(task.updated_at).toLocaleString()}`}
+                task.status === 'RUNNING' ? `Started: ${this._toLocalDate(task.started_at).toLocaleTimeString()} ${this._getTimezoneAbbreviation()}` :
+                    task.status === 'CANCELLED' ? `Cancelled at: ${this._toLocalDate(task.updated_at).toLocaleTimeString()} ${this._getTimezoneAbbreviation()}` :
+                        `Last Run: ${this._toLocalDate(task.updated_at).toLocaleString()} ${this._getTimezoneAbbreviation()}`}
                     </span>
                     ${hasOutput ? html`
                         <button class="view-result-btn"

@@ -8,7 +8,7 @@ import utils
 from browser_use import Agent, BrowserSession, ChatOllama
 import database
 from database import SessionLocal, Task as DBTask, Output, Context
-from datetime import datetime
+from datetime import datetime, timezone
 
 async def run_agent_task(task_id: int, prompt: str):
     db = SessionLocal()
@@ -18,7 +18,7 @@ async def run_agent_task(task_id: int, prompt: str):
         return
 
     task.status = "RUNNING"
-    task.started_at = datetime.utcnow()
+    task.started_at = datetime.now(timezone.utc).replace(tzinfo=None)
     db.commit()
 
     # Clean up lingering headless Chrome processes on Windows to prevent CDP timeout errors
@@ -67,7 +67,7 @@ async def run_agent_task(task_id: int, prompt: str):
                 ollama_resp = requests.post(
                     "http://localhost:11434/api/generate",
                     json={
-                        "model": "qwen3.5-32k",
+                        "model": "qwen3.5-32k:latest",
                         "prompt": eval_prompt,
                         "stream": False,
                         "format": "json"
@@ -75,23 +75,30 @@ async def run_agent_task(task_id: int, prompt: str):
                     timeout=30
                 )
                 ollama_resp.raise_for_status()
-                resp_text = ollama_resp.json().get("response", "{}")
+                resp_data = ollama_resp.json()
+                resp_text = resp_data.get("response", "").strip() or resp_data.get("thinking", "").strip()
+                print(f"DEBUG - Ollama Context Selection Output: {resp_text}")
                 
                 import json
                 try:
                     parsed_json = json.loads(resp_text)
                     relevant_indices = parsed_json.get("relevant_indices", [])
+                    print(f"DEBUG - Parsed indices: {relevant_indices}")
                     # Filter out any invalid numbers
                     relevant_indices = [int(i) for i in relevant_indices if isinstance(i, (int, str)) and str(i).isdigit() and 0 <= int(i) < len(contexts)]
                 except json.JSONDecodeError:
                     relevant_indices = []
                 
                 if relevant_indices:
+                    print(f"DEBUG - Injecting {len(relevant_indices)} context(s) into task.")
                     context_str = "RELEVANT CONTEXTS AND PRIOR KNOWLEDGE:\n"
                     for i in relevant_indices:
                         c = contexts[int(i)]
+                        print(f"  - Context: {c.name}")
                         context_str += f"--- {c.name} ---\n{c.content}\n\n"
                     context_str += "PLEASE USE THE ABOVE CONTEXTS TO INFORM YOUR ACTIONS FOR THE FOLLOWING TASK.\n\n"
+                else:
+                    print("DEBUG - No relevant contexts found by LLM.")
             except Exception as e:
                 print(f"Failed to evaluate contexts with LLM: {e}. Injecting NO contexts as fallback to avoid noise.")
                 # We do NOT inject all contexts as fallback, as that creates massive noise issues.

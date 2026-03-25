@@ -12,6 +12,7 @@ dependencies = [
     "langchain-ollama>=1.0.1",
     "playwright>=1.58.0",
     "pydantic>=2.12.5",
+    "requests>=2.32.0",
     "sqlalchemy>=2.0.48",
     "uvicorn>=0.42.0",
 ]

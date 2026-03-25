@@ -68,7 +68,7 @@ class TaskSchema(BaseModel):
 from datetime import datetime, timedelta, timezone
 
 def calculate_next_run(frequency: str, hour: Optional[int]) -> Optional[datetime]:
-    now_utc = datetime.utcnow()
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     
     if frequency == "ONCE":
         return now_utc
@@ -142,7 +142,7 @@ def background_worker_loop():
 async def check_scheduled_tasks():
     db = SessionLocal()
     try:
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         # Find DAILY tasks that are due
         tasks = db.query(DBTask).filter(
             DBTask.frequency == "DAILY",
