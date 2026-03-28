@@ -54,12 +54,22 @@ async def run_agent_task(task_id: int, prompt: str):
         contexts = db.query(Context).all()
         context_str = ""
         if contexts:
-            eval_prompt = f"User task: {prompt}\n\nAvailable contexts:\n"
+            eval_prompt = (
+                f"Identify which of the following contexts are directly relevant to the user task.\n\n"
+                f"USER TASK: {prompt}\n\n"
+                f"AVAILABLE CONTEXTS:\n"
+            )
             for i, c in enumerate(contexts):
                 content_preview = c.content[:500] + ("..." if len(c.content) > 500 else "")
                 eval_prompt += f"[{i}] {c.name}: {content_preview}\n"
                 
-            eval_prompt += "\nOutput a valid JSON object with a single key 'relevant_indices' containing a list of integers (e.g. [0, 2]) of the most relevant contexts for the task. If none are relevant, output an empty list."
+            eval_prompt += (
+                "\nINSTRUCTIONS:\n"
+                "1. Select the indices of any contexts that provide relevant background, instructions, or prior knowledge for the task.\n"
+                "2. Output ONLY a valid JSON object with the key 'relevant_indices' containing a list of integers.\n"
+                "3. Example: {\"relevant_indices\": [0, 2]}\n"
+                "4. Do NOT include any other text, reasoning, or explanations."
+            )
             
             try:
                 import requests
@@ -70,7 +80,10 @@ async def run_agent_task(task_id: int, prompt: str):
                         "model": "qwen3.5-32k:latest",
                         "prompt": eval_prompt,
                         "stream": False,
-                        "format": "json"
+                        "format": "json",
+                        "options": {
+                            "temperature": 0.0
+                        }
                     },
                     timeout=30
                 )
