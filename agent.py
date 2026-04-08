@@ -34,7 +34,7 @@ async def run_agent_task(task_id: int, prompt: str):
 
     llm = ChatOllama(model="gemma4:26b")
     browser = BrowserSession(
-        headless=True,
+        headless=False,
         disable_security=True,
         enable_default_extensions=False,
         minimum_wait_page_load_time=3,
@@ -117,13 +117,22 @@ async def run_agent_task(task_id: int, prompt: str):
                     # Filter out any invalid numbers
                     valid_indices = []
                     for i in relevant_indices:
-                        try:
-                            val = int(i)
-                            if 0 <= val < len(contexts):
-                                valid_indices.append(val)
-                        except (ValueError, TypeError):
-                            pass
-                    relevant_indices = valid_indices
+                        if isinstance(i, list):
+                            for sub_i in i:
+                                try:
+                                    val = int(sub_i)
+                                    if 0 <= val < len(contexts):
+                                        valid_indices.append(val)
+                                except (ValueError, TypeError):
+                                    pass
+                        else:
+                            try:
+                                val = int(i)
+                                if 0 <= val < len(contexts):
+                                    valid_indices.append(val)
+                            except (ValueError, TypeError):
+                                pass
+                    relevant_indices = list(set(valid_indices))
                 except Exception as e:
                     print(f"DEBUG - Error parsing JSON or extracting indices: {e}")
                     relevant_indices = []
