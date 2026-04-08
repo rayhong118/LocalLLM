@@ -32,7 +32,7 @@ async def run_agent_task(task_id: int, prompt: str):
         except Exception as e:
             print(f"Warning: Failed to clean up headless chrome processes: {e}")
 
-    llm = ChatOllama(model="qwen3.5-32k")
+    llm = ChatOllama(model="gemma4:26b")
     browser = BrowserSession(
         headless=True,
         disable_security=True,
@@ -75,31 +75,57 @@ async def run_agent_task(task_id: int, prompt: str):
                 import requests
                 # Bypass LangChain abstraction completely and hit the local API directly using JSON format
                 ollama_resp = requests.post(
-                    "http://localhost:11434/api/generate",
+                    "http://localhost:11434/api/chat",
                     json={
-                        "model": "qwen3.5-32k:latest",
-                        "prompt": eval_prompt,
+                        "model": "gemma4:26b",
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": "You are a context selection AI. You MUST output ONLY a valid JSON object with the exact key 'relevant_indices' containing a list of integers."
+                            },
+                            {
+                                "role": "user",
+                                "content": eval_prompt
+                            }
+                        ],
                         "stream": False,
                         "format": "json",
                         "options": {
                             "temperature": 0.0
                         }
                     },
-                    timeout=30
+                    timeout=120
                 )
                 ollama_resp.raise_for_status()
                 resp_data = ollama_resp.json()
-                resp_text = resp_data.get("response", "").strip() or resp_data.get("thinking", "").strip()
+                resp_text = resp_data.get("message", {}).get("content", "").strip()
                 print(f"DEBUG - Ollama Context Selection Output: {resp_text}")
                 
                 import json
                 try:
                     parsed_json = json.loads(resp_text)
                     relevant_indices = parsed_json.get("relevant_indices", [])
+                    
+                    if not isinstance(relevant_indices, list):
+                        if relevant_indices is not None:
+                            relevant_indices = [relevant_indices]
+                        else:
+                            relevant_indices = []
+                            
                     print(f"DEBUG - Parsed indices: {relevant_indices}")
+                    
                     # Filter out any invalid numbers
-                    relevant_indices = [int(i) for i in relevant_indices if isinstance(i, (int, str)) and str(i).isdigit() and 0 <= int(i) < len(contexts)]
-                except json.JSONDecodeError:
+                    valid_indices = []
+                    for i in relevant_indices:
+                        try:
+                            val = int(i)
+                            if 0 <= val < len(contexts):
+                                valid_indices.append(val)
+                        except (ValueError, TypeError):
+                            pass
+                    relevant_indices = valid_indices
+                except Exception as e:
+                    print(f"DEBUG - Error parsing JSON or extracting indices: {e}")
                     relevant_indices = []
                 
                 if relevant_indices:
