@@ -32,7 +32,7 @@ async def run_agent_task(task_id: int, prompt: str):
         except Exception as e:
             print(f"Warning: Failed to clean up headless chrome processes: {e}")
 
-    llm = ChatOllama(model="gemma4:26b")
+    llm = ChatOllama(model="gemma4:26b", ollama_options={"temperature": 0, "num_ctx": 8192})
     browser = BrowserSession(
         headless=False,
         disable_security=True,
@@ -168,7 +168,8 @@ async def run_agent_task(task_id: int, prompt: str):
             llm=llm,
             browser=browser,
             use_vision=False,
-            max_steps=50
+            max_steps=50,
+            max_failures=10,
         )
         
         history = await agent.run()
