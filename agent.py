@@ -32,13 +32,51 @@ async def run_agent_task(task_id: int, prompt: str):
         except Exception as e:
             print(f"Warning: Failed to clean up headless chrome processes: {e}")
 
-    llm = ChatOllama(model="gemma4:26b", ollama_options={"temperature": 0, "num_ctx": 8192})
+    from browser_use.llm.ollama.serializer import OllamaMessageSerializer
+    from browser_use.llm.views import ChatInvokeCompletion
+    class JsonStrippingChatOllama(ChatOllama):
+        async def ainvoke(self, messages, output_format=None, **kwargs):
+            try:
+                # Let's call the original method. If it succeeds natively, return immediately.
+                return await super().ainvoke(messages, output_format=output_format, **kwargs)
+            except Exception as e:
+                if output_format is not None:
+                    # If strict Pydantic parsing failed, retry natively as a raw string to strip markdown blocks
+                    ollama_messages = OllamaMessageSerializer.serialize_messages(messages)
+                    response = await self.get_client().chat(
+                        model=self.model,
+                        messages=ollama_messages,
+                        format=output_format.model_json_schema(),
+                        options=self.ollama_options,
+                    )
+                    content = response.message.content or ''
+                    # Aggressive markdown stripping
+                    if "```json" in content:
+                        content = content.split("```json")[1].split("```")[0].strip()
+                    elif "```" in content:
+                        content = content.split("```")[1].split("```")[0].strip()
+                    
+                    parsed = output_format.model_validate_json(content)
+                    return ChatInvokeCompletion(completion=parsed, usage=None)
+                raise e
+
+    llm = JsonStrippingChatOllama(
+        model="gemma4:26b", 
+        timeout=300, # 5 minutes maximum for slow heavy context parsing
+        ollama_options={
+            "temperature": 0, 
+            "num_ctx": 32768,
+            "num_thread": 8
+        }
+    )
     browser = BrowserSession(
-        headless=False,
+        headless=True,
         disable_security=True,
         enable_default_extensions=False,
-        minimum_wait_page_load_time=3,
-        wait_for_network_idle_page_load_time=5,
+        minimum_wait_page_load_time=3.0,
+        wait_for_network_idle_page_load_time=3.0,
+        highlight_elements=True,
+        paint_order_filtering=True,
         user_data_dir=".browser_session_web",
         args=[
             "--disable-blink-features=AutomationControlled",
@@ -46,6 +84,11 @@ async def run_agent_task(task_id: int, prompt: str):
             "--disable-gpu",
             "--no-sandbox",
             "--disable-dev-shm-usage",
+            "--disable-infobars",
+            "--disable-background-networking",
+            "--disable-default-apps",
+            "--window-size=1920,1080", 
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         ],
     )
     
@@ -69,6 +112,7 @@ async def run_agent_task(task_id: int, prompt: str):
                 "2. Output ONLY a valid JSON object with the key 'relevant_indices' containing a list of integers.\n"
                 "3. Example: {\"relevant_indices\": [0, 2]}\n"
                 "4. Do NOT include any other text, reasoning, or explanations."
+                "5. If nothing is relevant, return exactly: {\"relevant_indices\": []}"
             )
             
             try:
@@ -153,15 +197,16 @@ async def run_agent_task(task_id: int, prompt: str):
                 context_str = ""
 
         anti_hallucination_prompt = (
-            "\n\n=== CRITICAL INSTRUCTIONS ===\n"
-            "1. IF A TOOL FAILS (e.g., the extract tool), YOU MUST NOT invent or hallucinate information.\n"
-            "2. You must either retry the tool, try a different search method, or explicitly report the error.\n"
-            "3. DO NOT output fabricated news, events, or facts under any circumstances. Rely EXACTLY on the text visible on the page.\n"
-            "4. Make sure your extraction output is completely finished and not cut off.\n"
-            "============================="
+            "[STRICT_PROTOCOL]\n"
+            "- ERROR_POLICY: On tool_fail, DO NOT hallucinate. Retry or Report.\n"
+            "- VERACITY: 0% fabrication. Use ONLY visible page text.\n"
+            "- OUTPUT: RAW JSON ONLY. No markdown. No preambles.\n"
+            "- FORMAT: Start='{', End='}'. Ensure valid closing.\n"
+            "- LENS: Only extract what is explicitly on screen.\n"
+            "[/STRICT_PROTOCOL]"
         )
 
-        full_task = context_str + "USER TASK: " + prompt + anti_hallucination_prompt
+        full_task = context_str + "USER TASK: " + prompt
 
         agent = Agent(
             task=full_task,
@@ -170,6 +215,9 @@ async def run_agent_task(task_id: int, prompt: str):
             use_vision=False,
             max_steps=50,
             max_failures=10,
+            llm_timeout=300, # Raise the LLM timeout threshold natively in browser-use
+            step_timeout=600, # Safely increase step timeout
+            extend_system_message=anti_hallucination_prompt,
         )
         
         history = await agent.run()
