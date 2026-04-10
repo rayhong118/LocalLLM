@@ -282,13 +282,28 @@ async def run_agent_task(task_id: int, prompt: str):
             last_match = next((h.result[-1].extracted_content for h in reversed(history.history) if h.result), None)
             if last_match: final_res = last_match
             
-        is_success = not (history.is_successful() is False or history.has_errors())
-        if "i failed" in final_res.lower() or "could not find" in final_res.lower():
+        # Robust Success Logic:
+        # 1. Must be explicitly 'done'
+        # 2. Must not be explicitly 'failed'
+        # 3. Must not have any registered errors in history
+        is_success = history.is_done() and history.is_successful() is not False
+        if history.has_errors():
+            is_success = False
+            
+        # 4. Result must not contain common failure strings (case-insensitive)
+        fail_keywords = ["i failed", "could not find", "unable to", "terminated", "no task results"]
+        lower_res = final_res.lower()
+        if any(kw in lower_res for kw in fail_keywords):
             is_success = False
 
         # Persist results
         db.add(Output(task_id=task_id, content=final_res))
         task.status = "COMPLETED" if is_success else "FAILED"
+        
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"Final Success State: {is_success}\n")
+            f.write(f"Final Result: {final_res[:500]}...\n")
+        
         db.commit()
 
     except Exception as e:
