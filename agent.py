@@ -98,12 +98,13 @@ class JsonStrippingChatOllama(ChatOllama):
         # This occurs when local models (like Gemma) blurt out the answer directly.
         if start == -1 or end == -1:
             try:
-                # ONLY wrap if the model seems to have reached a conclusion or failed definitely.
-                # If it's just chatting without a definitive answer, we error to force a retry.
-                if any(kw in text.lower() for kw in ["found", "result", "failed", "cannot find", "success", "summary"]):
+                # ONLY wrap if the model seems to have reached a terminal conclusion.
+                # Avoid common mid-step words like "successfully" or "action".
+                terminal_keywords = ["final result:", "task complete", "i have found", "failure:", "cannot find", "summary of results"]
+                if any(kw in text.lower() for kw in terminal_keywords):
                     wrapped_data = {
                         "evaluation_previous_goal": "Extraction via text fallback",
-                        "memory": "Model blurted text instead of JSON.",
+                        "memory": "Model provided a terminal text answer.",
                         "next_goal": "Finish",
                         "action": [{"done": {"text": text[:1000]}}]
                     }
@@ -126,6 +127,11 @@ class JsonStrippingChatOllama(ChatOllama):
                 
                 # Structural fix: wrap single 'action' in list if needed
                 data = json.loads(cleaned)
+                
+                # If the model returned a raw list instead of an object
+                if isinstance(data, list):
+                    data = {"action": data}
+
                 if "action" in data:
                     if isinstance(data["action"], dict):
                         data["action"] = [data["action"]]
@@ -139,6 +145,21 @@ class JsonStrippingChatOllama(ChatOllama):
                     for k, v in cs.items():
                         if k in ["evaluation_previous_goal", "memory", "next_goal", "thinking"]:
                             data[k] = v
+                
+                # Global Action Normalizer: Fixes mapping for common "hallucinated" action names
+                if "action" in data and isinstance(data["action"], list):
+                    for act in data["action"]:
+                        # 1. Map "type" -> "type_text"
+                        if "type" in act and "type_text" not in act:
+                            act["type_text"] = {"text": act.pop("type"), "index": act.pop("index", 0)}
+                        # 2. Map "press" or "press_key" -> "key_combination"
+                        if ("press" in act or "press_key" in act) and "key_combination" not in act:
+                            key = act.pop("press", act.pop("press_key", None))
+                            act["key_combination"] = {"key_combination": key}
+                        # 3. Ensure mandatory fields exist (default to 0 if model misses index)
+                        for field in ["click_element", "hover_element", "scroll_to_element"]:
+                            if field in act and isinstance(act[field], dict) and "index" not in act[field]:
+                                act[field]["index"] = 0
                 
                 return schema.model_validate(data)
             except Exception:
@@ -260,6 +281,10 @@ async def run_agent_task(task_id: int, prompt: str):
     )
     llm.log_path = log_path # Attach log path for repair traces
 
+    # Attach metadata for repair traces and pre-validate model
+    llm.log_path = log_path 
+
+    # Advanced Browser Config for VRAM/Speed
     browser = BrowserSession(
         headless=config.HEADLESS,
         disable_security=True,
@@ -268,9 +293,11 @@ async def run_agent_task(task_id: int, prompt: str):
         user_data_dir=".browser_session_web",
         args=[
             "--disable-blink-features=AutomationControlled", 
-            "--window-size=1920,1080",
+            "--window-size=1280,720", # Smaller window = smaller DOM tree
             "--disable-extensions",
-            "--mute-audio"
+            "--mute-audio",
+            "--no-sandbox",
+            "--disable-dev-shm-usage" # Stability on limited resource systems
         ],
     )
 
@@ -281,15 +308,21 @@ async def run_agent_task(task_id: int, prompt: str):
         # System Instructions refined for task adherence
         full_protocol = (
             f"{context_str}\n"
-            "### OPERATIONAL MANDATE ###\n"
-            f"1. PRIMARY GOAL: {prompt}\n"
-            "2. SEARCH FIRST: If the info is not on screen, you MUST SEARCH. Never guess or summarize generic categories.\n"
-            "3. NO HALLUCINATION: Only report facts seen on the LIVE SCREEN.\n"
-            "4. SPECIFICITY: Follow any PRIOR KNOWLEDGE instructions strictly.\n\n"
-            "### JSON PROTOCOL ###\n"
-            "- Output valid RAW JSON only.\n"
-            "- 'action' MUST be a LIST: [{\"click_element\": ...}]\n"
-            "### END PROTOCOL ###"
+            "### MANDATORY_OPERATIONAL_STANCE ###\n"
+            "1. NO_PREMATURE_FINISH: You are strictly FORBIDDEN from finishing the task by summarizing landing page categories. "
+            "If you see a list of categories (e.g., Beef, Salmon), you MUST use a search or click action to find specific items.\n"
+            "2. SEARCH_PRIORITY: If a search bar is present, use it immediately to find the user's specific goal.\n"
+            "3. VERACITY: Report ONLY facts visible on the LIVE SCREEN. Do not assume content exists behind unclicked links.\n\n"
+            "### JSON_OUTPUT_SCHEMA ###\n"
+            "- Output RAW JSON only. No markdown. No preambles.\n"
+            "- KEY_NAME_STRICTNESS: Use \"thinking\" for your reasoning and \"action\" for your commands.\n"
+            "- EXAMPLE_FORMAT:\n"
+            "{\n"
+            "  \"thinking\": \"The homepage only shows broad categories. I need to search for the specific item to fulfill the request.\",\n"
+            "  \"action\": [{\"type_text\": {\"index\": 12, \"text\": \"specific query\"}}]\n"
+            "}\n\n"
+            f"### FINAL_GOAL: {prompt} ###\n"
+            "### END_PROTOCOL ###"
         )
 
         agent = Agent(
@@ -328,16 +361,28 @@ async def run_agent_task(task_id: int, prompt: str):
         lower_res = final_res.lower()
         if any(kw in lower_res for kw in fail_keywords):
             is_success = False
+            
+        # 5. Goal Validation: Result MUST contain at least one core keyword from the prompt
+        # (e.g., if prompt has 'ice cream', the result shouldn't just be 'beef')
+        core_keywords = [w.lower() for w in prompt.split() if len(w) > 3]
+        if is_success and core_keywords:
+            if not any(kw in lower_res for kw in core_keywords):
+                print(f"DEBUG - Success validation failed: Result does not mention core keywords {core_keywords}")
+                is_success = False
 
-        # Persist results
-        db.add(Output(task_id=task_id, content=final_res))
-        task.status = "COMPLETED" if is_success else "FAILED"
-        
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"Final Success State: {is_success}\n")
-            f.write(f"Final Result: {final_res[:500]}...\n")
-        
-        db.commit()
+        # Persist results with retry safety
+        try:
+            db.add(Output(task_id=task_id, content=final_res))
+            task.status = "COMPLETED" if is_success else "FAILED"
+            
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"Final Success State: {is_success}\n")
+                f.write(f"Final Result: {final_res[:500]}...\n")
+            
+            db.commit()
+        except Exception as db_err:
+            print(f"Database commit failed: {db_err}")
+            db.rollback()
 
     except Exception as e:
         task.status = "FAILED"
