@@ -1,4 +1,17 @@
 # config.py
-MODEL_NAME = "llama3.1:8b"
-CONTEXT_WINDOW = 32000
-HEADLESS = False  # Set to True once you're bored of watching the browser
+import sys
+
+# LLM Configuration
+LLM_MODEL = "gemma4:26b"
+CONTEXT_WINDOW = 12288
+LLM_TIMEOUT = 300
+TEMPERATURE = 0
+
+# Browser Configuration
+HEADLESS = True
+BROWSER_WAIT_TIME = 2.0  # Reduced from 3.0 for better performance
+MAX_STEPS = 50
+MAX_FAILURES = 3
+
+# OS Specifics
+IS_WINDOWS = sys.platform == 'win32'

@@ -20,6 +20,7 @@ migrate.py
 output.txt
 error.txt
 *.log
+logs/
 scraped_data.md
 
 # Browser automation
