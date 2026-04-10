@@ -55,8 +55,11 @@ class JsonStrippingChatOllama(ChatOllama):
         # Pre-processing: Strip reasoning blocks and common markdown wrappers
         content = self._clean_raw_content(content)
 
-        if output_format is None:
-            return ChatInvokeCompletion(completion=content, usage=None)
+        # Assistant Fallback: If model starts being a "helpful assistant" with tables instead of JSON, 
+        # we treat it as a failure unless it contains a '{'.
+        if '{' not in content and ('|' in content or '###' in content):
+             print("DEBUG - Detected helpful assistant table instead of JSON.")
+             # No braces found, let the Text-to-Done wrapper handle it or fail.
 
         # Parsing Pipeline
         # 1. Direct validation
@@ -95,14 +98,19 @@ class JsonStrippingChatOllama(ChatOllama):
         # This occurs when local models (like Gemma) blurt out the answer directly.
         if start == -1 or end == -1:
             try:
-                # AgentOutput in v0.12.6+ forbids extra fields like 'current_state' and expects flattened fields.
-                wrapped_data = {
-                    "evaluation_previous_goal": "Extracted direct text answer.",
-                    "memory": "Model provided direct text instead of JSON.",
-                    "next_goal": "Finish",
-                    "action": [{"done": {"text": text[:1000]}}]
-                }
-                return schema.model_validate(wrapped_data)
+                # ONLY wrap if the model seems to have reached a conclusion or failed definitely.
+                # If it's just chatting without a definitive answer, we error to force a retry.
+                if any(kw in text.lower() for kw in ["found", "result", "failed", "cannot find", "success", "summary"]):
+                    wrapped_data = {
+                        "evaluation_previous_goal": "Extraction via text fallback",
+                        "memory": "Model blurted text instead of JSON.",
+                        "next_goal": "Finish",
+                        "action": [{"done": {"text": text[:1000]}}]
+                    }
+                    return schema.model_validate(wrapped_data)
+                
+                print("DEBUG - Text found but doesn't look like a final answer. Rejecting to force retry.")
+                return None
             except Exception as e:
                 print(f"DEBUG - Text-to-Done wrapper failed: {e}")
                 return None
@@ -155,17 +163,25 @@ def cleanup_headless_chrome():
             print(f"Warning: Headless cleanup failed: {e}")
 
 
-async def get_relevant_context_str(db, prompt: str) -> str:
+async def get_relevant_context_str(db, prompt: str, log_path: str) -> str:
     """Uses LLM to prune irrelevant contexts to save token window space."""
     contexts = db.query(Context).all()
     if not contexts:
         return ""
 
-    eval_prompt = f"TASK: {prompt}\n\nSELECT RELEVANT CONTEXT INDICES:\n"
+    eval_prompt = (
+        f"USER TASK: {prompt}\n\n"
+        "DATABASE CONTEXT ENTRIES:\n"
+    )
     for i, c in enumerate(contexts):
-        eval_prompt += f"[{i}] {c.name}: {c.content[:200]}...\n"
+        eval_prompt += f"[{i}] NAME: {c.name}\nCONTENT: {c.content[:250]}\n---\n"
     
-    eval_prompt += "\nRespond with valid JSON: {\"relevant_indices\": [int, ...]}"
+    eval_prompt += (
+        f"\nCRITICAL: You are a strict filter. Only select indices that are DIRECTLY RELEVANT "
+        f"to the specific items in: '{prompt}'. If an entry only contains generic store info or wrong products, IGNORE IT.\n"
+        "If NO entry is relevant, return an empty list.\n"
+        "JSON ONLY: {\"relevant_indices\": [int, ...]}"
+    )
 
     try:
         async with httpx.AsyncClient() as client:
@@ -176,24 +192,29 @@ async def get_relevant_context_str(db, prompt: str) -> str:
                     "messages": [{"role": "user", "content": eval_prompt}],
                     "stream": False,
                     "format": "json",
-                    "options": {"temperature": 0, "num_ctx": 2048}
+                    "options": {"temperature": 0, "num_ctx": 4096} # Slightly larger ctx to see more entries
                 },
                 timeout=config.LLM_TIMEOUT
             )
             data = resp.json().get("message", {}).get("content", "{}")
             indices = json.loads(data).get("relevant_indices", [])
             
-            if not indices:
-                return ""
-            
-            full_context = "PRIOR KNOWLEDGE:\n"
-            for i in indices:
-                if 0 <= int(i) < len(contexts):
-                    c = contexts[int(i)]
-                    full_context += f"--- {c.name} ---\n{c.content}\n\n"
-            return full_context + "USE THIS TO INFORM YOUR ACTIONS.\n\n"
+            with open(log_path, "a", encoding="utf-8") as f:
+                if not indices:
+                    f.write("Context Evaluator: No relevant context found in database.\n")
+                    return ""
+                
+                f.write(f"Context Evaluator: Selected {len(indices)} relevant entries.\n")
+                full_context = "PRIOR KNOWLEDGE:\n"
+                for i in indices:
+                    if 0 <= int(i) < len(contexts):
+                        c = contexts[int(i)]
+                        f.write(f" - Using Context: {c.name}\n")
+                        full_context += f"--- {c.name} ---\n{c.content}\n\n"
+                return full_context + "USE THIS TO INFORM YOUR ACTIONS.\n\n"
     except Exception as e:
-        print(f"Context pruning failed: {e}")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"Context pruning failed: {e}\n")
         return ""
 
 
@@ -255,22 +276,24 @@ async def run_agent_task(task_id: int, prompt: str):
 
     try:
         # Context building
-        context_str = await get_relevant_context_str(db, prompt)
+        context_str = await get_relevant_context_str(db, prompt, log_path)
         
         # System Instructions refined for task adherence
-        protocol = (
-            "### TASK PERSISTENCE ###\n"
-            f"- Your PRIMARY GOAL is: {prompt}\n"
-            "- Do NOT get distracted by ads or popups unless they block the path.\n\n"
+        full_protocol = (
+            f"{context_str}\n"
+            "### OPERATIONAL MANDATE ###\n"
+            f"1. PRIMARY GOAL: {prompt}\n"
+            "2. SEARCH FIRST: If the info is not on screen, you MUST SEARCH. Never guess or summarize generic categories.\n"
+            "3. NO HALLUCINATION: Only report facts seen on the LIVE SCREEN.\n"
+            "4. SPECIFICITY: Follow any PRIOR KNOWLEDGE instructions strictly.\n\n"
             "### JSON PROTOCOL ###\n"
             "- Output valid RAW JSON only.\n"
             "- 'action' MUST be a LIST: [{\"click_element\": ...}]\n"
-            "- ONLY use visible text.\n"
             "### END PROTOCOL ###"
         )
 
         agent = Agent(
-            task=context_str + "USER TASK: " + prompt,
+            task=prompt, # Keep purely as the goal
             llm=llm,
             browser=browser,
             use_vision=False,
@@ -278,7 +301,7 @@ async def run_agent_task(task_id: int, prompt: str):
             max_failures=config.MAX_FAILURES,
             llm_timeout=config.LLM_TIMEOUT,
             step_timeout=600,
-            extend_system_message=protocol,
+            extend_system_message=full_protocol,
             max_actions_per_step=1,
             # CRITICAL: Prune DOM to reduce VRAM use and increase LLM focus
             include_attributes=["title", "type", "name", "role", "aria-label", "placeholder", "value"]
