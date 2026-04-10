@@ -245,19 +245,27 @@ async def run_agent_task(task_id: int, prompt: str):
         minimum_wait_page_load_time=config.BROWSER_WAIT_TIME,
         wait_for_network_idle_page_load_time=config.BROWSER_WAIT_TIME,
         user_data_dir=".browser_session_web",
-        args=["--disable-blink-features=AutomationControlled", "--window-size=1920,1080"],
+        args=[
+            "--disable-blink-features=AutomationControlled", 
+            "--window-size=1920,1080",
+            "--disable-extensions",
+            "--mute-audio"
+        ],
     )
 
     try:
         # Context building
         context_str = await get_relevant_context_str(db, prompt)
         
-        # System Instructions
+        # System Instructions refined for task adherence
         protocol = (
+            "### TASK PERSISTENCE ###\n"
+            f"- Your PRIMARY GOAL is: {prompt}\n"
+            "- Do NOT get distracted by ads or popups unless they block the path.\n\n"
             "### JSON PROTOCOL ###\n"
             "- Output valid RAW JSON only.\n"
             "- 'action' MUST be a LIST: [{\"click_element\": ...}]\n"
-            "- ONLY use visible text from elements.\n"
+            "- ONLY use visible text.\n"
             "### END PROTOCOL ###"
         )
 
@@ -271,7 +279,9 @@ async def run_agent_task(task_id: int, prompt: str):
             llm_timeout=config.LLM_TIMEOUT,
             step_timeout=600,
             extend_system_message=protocol,
-            max_actions_per_step=1
+            max_actions_per_step=1,
+            # CRITICAL: Prune DOM to reduce VRAM use and increase LLM focus
+            include_attributes=["title", "type", "name", "role", "aria-label", "placeholder", "value"]
         )
         
         history = await agent.run()
