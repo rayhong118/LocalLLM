@@ -195,12 +195,11 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> str:
         "DATABASE CONTEXT ENTRIES:\n"
     )
     for i, c in enumerate(contexts):
-        eval_prompt += f"[{i}] NAME: {c.name}\nCONTENT: {c.content[:250]}\n---\n"
+        eval_prompt += f"[{i}] {c.name}: {c.content[:250]}\n---\n"
     
     eval_prompt += (
-        f"\nCRITICAL: You are a strict filter. Only select indices that are DIRECTLY RELEVANT "
-        f"to the specific items in: '{prompt}'. If an entry only contains generic store info or wrong products, IGNORE IT.\n"
-        "If NO entry is relevant, return an empty list.\n"
+        f"\nCRITICAL: Strict filter. Select only indices DIRECTLY RELEVANT to: '{prompt}'. "
+        "Ignore generic info or wrong products. If none relevant, return [].\n"
         "JSON ONLY: {\"relevant_indices\": [int, ...]}"
     )
 
@@ -305,21 +304,22 @@ async def run_agent_task(task_id: int, prompt: str):
         # Context building
         context_str = await get_relevant_context_str(db, prompt, log_path)
         
-        # System Instructions refined for task adherence
+        # Caveman Optimized Protocol
         full_protocol = (
             f"{context_str}\n"
             "### MANDATORY_OPERATIONAL_STANCE ###\n"
-            "1. NO_PREMATURE_FINISH: You are strictly FORBIDDEN from finishing the task by summarizing landing page categories. "
-            "If you see a list of categories (e.g., Beef, Salmon), you MUST use a search or click action to find specific items.\n"
-            "2. SEARCH_PRIORITY: If a search bar is present, use it immediately to find the user's specific goal.\n"
-            "3. VERACITY: Report ONLY facts visible on the LIVE SCREEN. Do not assume content exists behind unclicked links.\n\n"
+            "1. NO_PREMATURE_FINISH: Forbidden from finishing with category summaries. "
+            "Must search or click for specific items.\n"
+            "2. SEARCH_PRIORITY: Use search bar immediately if present.\n"
+            "3. VERACITY: Report ONLY facts visible on LIVE SCREEN. No assumptions.\n\n"
             "### JSON_OUTPUT_SCHEMA ###\n"
-            "- Output RAW JSON only. No markdown. No preambles.\n"
-            "- KEY_NAME_STRICTNESS: Use \"thinking\" for your reasoning and \"action\" for your commands.\n"
-            "- EXAMPLE_FORMAT:\n"
+            "- RAW JSON only. No markdown. No preambles.\n"
+            "- FIELDS: \"thinking\" (REASONING), \"action\" (COMMANDS).\n"
+            "- CRITICAL: Use CAVEMAN-SPEAK (tersest grammar, no articles/pronouns) for \"thinking\".\n"
+            "- EXAMPLE:\n"
             "{\n"
-            "  \"thinking\": \"The homepage only shows broad categories. I need to search for the specific item to fulfill the request.\",\n"
-            "  \"action\": [{\"type_text\": {\"index\": 12, \"text\": \"specific query\"}}]\n"
+            "  \"thinking\": \"Homepage broad categories only. Must search specific item.\",\n"
+            "  \"action\": [{\"type_text\": {\"index\": 12, \"text\": \"item name\"}}]\n"
             "}\n\n"
             f"### FINAL_GOAL: {prompt} ###\n"
             "### END_PROTOCOL ###"
