@@ -55,10 +55,18 @@ class JsonStrippingChatOllama(ChatOllama):
         # Pre-processing: Strip reasoning blocks and common markdown wrappers
         content = self._clean_raw_content(content)
 
+        # Repetition Loop Safety: Check for massive recursive loops (e.g. "and a 'a' and a 'a'")
+        # If we detect a character/word repeating more than 50 times, truncate it.
+        for seq in re.findall(r'(\s+\w+){3,}', content):
+             if content.count(seq) > 20:
+                 print("DEBUG - Detected repetition loop. Truncating.")
+                 content = content.split(seq)[0] + " [TRUNCATED LOOP]"
+                 break
+
         # Assistant Fallback: If model starts being a "helpful assistant" with tables instead of JSON, 
         # we treat it as a failure unless it contains a '{'.
-        if '{' not in content and ('|' in content or '###' in content):
-             print("DEBUG - Detected helpful assistant table instead of JSON.")
+        if '{' not in content and ('|' in content or '###' in content or '1.' in content):
+             print("DEBUG - Detected helpful assistant table/list instead of JSON.")
              # No braces found, let the Text-to-Done wrapper handle it or fail.
 
         # Parsing Pipeline
@@ -85,6 +93,11 @@ class JsonStrippingChatOllama(ChatOllama):
         for tag in ['thought', 'reasoning', 'thinking']:
             if f'<{tag}>' in text:
                 text = text.split(f'</{tag}>')[-1]
+        
+        # Clean specific internal tokens or broken prefixes
+        text = text.replace('---<channel|>', '')
+        text = text.replace('---', '')
+
         if '```json' in text:
             text = text.split('```json')[-1].split('```')[0]
         return text.strip()
@@ -100,13 +113,14 @@ class JsonStrippingChatOllama(ChatOllama):
             try:
                 # ONLY wrap if the model seems to have reached a terminal conclusion.
                 # Avoid common mid-step words like "successfully" or "action".
-                terminal_keywords = ["final result:", "task complete", "i have found", "failure:", "cannot find", "summary of results"]
+                terminal_keywords = ["final result:", "task complete", "i have found", "failure:", "cannot find", "summary of results", "the current", "value:", "based on the"]
                 if any(kw in text.lower() for kw in terminal_keywords):
                     wrapped_data = {
+                        "thinking": f"Extracted text answer from fallback: {text[:200]}...",
                         "evaluation_previous_goal": "Extraction via text fallback",
                         "memory": "Model provided a terminal text answer.",
                         "next_goal": "Finish",
-                        "action": [{"done": {"text": text[:1000]}}]
+                        "action": [{"done": {"text": text[:2000]}}]
                     }
                     return schema.model_validate(wrapped_data)
                 
@@ -146,6 +160,15 @@ class JsonStrippingChatOllama(ChatOllama):
                         if k in ["evaluation_previous_goal", "memory", "next_goal", "thinking"]:
                             data[k] = v
                 
+                # 4. Plan/Reasoning Normalizer: Catch 'plan' or 'action_input' hallucinations
+                for hallucination in ["plan", "action_input"]:
+                    if hallucination in data:
+                        data["thinking"] = (data.get("thinking", "") + "\n" + str(data.pop(hallucination))).strip()
+                
+                # If model returned "action": "plan", clear it to prevent validation error
+                if data.get("action") == "plan":
+                    data["action"] = []
+
                 # Global Action Normalizer: Fixes mapping for common "hallucinated" action names
                 if "action" in data and isinstance(data["action"], list):
                     for act in data["action"]:
@@ -304,24 +327,28 @@ async def run_agent_task(task_id: int, prompt: str):
         # Context building
         context_str = await get_relevant_context_str(db, prompt, log_path)
         
-        # Caveman Optimized Protocol
+        # Caveman Optimized Protocol with Anti-Hallucination
         full_protocol = (
             f"{context_str}\n"
             "### MANDATORY_OPERATIONAL_STANCE ###\n"
             "1. NO_PREMATURE_FINISH: Forbidden from finishing with category summaries. "
             "Must search or click for specific items.\n"
             "2. SEARCH_PRIORITY: Use search bar immediately if present.\n"
-            "3. VERACITY: Report ONLY facts visible on LIVE SCREEN. No assumptions.\n\n"
+            "3. NO_PLANNING: Do NOT describe a 'plan' in the action field. "
+            "Take one concrete step from the available DOM elements.\n"
+            "4. VERACITY: Report ONLY facts visible on LIVE SCREEN. No assumptions.\n\n"
             "### JSON_OUTPUT_SCHEMA ###\n"
-            "- RAW JSON only. No markdown. No preambles.\n"
-            "- FIELDS: \"thinking\" (REASONING), \"action\" (COMMANDS).\n"
-            "- CRITICAL: Use CAVEMAN-SPEAK (tersest grammar, no articles/pronouns) for \"thinking\".\n"
+            "- CRITICAL: Output RAW JSON ONLY. No markdown block wrappers. No text outside braces.\n"
+            "- FIELDS: \"thinking\" (REASONING), \"action\" (LIST OF COMMANDS).\n"
+            "- FORBIDDEN: Do NOT use keys like 'plan' or 'action_input'. Use 'action' list only.\n"
+            "- CRITICAL: If you reach the answer, use 'done' action IMMEDIATELY within the JSON.\n"
             "- EXAMPLE:\n"
             "{\n"
             "  \"thinking\": \"Homepage broad categories only. Must search specific item.\",\n"
             "  \"action\": [{\"type_text\": {\"index\": 12, \"text\": \"item name\"}}]\n"
             "}\n\n"
             f"### FINAL_GOAL: {prompt} ###\n"
+            "### VERIFIED_URL: https://www.safeway.com (SPELLING: SAFE-WAY) ###\n"
             "### END_PROTOCOL ###"
         )
 
@@ -363,11 +390,14 @@ async def run_agent_task(task_id: int, prompt: str):
             is_success = False
             
         # 5. Goal Validation: Result MUST contain at least one core keyword from the prompt
-        # (e.g., if prompt has 'ice cream', the result shouldn't just be 'beef')
-        core_keywords = [w.lower() for w in prompt.split() if len(w) > 3]
+        # Use a more robust keyword filter: strip punctuation and common verbs
+        clean_prompt = re.sub(r'[^\w\s]', '', prompt.lower())
+        stop_verbs = {'look', 'search', 'find', 'navigate', 'click', 'check', 'website', 'page', 'following'}
+        core_keywords = [w for w in clean_prompt.split() if len(w) > 3 and w not in stop_verbs]
+        
         if is_success and core_keywords:
             if not any(kw in lower_res for kw in core_keywords):
-                print(f"DEBUG - Success validation failed: Result does not mention core keywords {core_keywords}")
+                print(f"DEBUG - Success validation failed: Result '{lower_res}' does not mention core keywords {core_keywords}")
                 is_success = False
 
         # Persist results with retry safety

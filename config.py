@@ -9,7 +9,7 @@ TEMPERATURE = 0
 
 # Browser Configuration
 HEADLESS = True
-BROWSER_WAIT_TIME = 2.0  # Reduced from 3.0 for better performance
+BROWSER_WAIT_TIME = 5.0  # Increased for slow grocery sites
 MAX_STEPS = 50
 MAX_FAILURES = 3
 
