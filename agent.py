@@ -146,11 +146,26 @@ class JsonStrippingChatOllama(ChatOllama):
                 if isinstance(data, list):
                     data = {"action": data}
 
+                # 4. Hallucination Guard: Catch 'plan' before it gets wrapped as an action
+                for hallucination in ["plan", "action_input"]:
+                    if hallucination in data:
+                        val = str(data.pop(hallucination))
+                        data["thinking"] = (data.get("thinking", "") + "\n" + val).strip()
+                
+                # If 'action' itself is a string like "plan", clear it.
+                if isinstance(data.get("action"), str) and data["action"].lower() in ["plan", "none", "null"]:
+                    data["action"] = []
+
                 if "action" in data:
                     if isinstance(data["action"], dict):
                         data["action"] = [data["action"]]
                     elif isinstance(data["action"], str):
-                        data["action"] = [{"done": {"text": data["action"]}}]
+                        # ONLY wrap as 'done' if it's NOT a hallucinated thinking word
+                        lower_act = data["action"].lower()
+                        if not any(lower_act.startswith(halluc) for halluc in ["plan", "thinking", "action", "step", "goal"]):
+                            data["action"] = [{"done": {"text": data["action"]}}]
+                        else:
+                            data["action"] = []
                 
                 # In v0.12.6, AgentOutput flattens these fields. 
                 # If the model tried to output a nested "current_state" object, flatten it.
@@ -160,15 +175,6 @@ class JsonStrippingChatOllama(ChatOllama):
                         if k in ["evaluation_previous_goal", "memory", "next_goal", "thinking"]:
                             data[k] = v
                 
-                # 4. Plan/Reasoning Normalizer: Catch 'plan' or 'action_input' hallucinations
-                for hallucination in ["plan", "action_input"]:
-                    if hallucination in data:
-                        data["thinking"] = (data.get("thinking", "") + "\n" + str(data.pop(hallucination))).strip()
-                
-                # If model returned "action": "plan", clear it to prevent validation error
-                if data.get("action") == "plan":
-                    data["action"] = []
-
                 # Global Action Normalizer: Fixes mapping for common "hallucinated" action names
                 if "action" in data and isinstance(data["action"], list):
                     for act in data["action"]:
@@ -273,7 +279,10 @@ async def run_agent_task(task_id: int, prompt: str):
     # Configure logging to write to this file
     file_handler = logging.FileHandler(log_path, encoding='utf-8')
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    file_handler.setLevel(logging.INFO)
     logging.getLogger().addHandler(file_handler)
+    logging.getLogger('browser_use').setLevel(logging.INFO)
+    logging.getLogger().setLevel(logging.INFO)
     
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(f"=== AGENT RUN STARTED ===\nTask ID: {task_id}\nPrompt: {prompt}\nTimestamp: {run_timestamp}\n\n")
@@ -332,23 +341,23 @@ async def run_agent_task(task_id: int, prompt: str):
             f"{context_str}\n"
             "### MANDATORY_OPERATIONAL_STANCE ###\n"
             "1. NO_PREMATURE_FINISH: Forbidden from finishing with category summaries. "
-            "Must search or click for specific items.\n"
-            "2. SEARCH_PRIORITY: Use search bar immediately if present.\n"
-            "3. NO_PLANNING: Do NOT describe a 'plan' in the action field. "
-            "Take one concrete step from the available DOM elements.\n"
-            "4. VERACITY: Report ONLY facts visible on LIVE SCREEN. No assumptions.\n\n"
+            "You MUST find specific items with prices. If results are hidden, CLICK 'Show More'.\n"
+            "2. SEARCH_PRIORITY: Use search bar IMMEDIATELY. Type query and hit Enter. Do NOT browse categories first.\n"
+            "3. NO_PLANNING: Outputting 'plan' is a FATAL ERROR. Take one concrete browser action (click/type/scroll).\n"
+            "4. DEAL_HUNTER: specifically look for 'Club Price', 'Buy 1 Get 1', or 'Digital Coupon' for grocery sites.\n"
+            "5. VERACITY: Report ONLY facts visible on LIVE SCREEN. No assumptions.\n\n"
             "### JSON_OUTPUT_SCHEMA ###\n"
             "- CRITICAL: Output RAW JSON ONLY. No markdown block wrappers. No text outside braces.\n"
             "- FIELDS: \"thinking\" (REASONING), \"action\" (LIST OF COMMANDS).\n"
             "- FORBIDDEN: Do NOT use keys like 'plan' or 'action_input'. Use 'action' list only.\n"
-            "- CRITICAL: If you reach the answer, use 'done' action IMMEDIATELY within the JSON.\n"
+            "- CRITICAL: If you reach the final answer, use 'done' action IMMEDIATELY within the JSON.\n"
             "- EXAMPLE:\n"
             "{\n"
-            "  \"thinking\": \"Homepage broad categories only. Must search specific item.\",\n"
-            "  \"action\": [{\"type_text\": {\"index\": 12, \"text\": \"item name\"}}]\n"
+            "  \"thinking\": \"Need to search for chocolate ice cream.\",\n"
+            "  \"action\": [{\"type_text\": {\"index\": 12, \"text\": \"chocolate ice cream\"}}, {\"key_combination\": {\"key_combination\": \"Enter\"}}]\n"
             "}\n\n"
             f"### FINAL_GOAL: {prompt} ###\n"
-            "### VERIFIED_URL: https://www.safeway.com (SPELLING: SAFE-WAY) ###\n"
+            "### VERIFIED_URL: https://www.safeway.com ###\n"
             "### END_PROTOCOL ###"
         )
 
@@ -376,29 +385,65 @@ async def run_agent_task(task_id: int, prompt: str):
             if last_match: final_res = last_match
             
         # Robust Success Logic:
-        # 1. Must be explicitly 'done'
-        # 2. Must not be explicitly 'failed'
-        # 3. Must not have any registered errors in history
-        is_success = history.is_done() and history.is_successful() is not False
+        # 1. Must be explicitly 'done' OR have extracted content
+        is_done = history.is_done() or (final_res and final_res != "No result extracted")
+        is_success = is_done and history.is_successful() is not False
+        
+        # 2. Filter out non-critical errors (e.g. pipe errors, session timeouts at the end)
         if history.has_errors():
-            is_success = False
+            critical_errors = [
+                e for e in history.errors() 
+                if "closed pipe" not in str(e).lower() 
+                and "resourcewarning" not in str(e).lower()
+                and "connection closed" not in str(e).lower()
+            ]
+            if critical_errors:
+                is_success = False
             
-        # 4. Result must not contain common failure strings (case-insensitive)
-        fail_keywords = ["i failed", "could not find", "unable to", "terminated", "no task results"]
+        # 3. Result must not contain common failure strings (case-insensitive)
+        fail_keywords = ["i failed", "could not find", "unable to", "terminated", "no task results", "fail", "hallucination", "plan..."]
         lower_res = final_res.lower()
-        if any(kw in lower_res for kw in fail_keywords):
+        if any(kw in lower_res for kw in fail_keywords) or len(lower_res) < 10:
             is_success = False
             
-        # 5. Goal Validation: Result MUST contain at least one core keyword from the prompt
-        # Use a more robust keyword filter: strip punctuation and common verbs
-        clean_prompt = re.sub(r'[^\w\s]', '', prompt.lower())
-        stop_verbs = {'look', 'search', 'find', 'navigate', 'click', 'check', 'website', 'page', 'following'}
-        core_keywords = [w for w in clean_prompt.split() if len(w) > 3 and w not in stop_verbs]
+        # 4. Multilingual Goal Validation: Result MUST contain at least one core keyword from the prompt
+        # Extract both English words and Chinese characters as potential keywords
+        stop_words = {
+            'look', 'search', 'find', 'navigate', 'click', 'check', 'website', 'page', 
+            'following', 'today', 'items', 'for', 'the', 'and', 'with', 'from', 
+            'that', 'this', 'these', 'those', 'list', 'show', 'give', 'tell'
+        }
+        en_keywords = [w for w in re.findall(r'[a-z]{3,}', prompt.lower()) if w not in stop_words]
+        cn_keywords = re.findall(r'[\u4e00-\u9fff]{2,}', prompt) # Only 2+ char Chinese words
+        
+        core_keywords = sorted(list(set(en_keywords + cn_keywords)), key=len, reverse=True)
         
         if is_success and core_keywords:
-            if not any(kw in lower_res for kw in core_keywords):
-                print(f"DEBUG - Success validation failed: Result '{lower_res}' does not mention core keywords {core_keywords}")
+            # If the goal is VIX, we might want to check for numbers as well
+            if 'vix' in prompt.lower() and not re.search(r'\d+', lower_res):
                 is_success = False
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write("Validation Error: VIX goal but no numerical values found in result.\n")
+
+            if not any(kw in lower_res for kw in core_keywords):
+                msg = f"Validation Error: Result does not mention core keywords {core_keywords}"
+                try:
+                    print(f"DEBUG - {msg}")
+                except UnicodeEncodeError:
+                    print("DEBUG - Validation Error (encoding suppressed)")
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"{msg}\n")
+                is_success = False
+
+        if not is_success:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"Success Logic breakdown:\n")
+                f.write(f" - is_done: {is_done}\n")
+                f.write(f" - history.is_successful(): {history.is_successful()}\n")
+                if history.has_errors():
+                    f.write(f" - history.errors(): {history.errors()}\n")
+                if any(kw in lower_res for kw in fail_keywords):
+                    f.write(f" - Failure keyword detected in result.\n")
 
         # Persist results with retry safety
         try:
@@ -407,7 +452,7 @@ async def run_agent_task(task_id: int, prompt: str):
             
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"Final Success State: {is_success}\n")
-                f.write(f"Final Result: {final_res[:500]}...\n")
+                f.write(f"Final Result: {final_res[:2000]}...\n")
             
             db.commit()
         except Exception as db_err:
