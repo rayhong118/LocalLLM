@@ -330,7 +330,7 @@ export class TaskList extends LitElement {
 
     private _renderTaskItem(task: Task) {
         const isExpanded = this._expandedTaskId === task.id;
-        const hasOutput = task.outputs && task.outputs.length > 0;
+        const hasOutput = task.outputs && task.outputs.length > 0 && task.status !== 'RUNNING';
 
         return html`
             <div class="task-item ${task.status}">
