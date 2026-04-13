@@ -148,10 +148,27 @@ export class ContextManager extends LitElement {
             flex-direction: column;
             gap: 0.75rem;
         }
+        .spinner {
+            display: inline-block;
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #ffffff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 0.5rem;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     `;
 
     @state()
     private contexts: Context[] = [];
+
+    @state()
+    private _isSaving = false;
 
     @state()
     private newName = '';
@@ -190,6 +207,7 @@ export class ContextManager extends LitElement {
     private async _addContext() {
         if (!this.newName || !this.newContent) return;
 
+        this._isSaving = true;
         try {
             const res = await fetch('http://localhost:8000/contexts', {
                 method: 'POST',
@@ -204,6 +222,8 @@ export class ContextManager extends LitElement {
             }
         } catch (err) {
             console.error("Failed to add context:", err);
+        } finally {
+            this._isSaving = false;
         }
     }
 
@@ -218,6 +238,7 @@ export class ContextManager extends LitElement {
     }
 
     private async _saveEdit(id: number) {
+        this._isSaving = true;
         try {
             const res = await fetch(`http://localhost:8000/contexts/${id}`, {
                 method: 'PUT',
@@ -230,6 +251,8 @@ export class ContextManager extends LitElement {
             }
         } catch (err) {
             console.error("Failed to update context:", err);
+        } finally {
+            this._isSaving = false;
         }
     }
 
@@ -269,8 +292,10 @@ export class ContextManager extends LitElement {
                         <textarea placeholder="e.g. I prefer dark chocolate." .value=${this.newContent} @input=${(e: any) => this.newContent = e.target.value}></textarea>
                     </div>
                     <div class="form-actions">
-                        <button class="btn-primary" @click=${this._addContext}>Save Context</button>
-                        <button class="btn-secondary" @click=${() => this._showAddForm = false}>Cancel</button>
+                        <button class="btn-primary" @click=${this._addContext} ?disabled=${this._isSaving} style="display: flex; align-items: center; justify-content: center;">
+                            ${this._isSaving ? html`<span class="spinner"></span> Saving...` : 'Save Context'}
+                        </button>
+                        <button class="btn-secondary" @click=${() => this._showAddForm = false} ?disabled=${this._isSaving}>Cancel</button>
                     </div>
                 </div>
             ` : ''}
@@ -294,8 +319,10 @@ export class ContextManager extends LitElement {
                                 <textarea .value=${this._editContent} @input=${(e: any) => this._editContent = e.target.value}></textarea>
                             </div>
                             <div class="form-actions">
-                                <button class="btn-primary" style="padding: 0.5rem 1rem;" @click=${() => this._saveEdit(ctx.id)}>Save Changes</button>
-                                <button class="btn-secondary" style="padding: 0.5rem 1rem;" @click=${this._cancelEdit}>Cancel</button>
+                                <button class="btn-primary" style="padding: 0.5rem 1rem; display: flex; align-items: center; justify-content: center;" @click=${() => this._saveEdit(ctx.id)} ?disabled=${this._isSaving}>
+                                    ${this._isSaving && this._editingId === ctx.id ? html`<span class="spinner"></span> Saving...` : 'Save Changes'}
+                                </button>
+                                <button class="btn-secondary" style="padding: 0.5rem 1rem;" @click=${this._cancelEdit} ?disabled=${this._isSaving}>Cancel</button>
                             </div>
                         </div>
                     ` : html`

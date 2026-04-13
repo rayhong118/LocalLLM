@@ -83,6 +83,19 @@ export class AppRoot extends LitElement {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
+        .spinner {
+            display: inline-block;
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid #cbd5e1;
+            border-top-color: #2563eb;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 0.5rem;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     `;
 
     @state()
@@ -90,6 +103,9 @@ export class AppRoot extends LitElement {
 
     @state()
     private _currentPage: 'dashboard' | 'contexts' = 'dashboard';
+
+    @state()
+    private _isLoading: boolean = false;
 
     private _pollInterval?: number;
 
@@ -107,6 +123,7 @@ export class AppRoot extends LitElement {
     }
 
     private async _fetchTasks() {
+        this._isLoading = true;
         try {
             const res = await fetch('http://localhost:8000/tasks');
             if (res.ok) {
@@ -114,6 +131,8 @@ export class AppRoot extends LitElement {
             }
         } catch (err) {
             console.error("Failed to fetch tasks:", err);
+        } finally {
+            this._isLoading = false;
         }
     }
 
@@ -132,7 +151,9 @@ export class AppRoot extends LitElement {
                         class="nav-link ${this._currentPage === 'contexts' ? 'active' : ''}" 
                         @click=${() => this._currentPage = 'contexts'}
                     >Context Manager</span>
-                    <button class="refresh-btn" @click=${this._fetchTasks}>Refresh Status</button>
+                    <button class="refresh-btn" @click=${this._fetchTasks} ?disabled=${this._isLoading}>
+                        ${this._isLoading ? html`<span class="spinner"></span> Refreshing...` : 'Refresh Status'}
+                    </button>
                 </nav>
             </header>
 
