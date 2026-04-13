@@ -5,9 +5,13 @@ import logging
 logger = logging.getLogger(__name__)
 controller = Controller()
 
-@controller.action('smart_search', param_description={'query': 'The search term to enter'})
+@controller.action('smart_search')
 async def smart_search(query: str, browser: BrowserSession):
-    """Finds a search input on the page, types the query, and hits Enter."""
+    """Finds a search input on the page, types the query, and hits Enter.
+    
+    Args:
+        query: The search term to enter
+    """
     page = await browser.get_current_page()
     
     # Common search input selectors
@@ -31,9 +35,13 @@ async def smart_search(query: str, browser: BrowserSession):
             
     return f"Failed to find a visible search bar for query: {query}"
 
-@controller.action('click_element_by_text', param_description={'text': 'The exact visible text of the element to click'})
+@controller.action('click_element_by_text')
 async def click_element_by_text(text: str, browser: BrowserSession):
-    """Finds a clickable element (button, link) by its visible text and clicks it."""
+    """Finds a clickable element (button, link) by its visible text and clicks it.
+    
+    Args:
+        text: The exact visible text of the element to click
+    """
     page = await browser.get_current_page()
     
     try:

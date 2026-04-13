@@ -48,7 +48,8 @@ class JsonStrippingChatOllama(ChatOllama):
                  print("DEBUG - Detected repetition loop. Truncating safely.")
                  content = content.split(seq)[0]
                  if '{' in content and '}' not in content:
-                     content += '\n  "action": [], "thinking": "Loop detected" \n}'
+                     # Close the current string and the object
+                     content += '"\n, "action": [], "thinking": "Loop detected" \n}'
                  break
 
         # Assistant Fallback
@@ -163,6 +164,10 @@ class JsonStrippingChatOllama(ChatOllama):
                 
                 if "action" in data and isinstance(data["action"], list):
                     for act in data["action"]:
+                        # URL Sanitization: Prevent aspx.safeway.com hallucinations
+                        if "navigate" in act and "url" in act["navigate"]:
+                            act["navigate"]["url"] = act["navigate"]["url"].replace("aspx.safeway.com", "safeway.com")
+                        
                         if "type" in act and "type_text" not in act:
                             act["type_text"] = {"text": act.pop("type"), "index": act.pop("index", 0)}
                         if ("press" in act or "press_key" in act) and "key_combination" not in act:

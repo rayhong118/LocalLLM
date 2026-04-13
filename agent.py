@@ -74,9 +74,11 @@ async def run_agent_task(task_id: int, prompt: str):
         args=[
             "--disable-blink-features=AutomationControlled", 
             "--window-size=1280,720",
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
             "--disable-extensions",
             "--mute-audio",
             "--no-sandbox",
+            "--disable-infobars",
             "--disable-dev-shm-usage"
         ],
     )
