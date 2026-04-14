@@ -19,6 +19,27 @@ class JsonStrippingChatOllama(ChatOllama):
     _consecutive_failures: int = 0
 
     async def ainvoke(self, messages, output_format=None, **kwargs) -> ChatInvokeCompletion:
+        # 0. Early intercept for Bot Detection in the prompt DOM
+        incoming_text = " ".join([str(getattr(m, 'content', '')) for m in messages]).lower()
+        bot_signatures = [
+            "verify you are human", "attention required! | cloudflare", 
+            "checking your browser before accessing", "security check to access",
+            "just a moment...", "are you a robot", "verifying you are human",
+            "please stand by, while we are checking your browser"
+        ]
+        
+        if output_format and any(sig in incoming_text for sig in bot_signatures):
+            print(f"DEBUG - Bot detection intercepted in prompt DOM. Failing fast.")
+            wrapped_data = {
+                "thinking": "Bot detection or CAPTCHA present on page.",
+                "memory": "BLOCKED. Security check.",
+                "action": [{"done": {"text": "security check encountered"}}]
+            }
+            try:
+                return ChatInvokeCompletion(completion=output_format.model_validate(wrapped_data), usage=None)
+            except Exception as e:
+                print(f"DEBUG - Fast fail validation error: {e}")
+
         ollama_messages = OllamaMessageSerializer.serialize_messages(messages)
         format_param = output_format.model_json_schema() if output_format else None
         
@@ -68,6 +89,12 @@ class JsonStrippingChatOllama(ChatOllama):
 
         # Parsing Pipeline
         try:
+            bot_detection_keywords = ["captcha", "verify you are human", "are you a robot", "security check", "cloudflare", "attention required"]
+            # Force fail if valid JSON says it's a security check but isn't terminating
+            if any(kw in content.lower() for kw in bot_detection_keywords) and '"done"' not in content.lower():
+                print("DEBUG - LLM valid JSON contained bot keywords but no 'done' action. Forcing failure.")
+                content = '{"thinking": "Security check detected in output.", "memory": "BLOCKED.", "action": [{"done": {"text": "security check encountered"}}]}'
+
             result = ChatInvokeCompletion(completion=output_format.model_validate_json(content), usage=None)
             self._consecutive_failures = 0  # Reset on success
             return result
@@ -173,12 +200,19 @@ class JsonStrippingChatOllama(ChatOllama):
                 if isinstance(data, list):
                     data = {"action": data}
 
+                # Extract current_state fields BEFORE key purge so they get merged properly
+                if "current_state" in data and isinstance(data["current_state"], dict):
+                    cs = data.pop("current_state")
+                    for k, v in cs.items():
+                        if k in ["memory", "thinking"]:
+                            data[k] = v
+
                 # Aggressive Key Purge: Move all extra keys to thinking
                 valid_keys = {"thinking", "memory", "action"}
                 extra_keys = [k for k in data.keys() if k not in valid_keys]
                 for k in extra_keys:
                     val = str(data.pop(k))
-                    data["thinking"] = (data.get("thinking", "") + f"\n{k}: {val}").strip()
+                    data["thinking"] = (data.get("thinking", "") + f" [{k}: {val[:100]}]").strip()
 
                 if isinstance(data.get("action"), str) and data["action"].lower() in ["plan", "none", "null"]:
                     data["action"] = []
@@ -193,12 +227,6 @@ class JsonStrippingChatOllama(ChatOllama):
                             data["action"] = [{"done": {"text": data["action"]}}]
                         else:
                             data["action"] = []
-                
-                if "current_state" in data and isinstance(data["current_state"], dict):
-                    cs = data.pop("current_state")
-                    for k, v in cs.items():
-                        if k in ["evaluation_previous_goal", "memory", "next_goal", "thinking"]:
-                            data[k] = v
                 
                 if "action" in data and isinstance(data["action"], list):
                     for act in data["action"]:
@@ -229,6 +257,11 @@ class JsonStrippingChatOllama(ChatOllama):
                         for field in ["click_element", "hover_element", "scroll_to_element"]:
                             if field in act and isinstance(act[field], dict) and "index" not in act[field]:
                                 act[field]["index"] = 0
+                
+                # Final safety purge: remove any straggler keys before validation
+                final_extra = [k for k in data.keys() if k not in valid_keys]
+                for k in final_extra:
+                    data.pop(k)
                 
                 return schema.model_validate(data)
             except Exception:

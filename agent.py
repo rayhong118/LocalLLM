@@ -76,9 +76,10 @@ async def run_agent_task(task_id: int, prompt: str):
         minimum_wait_page_load_time=config.BROWSER_WAIT_TIME,
         wait_for_network_idle_page_load_time=config.BROWSER_WAIT_TIME,
         user_data_dir=".browser_session_web",
+        viewport={"width": 1280, "height": 720},
+        window_size={"width": 1280, "height": 720},
         args=[
             "--disable-blink-features=AutomationControlled", 
-            "--window-size=1280,720",
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
             "--disable-extensions",
             "--mute-audio",
@@ -104,6 +105,8 @@ async def run_agent_task(task_id: int, prompt: str):
                 "You are a browser automation planner. Rewrite the user's task as:\n"
                 "Line 1: One-sentence GOAL in English.\n"
                 "Lines 2-6: Numbered steps (MAX 5). Each step = one browser action.\n"
+                "CRITICAL: Copy exact addresses, zip codes, URLs, and store names from Context into your steps VERBATIM. "
+                "Do NOT paraphrase or omit verification details from Context.\n"
                 "Be ULTRA TERSE. No explanations. No JSON."
             ))
             usr_msg = HumanMessage(content=f"Context:\n{context_str}\n\nTask:\n{prompt}")
@@ -133,8 +136,10 @@ async def run_agent_task(task_id: int, prompt: str):
             "3. Track progress in 'memory' field.\n"
             "4. USE SKILLS: 'smart_search' for search, 'click_element_by_text' for buttons.\n"
             "5. NO FAKE TOOLS. You are a browser. You CANNOT write_file, edit, or run commands. Only navigate, click, type, scroll, done.\n"
-            "6. NEVER REPEAT ACTIONS. If you are already at a URL, DO NOT navigate to it again. Look at the screen and click links instead.\n"
-            "7. DO NOT use the 'extract' action. Read the text on the screen yourself and output the final answer via 'done'.\n\n"
+            "6. NEVER REPEAT ACTIONS. If you clicked something and it did not change the page, SKIP IT and move to the next step.\n"
+            "7. DO NOT use the 'extract' action. Read the text on the screen yourself and output the final answer via 'done'.\n"
+            "8. If a verification step is ALREADY SATISFIED (e.g. correct store is already shown), mark it done in memory and IMMEDIATELY move to the next step.\n"
+            "9. If you are stuck on a SECURITY CHECK, CAPTCHA, 'Just a moment...', or 'Verify you are human' page and cannot proceed, IMMEDIATELY fail by outputting: {\"action\": [{\"done\": {\"text\": \"Security check encountered\"}}]}\n\n"
             "### SCHEMA ###\n"
             "{\"thinking\": \"Short logic\", \"memory\": \"Step progress\", \"action\": []}\n"
             "### EXAMPLE ###\n"
