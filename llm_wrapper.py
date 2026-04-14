@@ -53,15 +53,14 @@ class JsonStrippingChatOllama(ChatOllama):
             if '{' in content and '}' not in content:
                 content += '"\n, "action": [], "thinking": "Loop detected" \n}'
 
-        # Catch repeated token patterns that might lack spaces
-        for seq in re.findall(r'([a-zA-Z_]{10,})', content):
-             if content.count(seq) > 20:
-                 print("DEBUG - Detected repetition loop. Truncating safely.")
-                 content = content.split(seq)[0]
-                 if '{' in content and '}' not in content:
-                     # Close the current string and the object
-                     content += '"\n, "action": [], "thinking": "Loop detected" \n}'
-                 break
+        # Catch consecutive repeated token patterns (e.g., "is-is", "0000000")
+        match = re.search(r'(.{1,20}?)\1{15,}', content)
+        if match:
+             print(f"DEBUG - Detected repetition loop featuring '{match.group(1)}'. Truncating safely.")
+             content = content[:match.start()]
+             if '{' in content and '}' not in content:
+                 # Close the current string and the object
+                 content += '"\n, "action": [], "thinking": "Loop detected" \n}'
 
         # Assistant Fallback
         if '{' not in content and ('|' in content or '###' in content or '1.' in content):

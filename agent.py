@@ -63,7 +63,7 @@ async def run_agent_task(task_id: int, prompt: str):
             "num_ctx": config.CONTEXT_WINDOW,
             "num_predict": 1024,
             "num_thread": 8,
-            "repeat_penalty": 1.15,
+            "repeat_penalty": 1.2,
             "top_k": 40,
             "top_p": 0.9
         }
@@ -157,12 +157,13 @@ async def run_agent_task(task_id: int, prompt: str):
             extend_system_message=full_protocol,
             max_actions_per_step=1,
             include_attributes=["title", "type", "role", "placeholder"],
+            max_clickable_elements_length=5000,
             # Message compaction: summarize old steps to save context
             message_compaction=MessageCompactionSettings(
                 enabled=True,
-                compact_every_n_steps=5,
-                keep_last_items=3,
-                summary_max_chars=2000,
+                compact_every_n_steps=3,
+                keep_last_items=2,
+                summary_max_chars=1500,
             ),
             # Loop detection: catch repeated actions fast
             loop_detection_enabled=True,
