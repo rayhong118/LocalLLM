@@ -175,9 +175,27 @@ scheduler.add_job(check_scheduled_tasks, 'interval', minutes=1)
 async def lifespan(app: FastAPI):
     # Startup
     database.init_db()
+    
+    # Recover from previous crashes: mark hanging RUNNING tasks as FAILED
+    db = SessionLocal()
+    try:
+        hanging_tasks = db.query(DBTask).filter(DBTask.status == "RUNNING").all()
+        for t in hanging_tasks:
+            t.status = "FAILED"
+            db.add(DBOutput(task_id=t.id, content="System failure: Server shut down or crashed while the task was running."))
+        if hanging_tasks:
+            db.commit()
+            print(f"Cleaned up {len(hanging_tasks)} hanging tasks on startup.")
+    except Exception as e:
+        print(f"Failed to clean up hanging tasks: {e}")
+    finally:
+        db.close()
+        
     threading.Thread(target=background_worker_loop, daemon=True).start()
     scheduler.start()
+    
     yield
+    
     # Shutdown
     scheduler.shutdown()
 
