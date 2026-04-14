@@ -14,6 +14,10 @@ from browser_use.llm.exceptions import ModelProviderError
 class JsonStrippingChatOllama(ChatOllama):
     """Refined ChatOllama wrapper with multi-stage JSON repair and Qwen/Gemma residency."""
     
+    # Circuit breaker: abort if LLM fails to produce valid JSON N times in a row
+    MAX_CONSECUTIVE_FAILURES = 5
+    _consecutive_failures: int = 0
+
     async def ainvoke(self, messages, output_format=None, **kwargs) -> ChatInvokeCompletion:
         ollama_messages = OllamaMessageSerializer.serialize_messages(messages)
         format_param = output_format.model_json_schema() if output_format else None
@@ -58,19 +62,32 @@ class JsonStrippingChatOllama(ChatOllama):
 
         # Parsing Pipeline
         try:
-            return ChatInvokeCompletion(completion=output_format.model_validate_json(content), usage=None)
+            result = ChatInvokeCompletion(completion=output_format.model_validate_json(content), usage=None)
+            self._consecutive_failures = 0  # Reset on success
+            return result
         except Exception:
             pass
 
         # 2. Heuristic extraction and repair
         repaired = self._repair_json(content, output_format)
         if repaired:
+            self._consecutive_failures = 0  # Reset on success
             return ChatInvokeCompletion(completion=repaired, usage=None)
 
-        # 3. Persistent Failure Logging
+        # 3. Circuit breaker: abort after too many consecutive failures
+        self._consecutive_failures += 1
         self._log_failure_trace(content)
+        
+        if self._consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
+            self._consecutive_failures = 0  # Reset for next task
+            raise ModelProviderError(
+                message=f"CIRCUIT BREAKER: {self.MAX_CONSECUTIVE_FAILURES} consecutive parse failures. "
+                        f"LLM is not producing valid JSON. Aborting task.",
+                model=self.name
+            )
+        
         raise ModelProviderError(
-            message=f"Failed to parse model output. Raw trace saved. Snippet: {content[:200]}",
+            message=f"Failed to parse model output (attempt {self._consecutive_failures}/{self.MAX_CONSECUTIVE_FAILURES}). Snippet: {content[:200]}",
             model=self.name
         )
 
@@ -114,7 +131,21 @@ class JsonStrippingChatOllama(ChatOllama):
         if start == -1 or end == -1:
             try:
                 terminal_keywords = ["final result:", "task complete", "i have found", "failure:", "cannot find", "summary of results", "the current", "value:", "based on the", "根据", "总结", "结果", "当前"]
-                if any(kw in text.lower() for kw in terminal_keywords):
+                bot_detection_keywords = ["captcha", "verify you are human", "are you a robot", "cloudflare", "access denied", "please verify", "bot detection", "security check", "unusual traffic", "blocked", "forbidden"]
+                
+                lower_text = text.lower()
+                
+                # Bot detection: immediately signal failure
+                if any(kw in lower_text for kw in bot_detection_keywords):
+                    wrapped_data = {
+                        "thinking": "Bot detection or CAPTCHA encountered. Cannot proceed.",
+                        "memory": "BLOCKED: Site has bot detection that cannot be bypassed.",
+                        "next_goal": "Abort",
+                        "action": [{"done": {"text": f"FAILED: Bot detection encountered. {text[:500]}"}}]
+                    }
+                    return schema.model_validate(wrapped_data)
+                
+                if any(kw in lower_text for kw in terminal_keywords):
                     wrapped_data = {
                         "thinking": f"Extracted text answer from fallback: {text[:200]}...",
                         "evaluation_previous_goal": "Extraction via text fallback",

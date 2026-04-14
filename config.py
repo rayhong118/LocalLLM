@@ -8,7 +8,7 @@ LLM_TIMEOUT = 300
 TEMPERATURE = 0
 
 # Browser Configuration
-HEADLESS = False
+HEADLESS = True
 BROWSER_WAIT_TIME = 5.0  # Increased for slow grocery sites
 MAX_STEPS = 50
 MAX_FAILURES = 3

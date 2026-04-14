@@ -98,38 +98,41 @@ async def run_agent_task(task_id: int, prompt: str):
         try:
             planner = ChatOllama(model=config.LLM_MODEL, temperature=0.1)
             sys_msg = SystemMessage(content=(
-                "You are an expert browser automation planner. "
-                "Formulate the user's request into a strict, unambiguous English directive followed by a numbered list of execution steps. "
-                "1. If the input is in another language, translate it to English.\n"
-                "2. Break it down into clear, atomic steps.\n"
-                "3. Do NOT output JSON. Output ONLY the directive and steps."
+                "You are a browser automation planner. Rewrite the user's task as:\n"
+                "Line 1: One-sentence GOAL in English.\n"
+                "Lines 2-6: Numbered steps (MAX 5). Each step = one browser action.\n"
+                "Be ULTRA TERSE. No explanations. No JSON."
             ))
             usr_msg = HumanMessage(content=f"Context:\n{context_str}\n\nTask:\n{prompt}")
             
             plan_res = await planner.ainvoke([sys_msg, usr_msg])
-            orchestrated_prompt = plan_res.content
+            orchestrated_plan = plan_res.content.strip()
+            
+            # Truncate overly verbose plans to save context tokens
+            plan_lines = orchestrated_plan.split('\n')
+            if len(plan_lines) > 8:
+                orchestrated_plan = '\n'.join(plan_lines[:8])
             
             with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"Orchestrated Plan:\n{orchestrated_prompt}\n\n")
+                f.write(f"Orchestrated Plan:\n{orchestrated_plan}\n\n")
                 
-            prompt_for_agent = f"USER ORIGINAL: {prompt}\n\nORCHESTRATOR PLAN:\n{orchestrated_prompt}"
+            prompt_for_agent = orchestrated_plan
         except Exception as e:
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"Orchestrator failed: {e}\nFalling back to original prompt.\n\n")
             prompt_for_agent = prompt
 
-        # CAVEMAN PROTOCOL (Ultra-Terse)
+        # CAVEMAN PROTOCOL (Ultra-Terse) — context already baked into orchestrator plan
         full_protocol = (
-            f"{context_str}\n"
             "### RULES ###\n"
-            "1. STRICT JSON ONLY. NO CHAT. NO MARKDOWN.\n"
-            "2. NEVER output conversational text outside JSON. If providing the final answer, it MUST be wrapped inside: {\"action\": [{\"done\": {\"text\": \"YOUR ANSWER\"}}]}\n"
-            "3. STEP 1: MAKE PLAN IN 'memory' FIELD.\n"
-            "4. USE SKILLS: 'smart_search' for any search. 'click_element_by_text' for buttons.\n"
-            "5. NO HALLUCINATIONS. DON'T REPEAT PLAN.\n\n"
+            "1. STRICT JSON ONLY. NO CHAT. NO MARKDOWN. NO INTRODUCTIONS.\n"
+            "2. Final answer MUST be: {\"action\": [{\"done\": {\"text\": \"YOUR ANSWER\"}}]}\n"
+            "3. Track progress in 'memory' field.\n"
+            "4. USE SKILLS: 'smart_search' for search, 'click_element_by_text' for buttons.\n"
+            "5. If an action fails twice, try a different approach.\n\n"
             "### SCHEMA ###\n"
-            "{\"thinking\": \"Short logic\", \"memory\": \"Plan status\", \"action\": []}\n"
-            f"### GOAL: {prompt_for_agent} ###"
+            "{\"thinking\": \"Short logic\", \"memory\": \"Step progress\", \"action\": []}\n"
+            f"### GOAL ###\n{prompt_for_agent}"
         )
 
         agent = Agent(
@@ -186,7 +189,8 @@ async def run_agent_task(task_id: int, prompt: str):
             critical_errors = [e for e in history.errors() if not any(x in str(e).lower() for x in ["closed pipe", "resourcewarning", "connection closed", "failed to parse"])]
             if critical_errors: is_success = False
             
-        fail_keywords = ["i failed", "could not find", "unable to", "terminated", "no task results", "fail", "hallucination", "plan..."]
+        fail_keywords = ["i failed", "could not find", "unable to", "terminated", "no task results", "fail", "hallucination", "plan...",
+                         "captcha", "bot detection", "access denied", "security check", "verify you are human", "blocked"]
         lower_res = final_res.lower()
         if any(kw in lower_res for kw in fail_keywords) or len(lower_res) < 10:
             is_success = False
