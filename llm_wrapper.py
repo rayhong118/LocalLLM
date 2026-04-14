@@ -113,7 +113,7 @@ class JsonStrippingChatOllama(ChatOllama):
         
         if start == -1 or end == -1:
             try:
-                terminal_keywords = ["final result:", "task complete", "i have found", "failure:", "cannot find", "summary of results", "the current", "value:", "based on the"]
+                terminal_keywords = ["final result:", "task complete", "i have found", "failure:", "cannot find", "summary of results", "the current", "value:", "based on the", "根据", "总结", "结果", "当前"]
                 if any(kw in text.lower() for kw in terminal_keywords):
                     wrapped_data = {
                         "thinking": f"Extracted text answer from fallback: {text[:200]}...",

@@ -93,10 +93,11 @@ async def run_agent_task(task_id: int, prompt: str):
         full_protocol = (
             f"{context_str}\n"
             "### RULES ###\n"
-            "1. JSON ONLY. NO CHAT. NO MARKDOWN.\n"
-            "2. STEP 1: MAKE PLAN IN 'memory' FIELD.\n"
-            "3. USE SKILLS: 'smart_search' for any search. 'click_element_by_text' for buttons.\n"
-            "4. NO HALLUCINATIONS. DON'T REPEAT PLAN.\n\n"
+            "1. STRICT JSON ONLY. NO CHAT. NO MARKDOWN.\n"
+            "2. NEVER output conversational text outside JSON. If providing the final answer, it MUST be wrapped inside: {\"action\": [{\"done\": {\"text\": \"YOUR ANSWER\"}}]}\n"
+            "3. STEP 1: MAKE PLAN IN 'memory' FIELD.\n"
+            "4. USE SKILLS: 'smart_search' for any search. 'click_element_by_text' for buttons.\n"
+            "5. NO HALLUCINATIONS. DON'T REPEAT PLAN.\n\n"
             "### SCHEMA ###\n"
             "{\"thinking\": \"Short logic\", \"memory\": \"Plan status\", \"action\": []}\n"
             f"### GOAL: {prompt} ###"
@@ -153,7 +154,7 @@ async def run_agent_task(task_id: int, prompt: str):
         is_success = is_done and history.is_successful() is not False
         
         if history.has_errors():
-            critical_errors = [e for e in history.errors() if not any(x in str(e).lower() for x in ["closed pipe", "resourcewarning", "connection closed"])]
+            critical_errors = [e for e in history.errors() if not any(x in str(e).lower() for x in ["closed pipe", "resourcewarning", "connection closed", "failed to parse"])]
             if critical_errors: is_success = False
             
         fail_keywords = ["i failed", "could not find", "unable to", "terminated", "no task results", "fail", "hallucination", "plan..."]
