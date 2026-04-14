@@ -110,18 +110,28 @@ export class AppRoot extends LitElement {
     @state()
     private _isInitialLoaded: boolean = false;
 
-    private _pollInterval?: number;
+    private _eventSource?: EventSource;
 
     override connectedCallback() {
         super.connectedCallback();
-        this._fetchTasks();
-        this._pollInterval = window.setInterval(() => this._fetchTasks(), 5000);
+        this._isLoading = true;
+        
+        this._eventSource = new EventSource('http://localhost:8000/tasks/stream');
+        this._eventSource.onmessage = (event) => {
+            this._tasks = JSON.parse(event.data);
+            this._isLoading = false;
+            this._isInitialLoaded = true;
+        };
+        this._eventSource.onerror = (err) => {
+            console.error("Task stream error:", err);
+            this._isLoading = false;
+        };
     }
 
     override disconnectedCallback() {
         super.disconnectedCallback();
-        if (this._pollInterval) {
-            clearInterval(this._pollInterval);
+        if (this._eventSource) {
+            this._eventSource.close();
         }
     }
 

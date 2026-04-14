@@ -8,6 +8,8 @@ from fastapi import FastAPI, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
+from fastapi.responses import StreamingResponse
+import json
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import database
@@ -234,6 +236,36 @@ async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
 def list_tasks(db: Session = Depends(get_db)):
     tasks = db.query(DBTask).order_by(DBTask.created_at.desc()).all()
     return tasks
+
+async def task_event_generator():
+    last_update = None
+    while True:
+        db = SessionLocal()
+        try:
+            latest_task = db.query(DBTask).order_by(DBTask.updated_at.desc()).first()
+            latest_out = db.query(DBOutput).order_by(DBOutput.created_at.desc()).first()
+            
+            current_update = None
+            if latest_task:
+                current_update = latest_task.updated_at
+            if latest_out and (current_update is None or latest_out.created_at > current_update):
+                current_update = latest_out.created_at
+                
+            if current_update != last_update:
+                last_update = current_update
+                tasks = db.query(DBTask).order_by(DBTask.created_at.desc()).all()
+                tasks_data = [TaskSchema.model_validate(t).model_dump(mode="json") for t in tasks]
+                yield f"data: {json.dumps(tasks_data)}\n\n"
+        except Exception as e:
+            print(f"SSE Error: {e}")
+        finally:
+            db.close()
+            
+        await asyncio.sleep(1)
+
+@app.get("/tasks/stream")
+async def stream_tasks():
+    return StreamingResponse(task_event_generator(), media_type="text/event-stream")
 
 @app.get("/tasks/{task_id}", response_model=TaskSchema)
 def get_task(task_id: int, db: Session = Depends(get_db)):
