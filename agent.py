@@ -9,6 +9,8 @@ from browser_use import Agent, BrowserSession
 
 # Local imports
 import config
+from langchain_ollama import ChatOllama
+from langchain_core.messages import SystemMessage, HumanMessage
 from database import SessionLocal, Task as DBTask, Output
 from llm_wrapper import JsonStrippingChatOllama
 from context_manager import get_relevant_context_str
@@ -89,6 +91,33 @@ async def run_agent_task(task_id: int, prompt: str):
         from skills import controller
         context_str = await get_relevant_context_str(db, prompt, log_path)
         
+        # --- ORCHESTRATOR STEP ---
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write("\n--- ORCHESTRATOR STEP ---\n")
+            
+        try:
+            planner = ChatOllama(model=config.LLM_MODEL, temperature=0.1)
+            sys_msg = SystemMessage(content=(
+                "You are an expert browser automation planner. "
+                "Formulate the user's request into a strict, unambiguous English directive followed by a numbered list of execution steps. "
+                "1. If the input is in another language, translate it to English.\n"
+                "2. Break it down into clear, atomic steps.\n"
+                "3. Do NOT output JSON. Output ONLY the directive and steps."
+            ))
+            usr_msg = HumanMessage(content=f"Context:\n{context_str}\n\nTask:\n{prompt}")
+            
+            plan_res = await planner.ainvoke([sys_msg, usr_msg])
+            orchestrated_prompt = plan_res.content
+            
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"Orchestrated Plan:\n{orchestrated_prompt}\n\n")
+                
+            prompt_for_agent = f"USER ORIGINAL: {prompt}\n\nORCHESTRATOR PLAN:\n{orchestrated_prompt}"
+        except Exception as e:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"Orchestrator failed: {e}\nFalling back to original prompt.\n\n")
+            prompt_for_agent = prompt
+
         # CAVEMAN PROTOCOL (Ultra-Terse)
         full_protocol = (
             f"{context_str}\n"
@@ -100,11 +129,11 @@ async def run_agent_task(task_id: int, prompt: str):
             "5. NO HALLUCINATIONS. DON'T REPEAT PLAN.\n\n"
             "### SCHEMA ###\n"
             "{\"thinking\": \"Short logic\", \"memory\": \"Plan status\", \"action\": []}\n"
-            f"### GOAL: {prompt} ###"
+            f"### GOAL: {prompt_for_agent} ###"
         )
 
         agent = Agent(
-            task=prompt,
+            task=prompt_for_agent,
             llm=llm,
             browser=browser,
             controller=controller, # Integrated Skills
