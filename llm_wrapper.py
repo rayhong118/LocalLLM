@@ -167,12 +167,13 @@ class JsonStrippingChatOllama(ChatOllama):
                 if isinstance(data, list):
                     data = {"action": data}
 
-                # Hallucination Guard: Catch 'plan' or 'action_input' before it gets wrapped as an action
-                for hallucination in ["plan", "action_input"]:
-                    if hallucination in data:
-                        val = str(data.pop(hallucination))
-                        data["thinking"] = (data.get("thinking", "") + "\n" + val).strip()
-                
+                # Aggressive Key Purge: Move all extra keys to thinking
+                valid_keys = {"thinking", "memory", "action"}
+                extra_keys = [k for k in data.keys() if k not in valid_keys]
+                for k in extra_keys:
+                    val = str(data.pop(k))
+                    data["thinking"] = (data.get("thinking", "") + f"\n{k}: {val}").strip()
+
                 if isinstance(data.get("action"), str) and data["action"].lower() in ["plan", "none", "null"]:
                     data["action"] = []
 
@@ -199,8 +200,23 @@ class JsonStrippingChatOllama(ChatOllama):
                         if "navigate" in act and "url" in act["navigate"]:
                             act["navigate"]["url"] = act["navigate"]["url"].replace("aspx.safeway.com", "safeway.com")
                         
-                        if "type" in act and "type_text" not in act:
-                            act["type_text"] = {"text": act.pop("type"), "index": act.pop("index", 0)}
+                        if "input" in act:
+                            val = act.pop("input")
+                            if isinstance(val, dict):
+                                idx = val.get("index", val.get("selector", 0))
+                                if isinstance(idx, str) and idx.isdigit(): idx = int(idx)
+                                elif isinstance(idx, str): idx = int(''.join(filter(str.isdigit, idx)) or 0)
+                                act["input_text"] = {"text": val.get("text", ""), "index": idx}
+                            
+                        if "click" in act:
+                            val = act.pop("click")
+                            if isinstance(val, dict):
+                                act["click_element"] = {"index": val.get("index", 0)}
+                            elif isinstance(val, int):
+                                act["click_element"] = {"index": val}
+                                
+                        if "type" in act and "input_text" not in act:
+                            act["input_text"] = {"text": act.pop("type"), "index": act.pop("index", 0)}
                         if ("press" in act or "press_key" in act) and "key_combination" not in act:
                             key = act.pop("press", act.pop("press_key", None))
                             act["key_combination"] = {"key_combination": key}

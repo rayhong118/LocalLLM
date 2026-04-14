@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 # browser-use imports
 from browser_use import Agent, BrowserSession
+from browser_use.agent.views import MessageCompactionSettings
 
 # Local imports
 import config
@@ -60,9 +61,11 @@ async def run_agent_task(task_id: int, prompt: str):
         ollama_options={
             "temperature": config.TEMPERATURE,
             "num_ctx": config.CONTEXT_WINDOW,
-            "num_predict": 4096,
+            "num_predict": 1024,
             "num_thread": 8,
-            "repeat_penalty": 1.2
+            "repeat_penalty": 1.3,
+            "top_k": 20,
+            "top_p": 0.8
         }
     )
     llm.log_path = log_path 
@@ -129,9 +132,14 @@ async def run_agent_task(task_id: int, prompt: str):
             "2. Final answer MUST be: {\"action\": [{\"done\": {\"text\": \"YOUR ANSWER\"}}]}\n"
             "3. Track progress in 'memory' field.\n"
             "4. USE SKILLS: 'smart_search' for search, 'click_element_by_text' for buttons.\n"
-            "5. If an action fails twice, try a different approach.\n\n"
+            "5. NO FAKE TOOLS. You are a browser. You CANNOT write_file, edit, or run commands. Only navigate, click, type, scroll, done.\n"
+            "6. NEVER REPEAT ACTIONS. If you are already at a URL, DO NOT navigate to it again. Look at the screen and click links instead.\n\n"
             "### SCHEMA ###\n"
             "{\"thinking\": \"Short logic\", \"memory\": \"Step progress\", \"action\": []}\n"
+            "### EXAMPLE ###\n"
+            "{\"thinking\": \"I see the coupons page. I need to click Frozen Foods.\", "
+            "\"memory\": \"Step 2/5: Navigate to Frozen Foods.\", "
+            "\"action\": [{\"click_element\": {\"index\": 14}}]}\n"
             f"### GOAL ###\n{prompt_for_agent}"
         )
 
@@ -147,7 +155,19 @@ async def run_agent_task(task_id: int, prompt: str):
             step_timeout=600,
             extend_system_message=full_protocol,
             max_actions_per_step=1,
-            include_attributes=["title", "type", "name", "role", "aria-label", "placeholder", "value"]
+            include_attributes=["title", "type", "role", "placeholder"],
+            # Message compaction: summarize old steps to save context
+            message_compaction=MessageCompactionSettings(
+                enabled=True,
+                compact_every_n_steps=5,
+                keep_last_items=3,
+                summary_max_chars=2000,
+            ),
+            # Loop detection: catch repeated actions fast
+            loop_detection_enabled=True,
+            loop_detection_window=5,
+            # Planning: replan quickly when stuck
+            planning_replan_on_stall=2,
         )
         
         history = await agent.run()
