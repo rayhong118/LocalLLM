@@ -47,7 +47,14 @@ class JsonStrippingChatOllama(ChatOllama):
         content = self._clean_raw_content(content)
 
         # Repetition Loop Safety: Truncate but try to keep closing braces if it looks like JSON
-        for seq in re.findall(r'(\s+\w+){3,}', content):
+        if len(content) > 8000:
+            print("DEBUG - Output extremely long, likely a repetition loop. Truncating.")
+            content = content[:2000]
+            if '{' in content and '}' not in content:
+                content += '"\n, "action": [], "thinking": "Loop detected" \n}'
+
+        # Catch repeated token patterns that might lack spaces
+        for seq in re.findall(r'([a-zA-Z_]{10,})', content):
              if content.count(seq) > 20:
                  print("DEBUG - Detected repetition loop. Truncating safely.")
                  content = content.split(seq)[0]

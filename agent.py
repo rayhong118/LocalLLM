@@ -63,9 +63,9 @@ async def run_agent_task(task_id: int, prompt: str):
             "num_ctx": config.CONTEXT_WINDOW,
             "num_predict": 1024,
             "num_thread": 8,
-            "repeat_penalty": 1.3,
-            "top_k": 20,
-            "top_p": 0.8
+            "repeat_penalty": 1.15,
+            "top_k": 40,
+            "top_p": 0.9
         }
     )
     llm.log_path = log_path 
@@ -133,7 +133,8 @@ async def run_agent_task(task_id: int, prompt: str):
             "3. Track progress in 'memory' field.\n"
             "4. USE SKILLS: 'smart_search' for search, 'click_element_by_text' for buttons.\n"
             "5. NO FAKE TOOLS. You are a browser. You CANNOT write_file, edit, or run commands. Only navigate, click, type, scroll, done.\n"
-            "6. NEVER REPEAT ACTIONS. If you are already at a URL, DO NOT navigate to it again. Look at the screen and click links instead.\n\n"
+            "6. NEVER REPEAT ACTIONS. If you are already at a URL, DO NOT navigate to it again. Look at the screen and click links instead.\n"
+            "7. DO NOT use the 'extract' action. Read the text on the screen yourself and output the final answer via 'done'.\n\n"
             "### SCHEMA ###\n"
             "{\"thinking\": \"Short logic\", \"memory\": \"Step progress\", \"action\": []}\n"
             "### EXAMPLE ###\n"
