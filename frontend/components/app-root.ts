@@ -107,6 +107,9 @@ export class AppRoot extends LitElement {
     @state()
     private _isLoading: boolean = false;
 
+    @state()
+    private _isInitialLoaded: boolean = false;
+
     private _pollInterval?: number;
 
     override connectedCallback() {
@@ -133,6 +136,7 @@ export class AppRoot extends LitElement {
             console.error("Failed to fetch tasks:", err);
         } finally {
             this._isLoading = false;
+            this._isInitialLoaded = true;
         }
     }
 
@@ -161,7 +165,13 @@ export class AppRoot extends LitElement {
                 ${this._currentPage === 'dashboard' ? html`
                     <task-form @task-created=${this._fetchTasks}></task-form>
                     <h2 style="margin: 2rem 0 1.5rem 0; color: #0f172a; font-size: 1.5rem;">Tasks</h2>
-                    <task-list .tasks=${this._tasks}></task-list>
+                    ${!this._isInitialLoaded ? html`
+                        <div style="display: flex; justify-content: center; align-items: center; padding: 4rem; color: #64748b; font-size: 1.1rem; gap: 0.75rem; border: 2px dashed #e2e8f0; border-radius: 12px;">
+                            <span class="spinner" style="width: 1.5rem; height: 1.5rem; border-width: 3px;"></span> Loading tasks...
+                        </div>
+                    ` : html`
+                        <task-list .tasks=${this._tasks}></task-list>
+                    `}
                 ` : html`
                     <context-manager></context-manager>
                 `}

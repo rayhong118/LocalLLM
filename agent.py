@@ -79,7 +79,9 @@ async def run_agent_task(task_id: int, prompt: str):
             "--mute-audio",
             "--no-sandbox",
             "--disable-infobars",
-            "--disable-dev-shm-usage"
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-software-rasterizer"
         ],
     )
 
