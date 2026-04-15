@@ -16,6 +16,7 @@ from database import SessionLocal, Task as DBTask, Output
 from llm_wrapper import JsonStrippingChatOllama
 from context_manager import get_relevant_context_str
 from browser_utils import cleanup_headless_chrome
+from stealth import inject_stealth, cleanup_dom
 
 # Set up logging
 logging.getLogger('browser_use').setLevel(logging.WARNING)
@@ -71,28 +72,42 @@ async def run_agent_task(task_id: int, prompt: str):
     llm.log_path = log_path 
 
     browser = BrowserSession(
-        headless=config.HEADLESS,
+        headless=False,  # CRITICAL: headed mode avoids most bot detection
+        channel="chrome",  # Use system Chrome — trusted by websites over bundled Chromium
         disable_security=True,
         minimum_wait_page_load_time=config.BROWSER_WAIT_TIME,
         wait_for_network_idle_page_load_time=config.BROWSER_WAIT_TIME,
+        wait_between_actions=0.8,  # Human-like delay between actions
         user_data_dir=".browser_session_web",
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         viewport={"width": 1280, "height": 720},
         window_size={"width": 1280, "height": 720},
+        # DOM size reduction: iframes are HUGE context consumers
+        cross_origin_iframes=False,  # Skip ad iframes, tracking iframes, etc.
+        max_iframes=3,              # Only process 3 most relevant iframes
+        max_iframe_depth=1,         # Don't recurse into nested iframes
         args=[
-            "--disable-blink-features=AutomationControlled", 
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            "--disable-extensions",
+            "--disable-blink-features=AutomationControlled",
             "--mute-audio",
             "--no-sandbox",
             "--disable-infobars",
             "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-software-rasterizer"
         ],
     )
 
     try:
         from skills import controller
+        
+        # Inject stealth anti-detection scripts before any navigation
+        await inject_stealth(browser)
+        
+        # DOM cleanup callback — runs before each agent step to strip junk elements
+        async def _on_new_step(agent_state, model_output, step_number):
+            try:
+                await cleanup_dom(browser)
+            except Exception:
+                pass  # Non-fatal
+        
         context_str = await get_relevant_context_str(db, prompt, log_path)
         
         # --- ORCHESTRATOR STEP ---
@@ -105,8 +120,11 @@ async def run_agent_task(task_id: int, prompt: str):
                 "You are a browser automation planner. Rewrite the user's task as:\n"
                 "Line 1: One-sentence GOAL in English.\n"
                 "Lines 2-6: Numbered steps (MAX 5). Each step = one browser action.\n"
-                "CRITICAL: Copy exact addresses, zip codes, URLs, and store names from Context into your steps VERBATIM. "
-                "Do NOT paraphrase or omit verification details from Context.\n"
+                "CRITICAL RULES:\n"
+                "- Copy exact addresses, zip codes, URLs, and store names from Context into your steps VERBATIM.\n"
+                "- Do NOT paraphrase or omit verification details from Context.\n"
+                "- If Context contains PROHIBITIONS (e.g., 'Do NOT search', 'Do NOT use search box'), "
+                "you MUST include them as 'FORBIDDEN:' lines at the end of your plan.\n"
                 "Be ULTRA TERSE. No explanations. No JSON."
             ))
             usr_msg = HumanMessage(content=f"Context:\n{context_str}\n\nTask:\n{prompt}")
@@ -118,6 +136,19 @@ async def run_agent_task(task_id: int, prompt: str):
             plan_lines = orchestrated_plan.split('\n')
             if len(plan_lines) > 8:
                 orchestrated_plan = '\n'.join(plan_lines[:8])
+            
+            # Auto-inject key prohibitions from context that the orchestrator may have dropped
+            lower_ctx = context_str.lower() if context_str else ""
+            prohibitions = []
+            if "do not search" in lower_ctx or "do not use search" in lower_ctx:
+                prohibitions.append("FORBIDDEN: Do NOT use the search box. Navigate via sidebar/menu categories ONLY.")
+            if "do not summarize" in lower_ctx:
+                prohibitions.append("FORBIDDEN: Do NOT summarize. List every matching item individually.")
+            if "offer details" in lower_ctx:
+                prohibitions.append("MANDATORY: You MUST click 'Offer Details' on each coupon to verify eligibility.")
+            
+            if prohibitions:
+                orchestrated_plan += "\n" + "\n".join(prohibitions)
             
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"Orchestrated Plan:\n{orchestrated_plan}\n\n")
@@ -134,12 +165,13 @@ async def run_agent_task(task_id: int, prompt: str):
             "1. STRICT JSON ONLY. NO CHAT. NO MARKDOWN. NO INTRODUCTIONS.\n"
             "2. Final answer MUST be: {\"action\": [{\"done\": {\"text\": \"YOUR ANSWER\"}}]}\n"
             "3. Track progress in 'memory' field.\n"
-            "4. USE SKILLS: 'smart_search' for search, 'click_element_by_text' for buttons.\n"
+            "4. USE SKILLS: 'click_element_by_text' for buttons. Only use 'smart_search' if no FORBIDDEN rule prohibits it.\n"
             "5. NO FAKE TOOLS. You are a browser. You CANNOT write_file, edit, or run commands. Only navigate, click, type, scroll, done.\n"
             "6. NEVER REPEAT ACTIONS. If you clicked something and it did not change the page, SKIP IT and move to the next step.\n"
             "7. DO NOT use the 'extract' action. Read the text on the screen yourself and output the final answer via 'done'.\n"
             "8. If a verification step is ALREADY SATISFIED (e.g. correct store is already shown), mark it done in memory and IMMEDIATELY move to the next step.\n"
-            "9. If you are stuck on a SECURITY CHECK, CAPTCHA, 'Just a moment...', or 'Verify you are human' page and cannot proceed, IMMEDIATELY fail by outputting: {\"action\": [{\"done\": {\"text\": \"Security check encountered\"}}]}\n\n"
+            "9. If you are stuck on a SECURITY CHECK, CAPTCHA, 'Just a moment...', or 'Verify you are human' page and cannot proceed, IMMEDIATELY fail by outputting: {\"action\": [{\"done\": {\"text\": \"Security check encountered\"}}]}\n"
+            "10. OBEY ALL 'FORBIDDEN:' AND 'MANDATORY:' LINES IN THE GOAL. They are NON-NEGOTIABLE constraints.\n\n"
             "### SCHEMA ###\n"
             "{\"thinking\": \"Short logic\", \"memory\": \"Step progress\", \"action\": []}\n"
             "### EXAMPLE ###\n"
@@ -162,13 +194,14 @@ async def run_agent_task(task_id: int, prompt: str):
             extend_system_message=full_protocol,
             max_actions_per_step=1,
             include_attributes=["title", "type", "role", "placeholder"],
-            max_clickable_elements_length=5000,
+            max_clickable_elements_length=3000,  # Reduced from 5000 to prevent context overflow
+            register_new_step_callback=_on_new_step,  # DOM cleanup before each step
             # Message compaction: summarize old steps to save context
             message_compaction=MessageCompactionSettings(
                 enabled=True,
-                compact_every_n_steps=3,
+                compact_every_n_steps=2,  # Compact more often to keep context lean
                 keep_last_items=2,
-                summary_max_chars=1500,
+                summary_max_chars=1000,  # Shorter summaries
             ),
             # Loop detection: catch repeated actions fast
             loop_detection_enabled=True,

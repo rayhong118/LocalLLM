@@ -19,26 +19,30 @@ class JsonStrippingChatOllama(ChatOllama):
     _consecutive_failures: int = 0
 
     async def ainvoke(self, messages, output_format=None, **kwargs) -> ChatInvokeCompletion:
-        # 0. Early intercept for Bot Detection in the prompt DOM
-        incoming_text = " ".join([str(getattr(m, 'content', '')) for m in messages]).lower()
-        bot_signatures = [
-            "verify you are human", "attention required! | cloudflare", 
-            "checking your browser before accessing", "security check to access",
-            "just a moment...", "are you a robot", "verifying you are human",
-            "please stand by, while we are checking your browser"
-        ]
-        
-        if output_format and any(sig in incoming_text for sig in bot_signatures):
-            print(f"DEBUG - Bot detection intercepted in prompt DOM. Failing fast.")
-            wrapped_data = {
-                "thinking": "Bot detection or CAPTCHA present on page.",
-                "memory": "BLOCKED. Security check.",
-                "action": [{"done": {"text": "security check encountered"}}]
-            }
-            try:
-                return ChatInvokeCompletion(completion=output_format.model_validate(wrapped_data), usage=None)
-            except Exception as e:
-                print(f"DEBUG - Fast fail validation error: {e}")
+        # 0. Early intercept for Bot Detection in the page DOM
+        # IMPORTANT: Only scan the LAST message (page state), not system prompts
+        # which contain our own protocol mentioning "security check"
+        if messages and output_format:
+            last_msg = str(getattr(messages[-1], 'content', '')).lower()
+            bot_signatures = [
+                "verify you are human", "attention required! | cloudflare", 
+                "checking your browser before accessing", "security check to access",
+                "just a moment...", "are you a robot", "verifying you are human",
+                "please stand by, while we are checking your browser",
+                "enable javascript and cookies to continue",
+            ]
+            
+            if any(sig in last_msg for sig in bot_signatures):
+                print(f"DEBUG - Bot detection intercepted in page DOM. Failing fast.")
+                wrapped_data = {
+                    "thinking": "Bot detection or CAPTCHA present on page.",
+                    "memory": "BLOCKED. Security check.",
+                    "action": [{"done": {"text": "security check encountered"}}]
+                }
+                try:
+                    return ChatInvokeCompletion(completion=output_format.model_validate(wrapped_data), usage=None)
+                except Exception as e:
+                    print(f"DEBUG - Fast fail validation error: {e}")
 
         ollama_messages = OllamaMessageSerializer.serialize_messages(messages)
         format_param = output_format.model_json_schema() if output_format else None
@@ -60,6 +64,24 @@ class JsonStrippingChatOllama(ChatOllama):
         content = await call_llm(format_param)
         if not content and format_param:
             content = await call_llm("json")
+        
+        # If still empty, likely context overflow — retry with truncated messages
+        if not content and len(ollama_messages) > 2:
+            print("DEBUG - LLM returned empty. Likely context overflow. Retrying with truncated messages...")
+            # Keep only system message + last message (current page state)
+            truncated = [ollama_messages[0], ollama_messages[-1]]
+            
+            # Truncate the last message content if it's extremely long
+            if isinstance(truncated[-1].get('content', ''), str) and len(truncated[-1]['content']) > 8000:
+                truncated[-1] = dict(truncated[-1])
+                truncated[-1]['content'] = truncated[-1]['content'][:8000] + "\n\n[DOM TRUNCATED - page too large. Focus on visible elements and complete your current goal.]"
+            
+            orig_messages = ollama_messages
+            ollama_messages = truncated
+            content = await call_llm(format_param)
+            if not content:
+                content = await call_llm("json")
+            ollama_messages = orig_messages  # restore
         
         if not content:
             raise ModelProviderError(message="LLM returned no content.", model=self.name)
