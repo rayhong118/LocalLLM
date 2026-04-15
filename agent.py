@@ -117,14 +117,14 @@ async def run_agent_task(task_id: int, prompt: str):
         try:
             planner = ChatOllama(model=config.LLM_MODEL, temperature=0.1)
             sys_msg = SystemMessage(content=(
-                "You are a browser automation planner. Rewrite the user's task as:\n"
+                "You are a browser automation planner. Rewrite the user's task using the Goal-Driven Execution pattern:\n"
                 "Line 1: One-sentence GOAL in English.\n"
-                "Lines 2-6: Numbered steps (MAX 5). Each step = one browser action.\n"
+                "Remaining lines: Numbered steps (MAX 5). Each step MUST include a verify condition using '-> verify:'.\n"
+                "Format: X. [Action to take] -> verify: [What must be visible/happening to prove success]\n"
                 "CRITICAL RULES:\n"
                 "- Copy exact addresses, zip codes, URLs, and store names from Context into your steps VERBATIM.\n"
                 "- Do NOT paraphrase or omit verification details from Context.\n"
-                "- If Context contains PROHIBITIONS (e.g., 'Do NOT search', 'Do NOT use search box'), "
-                "you MUST include them as 'FORBIDDEN:' lines at the end of your plan.\n"
+                "- If Context contains PROHIBITIONS (e.g., 'Do NOT search'), include them as 'FORBIDDEN:' lines at the end.\n"
                 "Be ULTRA TERSE. No explanations. No JSON."
             ))
             usr_msg = HumanMessage(content=f"Context:\n{context_str}\n\nTask:\n{prompt}")
@@ -137,18 +137,21 @@ async def run_agent_task(task_id: int, prompt: str):
             if len(plan_lines) > 8:
                 orchestrated_plan = '\n'.join(plan_lines[:8])
             
-            # Auto-inject key prohibitions from context that the orchestrator may have dropped
-            lower_ctx = context_str.lower() if context_str else ""
+            # Auto-inject key constraints from context and prompt that the orchestrator may have dropped
+            # This enables generic task scaling: simply prefix rules with FORBIDDEN: or MANDATORY:
+            combined_instructions = (context_str or "") + "\n" + (prompt or "")
             prohibitions = []
-            if "do not search" in lower_ctx or "do not use search" in lower_ctx:
-                prohibitions.append("FORBIDDEN: Do NOT use the search box. Navigate via sidebar/menu categories ONLY.")
-            if "do not summarize" in lower_ctx:
-                prohibitions.append("FORBIDDEN: Do NOT summarize. List every matching item individually.")
-            if "offer details" in lower_ctx:
-                prohibitions.append("MANDATORY: You MUST click 'Offer Details' on each coupon to verify eligibility.")
+            
+            for line in combined_instructions.split('\n'):
+                line_stripped = line.strip()
+                # Dynamically extract any constraint the user passed
+                if line_stripped.startswith("FORBIDDEN:") or line_stripped.startswith("MANDATORY:"):
+                    # Avoid adding duplicates if the Orchestrator LLM already successfully included them
+                    if line_stripped not in orchestrated_plan:
+                        prohibitions.append(line_stripped)
             
             if prohibitions:
-                orchestrated_plan += "\n" + "\n".join(prohibitions)
+                orchestrated_plan += "\n\n" + "\n".join(prohibitions)
             
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"Orchestrated Plan:\n{orchestrated_plan}\n\n")
@@ -159,25 +162,17 @@ async def run_agent_task(task_id: int, prompt: str):
                 f.write(f"Orchestrator failed: {e}\nFalling back to original prompt.\n\n")
             prompt_for_agent = prompt
 
-        # CAVEMAN PROTOCOL (Ultra-Terse) — context already baked into orchestrator plan
+        # CAVEMAN PROTOCOL (Simplified for Goal-Driven Execution)
         full_protocol = (
             "### RULES ###\n"
-            "1. STRICT JSON ONLY. NO CHAT. NO MARKDOWN. NO INTRODUCTIONS.\n"
+            "1. STRICT JSON ONLY. NO CHAT. NO MARKDOWN.\n"
             "2. Final answer MUST be: {\"action\": [{\"done\": {\"text\": \"YOUR ANSWER\"}}]}\n"
-            "3. Track progress in 'memory' field.\n"
-            "4. USE SKILLS: 'click_element_by_text' for buttons. Only use 'smart_search' if no FORBIDDEN rule prohibits it.\n"
-            "5. NO FAKE TOOLS. You are a browser. You CANNOT write_file, edit, or run commands. Only navigate, click, type, scroll, done.\n"
-            "6. NEVER REPEAT ACTIONS. If you clicked something and it did not change the page, SKIP IT and move to the next step.\n"
-            "7. DO NOT use the 'extract' action. Read the text on the screen yourself and output the final answer via 'done'.\n"
-            "8. If a verification step is ALREADY SATISFIED (e.g. correct store is already shown), mark it done in memory and IMMEDIATELY move to the next step.\n"
-            "9. If you are stuck on a SECURITY CHECK, CAPTCHA, 'Just a moment...', or 'Verify you are human' page and cannot proceed, IMMEDIATELY fail by outputting: {\"action\": [{\"done\": {\"text\": \"Security check encountered\"}}]}\n"
-            "10. OBEY ALL 'FORBIDDEN:' AND 'MANDATORY:' LINES IN THE GOAL. They are NON-NEGOTIABLE constraints.\n\n"
+            "3. Execute the GOAL step-by-step. For each step, you MUST satisfy its 'verify:' condition before moving on.\n"
+            "4. NEVER repeat an action if it didn't change the page. Try a different approach.\n"
+            "5. If you hit a Security Check or CAPTCHA, immediately fail using the 'done' action.\n"
+            "6. OBEY ALL 'FORBIDDEN:' AND 'MANDATORY:' constraints strictly.\n"
             "### SCHEMA ###\n"
             "{\"thinking\": \"Short logic\", \"memory\": \"Step progress\", \"action\": []}\n"
-            "### EXAMPLE ###\n"
-            "{\"thinking\": \"I see the coupons page. I need to click Frozen Foods.\", "
-            "\"memory\": \"Step 2/5: Navigate to Frozen Foods.\", "
-            "\"action\": [{\"click_element\": {\"index\": 14}}]}\n"
             f"### GOAL ###\n{prompt_for_agent}"
         )
 

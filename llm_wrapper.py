@@ -252,10 +252,6 @@ class JsonStrippingChatOllama(ChatOllama):
                 
                 if "action" in data and isinstance(data["action"], list):
                     for act in data["action"]:
-                        # URL Sanitization: Prevent aspx.safeway.com hallucinations
-                        if "navigate" in act and "url" in act["navigate"]:
-                            act["navigate"]["url"] = act["navigate"]["url"].replace("aspx.safeway.com", "safeway.com")
-                        
                         if "input" in act:
                             val = act.pop("input")
                             if isinstance(val, dict):
