@@ -70,7 +70,7 @@ DOM_CLEANUP_JS = """
     // 1. Tag-based exclusions: elements that are never useful for agent interaction
     const JUNK_TAGS = ['noscript', 'svg', 'path', 'defs', 'clippath',
                        'lineargradient', 'radialgradient', 'symbol', 'use',
-                       'footer', 'aside'];
+                       'footer', 'aside', 'style', 'script', 'nav', 'map'];
     JUNK_TAGS.forEach(tag => {
         document.querySelectorAll(tag).forEach(el => {
             el.setAttribute(EXCLUDE_ATTR, 'true');
@@ -82,63 +82,51 @@ DOM_CLEANUP_JS = """
         // Ads and tracking
         '[class*="ad-"]', '[class*="ads-"]', '[class*="advert"]',
         '[id*="google_ads"]', '[id*="ad-container"]',
-        'iframe[src*="doubleclick"]', 'iframe[src*="googlesyndication"]',
+        'iframe',
         
         // Social media widgets
-        '[class*="social-share"]', '[class*="share-button"]',
-        '[class*="social-icons"]',
+        '[class*="social-"]', '[class*="share-"]',
         
-        // Cookie banners and popups
-        '[class*="cookie-banner"]', '[class*="cookie-consent"]',
-        '[id*="cookie"]', '[class*="gdpr"]',
+        // Cookie and Chat popups
+        '[class*="cookie"]', '[id*="cookie"]', '[class*="gdpr"]',
+        '[class*="chat"]', '[id*="intercom"]', '[id*="drift"]',
         
-        // Chat widgets
-        '[class*="chat-widget"]', '[id*="intercom"]',
-        '[id*="drift-widget"]', '[class*="helpscout"]',
-        
-        // Navigation noise (headers/nav bars are huge DOM consumers)
-        // Be careful: only exclude secondary/utility navs, not the main nav
-        '[class*="utility-nav"]', '[class*="secondary-nav"]',
-        '[class*="breadcrumb"]',
+        // Navigation noise (mega-menus are DOM killers)
+        '[class*="mega-menu"]', '[id*="mega-menu"]', '[class*="dropdown-menu"]',
+        '[role="navigation"]', '[class*="main-nav"]', '[class*="utility-nav"]',
+        '[aria-label*="Menu"]', 
+
+        // Product Carousels & Recommendations (bloat)
+        '[class*="carousel"]', '[class*="recommend"]', '[class*="similar"]',
         
         // Decorative/cosmetic
-        '[aria-hidden="true"]:not(button):not(a):not(input)',
-        '[role="presentation"]',
-        '[class*="skeleton"]', '[class*="shimmer"]',
-        '[class*="placeholder-"]',
+        '[aria-hidden="true"]:not(button):not(input)',
+        '[role="presentation"]', '[class*="skeleton"]', '[class*="shimmer"]',
+        '[class*="placeholder"]',
         
-        // Off-screen / hidden menus (often huge)
-        '[class*="offcanvas"]', '[class*="off-canvas"]',
+        // Hidden Modals and Drawers
+        '[class*="modal-dialog"]', '[class*="offcanvas"]', '[class*="overlay"]'
     ];
     
     JUNK_SELECTORS.forEach(selector => {
         try {
             document.querySelectorAll(selector).forEach(el => {
-                // Don't exclude elements that are interactive or contain interactive children
-                const hasInteractive = el.querySelector('input, button, select, textarea, a[href]');
-                if (!hasInteractive && !el.matches('input, button, select, textarea, a[href]')) {
-                    el.setAttribute(EXCLUDE_ATTR, 'true');
-                }
-            });
-        } catch(e) {} // Skip invalid selectors
-    });
-
-    // 3. Large hidden elements: anything display:none or visibility:hidden with lots of children
-    document.querySelectorAll('*').forEach(el => {
-        try {
-            const style = window.getComputedStyle(el);
-            if ((style.display === 'none' || style.visibility === 'hidden') && el.children.length > 3) {
+                // To be aggressive, we don't care about interactive children inside ads/menus
                 el.setAttribute(EXCLUDE_ATTR, 'true');
-            }
+            });
         } catch(e) {}
     });
 
-    // 4. Duplicate/repetitive elements: if there are >20 siblings with the same tag+class,
-    //    mark all but the first 10 (common in product grids, search results, etc.)
+    // 3. Fast hidden element culling (skipping costly computed styles if possible)
+    document.querySelectorAll('[style*="display: none"], [style*="visibility: hidden"], [hidden]').forEach(el => {
+        el.setAttribute(EXCLUDE_ATTR, 'true');
+    });
+
+    // 4. Hyper-aggressive repetition cull: limit massive product grids
     const containers = document.querySelectorAll('ul, ol, div[class], section');
     containers.forEach(container => {
         const children = Array.from(container.children);
-        if (children.length > 20) {
+        if (children.length > 5) {
             // Group by tag+class fingerprint
             const groups = {};
             children.forEach(child => {
@@ -147,9 +135,9 @@ DOM_CLEANUP_JS = """
                 groups[key].push(child);
             });
             Object.values(groups).forEach(group => {
-                if (group.length > 15) {
-                    // Keep first 10, mark rest for exclusion
-                    group.slice(10).forEach(el => {
+                if (group.length > 4) {
+                    // Keep first 3 to prove it's a list, mark rest for exclusion
+                    group.slice(3).forEach(el => {
                         el.setAttribute(EXCLUDE_ATTR, 'true');
                     });
                 }

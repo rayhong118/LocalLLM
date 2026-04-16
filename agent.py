@@ -204,33 +204,36 @@ async def run_agent_task(task_id: int, prompt: str):
             # Planning: replan quickly when stuck
             planning_replan_on_stall=2,
         )
-        
-        history = await agent.run()
-        
-        # Log Step-by-Step History
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write("\n--- STEP-BY-STEP EXECUTION LOG ---\n")
-            for i, h in enumerate(history.history):
-                f.write(f"\n[Step {i+1}]\n")
-                if h.model_output:
-                    thinking = getattr(h.model_output, "thinking", "No thinking provided")
-                    memory = getattr(h.model_output, "memory", None)
-                    f.write(f"THINKING: {thinking}\n")
-                    if memory:
-                        f.write(f"MEMORY: {memory}\n")
-                    
-                    if h.model_output.action:
-                        for act_idx, act in enumerate(h.model_output.action):
-                            act_json = act.model_dump_json(exclude_none=True)
-                            f.write(f"ACTION {act_idx + 1}: {act_json}\n")
-                
-                if h.result:
-                    for res_idx, res in enumerate(h.result):
-                        status = "SUCCESS" if not res.is_done and not getattr(res, "error", None) else "FINISH/ERROR"
-                        content = res.extracted_content or res.error or "Action concluded."
-                        f.write(f"RESULT {res_idx + 1} ({status}): {content[:500]}\n")
-            f.write("\n--- END OF EXECUTION LOG ---\n\n")
-        
+        history = None
+        try:
+            history = await agent.run()
+        finally:
+            # Fallback to internal agent history if run() didn't complete cleanly
+            history_to_log = history if history else getattr(agent, 'history', None)
+            
+            if history_to_log and hasattr(history_to_log, 'history'):
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write("\n--- STEP-BY-STEP EXECUTION LOG ---\n")
+                    for i, h in enumerate(history_to_log.history):
+                        f.write(f"\n[Step {i+1}]\n")
+                        if h.model_output:
+                            thinking = getattr(h.model_output, "thinking", "No thinking provided")
+                            memory = getattr(h.model_output, "memory", None)
+                            f.write(f"THINKING: {thinking}\n")
+                            if memory:
+                                f.write(f"MEMORY: {memory}\n")
+                            
+                            if h.model_output.action:
+                                for act_idx, act in enumerate(h.model_output.action):
+                                    act_json = act.model_dump_json(exclude_none=True)
+                                    f.write(f"ACTION {act_idx + 1}: {act_json}\n")
+                        
+                        if h.result:
+                            for res_idx, res in enumerate(h.result):
+                                status = "SUCCESS" if not res.is_done and not getattr(res, "error", None) else "FINISH/ERROR"
+                                content = res.extracted_content or res.error or "Action concluded."
+                                f.write(f"RESULT {res_idx + 1} ({status}): {str(content)[:500]}\n")
+                    f.write("\n--- END OF EXECUTION LOG ---\n\n")
         # Determine Success/Result
         final_res = history.final_result() or "No result extracted"
         if final_res == "No result extracted" and history.history:
