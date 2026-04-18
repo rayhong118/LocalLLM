@@ -122,28 +122,9 @@ DOM_CLEANUP_JS = """
         el.setAttribute(EXCLUDE_ATTR, 'true');
     });
 
-    // 4. Hyper-aggressive repetition cull: limit massive product grids
-    const containers = document.querySelectorAll('ul, ol, div[class], section');
-    containers.forEach(container => {
-        const children = Array.from(container.children);
-        if (children.length > 5) {
-            // Group by tag+class fingerprint
-            const groups = {};
-            children.forEach(child => {
-                const key = child.tagName + '|' + (child.className || '');
-                if (!groups[key]) groups[key] = [];
-                groups[key].push(child);
-            });
-            Object.values(groups).forEach(group => {
-                if (group.length > 4) {
-                    // Keep first 3 to prove it's a list, mark rest for exclusion
-                    group.slice(3).forEach(el => {
-                        el.setAttribute(EXCLUDE_ATTR, 'true');
-                    });
-                }
-            });
-        }
-    });
+    // 4. (Disabled) Hyper-aggressive repetition cull: limit massive product grids
+    // We determined that this was inadvertently hiding 4th+ items in the coupon grid, 
+    // making them unclickable by the agent. We rely on standard DOM truncation now.
     
     return document.querySelectorAll('[' + EXCLUDE_ATTR + '="true"]').length;
 })();

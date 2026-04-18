@@ -148,9 +148,12 @@ class JsonStrippingChatOllama(ChatOllama):
 
     def _clean_raw_content(self, text: str) -> str:
         """Removes non-JSON blocks like <thought> or markdown wrappers."""
-        for tag in ['thought', 'reasoning', 'thinking']:
-            if f'<{tag}>' in text:
-                text = text.split(f'</{tag}>')[-1]
+        # Strip fully closed or unclosed <think>/<thought>/<reasoning> blocks
+        # If unclosed, it strips from the tag to the end of the text.
+        text = re.sub(r'<(thought|reasoning|thinking|think)>.*?(?:</\1>|$)', '', text, flags=re.IGNORECASE | re.DOTALL)
+        
+        # Strip generic <action> wrapper if it surrounds JSON
+        text = re.sub(r'<action>\s*([\[{].*?[\]}])\s*</action>', r'\1', text, flags=re.IGNORECASE | re.DOTALL)
         
         text = text.replace('---<channel|>', '').replace('---', '')
 
@@ -209,6 +212,15 @@ class JsonStrippingChatOllama(ChatOllama):
                         "action": [{"done": {"text": text[:2000]}}]
                     }
                     return schema.model_validate(wrapped_data)
+                
+                if "next steps:" in lower_text or "progress:" in lower_text:
+                    wrapped_data = {
+                        "thinking": f"Extracted task progress: {text[:200]}...",
+                        "memory": "Model outputted plain text plan instead of JSON action.",
+                        "action": []
+                    }
+                    return schema.model_validate(wrapped_data)
+                    
                 return None
             except Exception:
                 return None
@@ -244,7 +256,7 @@ class JsonStrippingChatOllama(ChatOllama):
                         data["action"] = [data["action"]]
                     elif isinstance(data["action"], str):
                         lower_act = data["action"].lower()
-                        halluc_verbs = ["plan", "thinking", "action", "step", "goal", "click", "type", "scroll", "wait", "press", "open", "navigate"]
+                        halluc_verbs = ["plan", "thinking", "action", "step", "goal", "click", "type", "scroll", "wait", "press", "open", "navigate", "smart_click", "smart_type", "scroll_to_text", "nav_to_url", "safeway_"]
                         if not any(lower_act.startswith(h) for h in halluc_verbs):
                             data["action"] = [{"done": {"text": data["action"]}}]
                         else:
@@ -272,9 +284,30 @@ class JsonStrippingChatOllama(ChatOllama):
                         if ("press" in act or "press_key" in act) and "key_combination" not in act:
                             key = act.pop("press", act.pop("press_key", None))
                             act["key_combination"] = {"key_combination": key}
+                        
+                        if "search_page" in act:
+                            if isinstance(act["search_page"], str):
+                                act["search_page"] = {"pattern": act["search_page"]}
+                            elif isinstance(act["search_page"], dict) and "pattern" not in act["search_page"]:
+                                act["search_page"]["pattern"] = act["search_page"].pop("text", act["search_page"].pop("query", ""))
+                        if "find_elements" in act:
+                            if isinstance(act["find_elements"], str):
+                                act["find_elements"] = {"selector": act["find_elements"]}
+                            elif isinstance(act["find_elements"], dict) and "selector" not in act["find_elements"]:
+                                act["find_elements"]["selector"] = act["find_elements"].pop("css_selector", act["find_elements"].pop("query", ""))
+                            
                         for field in ["click_element", "hover_element", "scroll_to_element"]:
                             if field in act and isinstance(act[field], dict) and "index" not in act[field]:
                                 act[field]["index"] = 0
+                                
+                        # Handle smart_click / smart_type / scroll_to_text if parameters are loose
+                        if "smart_click" in act and isinstance(act["smart_click"], str):
+                            act["smart_click"] = {"text": act["smart_click"]}
+                        if "smart_type" in act and isinstance(act["smart_type"], dict):
+                            if "label" not in act["smart_type"]:
+                                act["smart_type"]["label"] = act["smart_type"].pop("text", "")
+                        if "scroll_to_text" in act and isinstance(act["scroll_to_text"], str):
+                            act["scroll_to_text"] = {"text": act["scroll_to_text"]}
                 
                 # Final safety purge: remove any straggler keys before validation
                 final_extra = [k for k in data.keys() if k not in valid_keys]

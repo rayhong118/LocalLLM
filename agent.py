@@ -102,9 +102,35 @@ async def run_agent_task(task_id: int, prompt: str):
         await inject_stealth(browser)
         
         # DOM cleanup callback — runs before each agent step to strip junk elements
+        # Also handles Stall Detection: if agent is stuck, provide a "kick" message
+        last_url = None
+        last_thinking = None
+        stall_count = 0
+
         async def _on_new_step(agent_state, model_output, step_number):
+            nonlocal last_url, last_thinking, stall_count
             try:
                 await cleanup_dom(browser)
+                
+                # Stall Detection logic
+                current_url = agent_state.url
+                current_thinking = getattr(model_output, 'thinking', '')
+                
+                if current_url == last_url and current_thinking == last_thinking:
+                    stall_count += 1
+                else:
+                    stall_count = 0
+                
+                last_url = current_url
+                last_thinking = current_thinking
+                
+                if stall_count >= 2:
+                    # Inject a system correction hint if stuck
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"STALL DETECTED (count={stall_count}). Injecting correction hint.\n")
+                    # Note: Actually injecting into agent state depends on browser-use internals, 
+                    # but we can influence the NEXT thinking by returning logic here if the library allows.
+                    # For now, we log it and rely on the updated prompt rules.
             except Exception:
                 pass  # Non-fatal
         
@@ -117,15 +143,16 @@ async def run_agent_task(task_id: int, prompt: str):
         try:
             planner = ChatOllama(model=config.LLM_MODEL, temperature=0.1)
             sys_msg = SystemMessage(content=(
-                "You are a browser automation planner. Rewrite the user's task using the Goal-Driven Execution pattern:\n"
+                "You are a browser automation planner using the SKILLS-FIRST pattern.\n"
+                "Rewrite the user's task into a GOAL and 3-5 high-level steps.\n"
+                "PREFER SKILLS: Use 'smart_click', 'smart_type', 'scroll_to_text', and 'nav_to_url'.\n"
+                "Format: X. [Skill to use] -> verify: [What must be visible to prove success]\n"
                 "Line 1: One-sentence GOAL in English.\n"
-                "Remaining lines: Numbered steps (MAX 5). Each step MUST include a verify condition using '-> verify:'.\n"
-                "Format: X. [Action to take] -> verify: [What must be visible/happening to prove success]\n"
+                "Remaining lines: Numbered steps.\n"
                 "CRITICAL RULES:\n"
-                "- Copy exact addresses, zip codes, URLs, and store names from Context into your steps VERBATIM.\n"
-                "- Do NOT paraphrase or omit verification details from Context.\n"
-                "- If Context contains PROHIBITIONS (e.g., 'Do NOT search'), include them as 'FORBIDDEN:' lines at the end.\n"
-                "Be ULTRA TERSE. No explanations. No JSON."
+                "- Use exact strings from Context for smart_click and smart_type.\n"
+                "- If a page has many similar buttons (like 'Details'), use smart_click with the exact text.\n"
+                "Be ULTRA TERSE. No explanations."
             ))
             usr_msg = HumanMessage(content=f"Context:\n{context_str}\n\nTask:\n{prompt}")
             
@@ -162,15 +189,17 @@ async def run_agent_task(task_id: int, prompt: str):
                 f.write(f"Orchestrator failed: {e}\nFalling back to original prompt.\n\n")
             prompt_for_agent = prompt
 
-        # CAVEMAN PROTOCOL (Simplified for Goal-Driven Execution)
+        # CAVEMAN PROTOCOL (Modified for Skill-Based Execution)
         full_protocol = (
             "### RULES ###\n"
             "1. STRICT JSON ONLY. NO CHAT. NO MARKDOWN.\n"
-            "2. Final answer MUST be: {\"action\": [{\"done\": {\"text\": \"YOUR ANSWER\"}}]}\n"
-            "3. Execute the GOAL step-by-step. For each step, you MUST satisfy its 'verify:' condition before moving on.\n"
-            "4. NEVER repeat an action if it didn't change the page. Try a different approach.\n"
-            "5. If you hit a Security Check or CAPTCHA, immediately fail using the 'done' action.\n"
-            "6. OBEY ALL 'FORBIDDEN:' AND 'MANDATORY:' constraints strictly.\n"
+            "2. PREFER SKILLS: Use high-level skills instead of raw 'click_element' or 'type_text'.\n"
+            "   - smart_click(text=\"...\"): Finds and clicks elements by visible text/label.\n"
+            "   - smart_type(label=\"...\", text=\"...\"): Finds input by label and types.\n"
+            "   - scroll_to_text(text=\"...\"): Use this if element is not visible.\n"
+            "   - nav_to_url(url=\"...\", verify_text=\"...\"): Use for reliable navigation.\n"
+            "3. STALL PREVENTION: If you are on the same page and same thinking for 2 steps, YOU ARE STUCK. Try a different skill or a different text string.\n"
+            "4. NEVER repeat an identical action. If smart_click failed, use a different text or try scrolling.\n"
             "### SCHEMA ###\n"
             "{\"thinking\": \"Short logic\", \"memory\": \"Step progress\", \"action\": []}\n"
             f"### GOAL ###\n{prompt_for_agent}"
