@@ -133,5 +133,16 @@ async def nav_to_url(url: str, verify_text: str, browser: BrowserSession):
     except Exception as e:
         return f"Failure: Navigation to {url} failed: {str(e)}"
 
+def get_skill_descriptions():
+    """Returns a formatted string of all registered skills and their docstrings.
+    This allows the Orchestrator to learn about available skills dynamically.
+    """
+    lines = []
+    for action_name, action in controller.registry.actions.items():
+        # Get the first line of the docstring (the summary)
+        desc = action.description.split('\n')[0].strip()
+        lines.append(f"- {action_name}: {desc}")
+    return "\n".join(lines)
+
 # Register Site-Specific Skills manually
 controller.action('safeway_click_details')(safeway_click_details)

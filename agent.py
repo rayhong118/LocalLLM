@@ -15,6 +15,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from database import SessionLocal, Task as DBTask, Output
 from llm_wrapper import JsonStrippingChatOllama
 from context_manager import get_relevant_context_str
+from skills import controller, get_skill_descriptions
 from browser_utils import cleanup_headless_chrome
 from stealth import inject_stealth, cleanup_dom
 
@@ -141,17 +142,21 @@ async def run_agent_task(task_id: int, prompt: str):
             f.write("\n--- ORCHESTRATOR STEP ---\n")
             
         try:
+            skill_list = get_skill_descriptions()
             planner = ChatOllama(model=config.LLM_MODEL, temperature=0.1)
             sys_msg = SystemMessage(content=(
                 "You are a browser automation planner using the SKILLS-FIRST pattern.\n"
                 "Rewrite the user's task into a GOAL and 3-5 high-level steps.\n"
-                "PREFER SKILLS: Use 'smart_click', 'smart_type', 'scroll_to_text', and 'nav_to_url'.\n"
-                "Format: X. [Skill to use] -> verify: [What must be visible to prove success]\n"
+                "### AVAILABLE SKILLS ###\n"
+                f"{skill_list}\n"
+                "### INSTRUCTIONS ###\n"
+                "Format: X. [Skill to use](params) -> verify: [What must be visible to prove success]\n"
                 "Line 1: One-sentence GOAL in English.\n"
                 "Remaining lines: Numbered steps.\n"
                 "CRITICAL RULES:\n"
                 "- Use exact strings from Context for smart_click and smart_type.\n"
-                "- If a page has many similar buttons (like 'Details'), use smart_click with the exact text.\n"
+                "- Prefer site-specific skills if listed in the available skills.\n"
+                "- If a page has many similar buttons (like 'Details'), specify which product it belongs to in the verify condition.\n"
                 "Be ULTRA TERSE. No explanations."
             ))
             usr_msg = HumanMessage(content=f"Context:\n{context_str}\n\nTask:\n{prompt}")

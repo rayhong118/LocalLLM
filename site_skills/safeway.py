@@ -5,10 +5,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 async def safeway_click_details(product_keyword: str, browser: BrowserSession):
-    """Safeway-specific skill to find a coupon card by keyword and click its 'Details' button.
+    """SITE-SPECIFIC SKILL: On Safeway.com, use this to view the 'Offer Details' for a specific coupon card.
     
     Args:
-        product_keyword: Keyword to identify the coupon card (e.g., 'Ice Cream').
+        product_keyword: Keyword to identify the coupon card.
     """
     page = await browser.get_current_page()
     
