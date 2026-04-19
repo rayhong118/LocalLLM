@@ -263,6 +263,18 @@ class JsonStrippingChatOllama(ChatOllama):
                             data["action"] = []
                 
                 if "action" in data and isinstance(data["action"], list):
+                    unique_actions = []
+                    seen_actions = set()
+                    for act in data["action"]:
+                        act_str = json.dumps(act, sort_keys=True)
+                        if act_str not in seen_actions:
+                            unique_actions.append(act)
+                            seen_actions.add(act_str)
+                    
+                    if len(unique_actions) < len(data["action"]):
+                        data["thinking"] = (data.get("thinking", "") + " [Deduplicated repetitive actions in response]").strip()
+                        data["action"] = unique_actions
+
                     for act in data["action"]:
                         if "input" in act:
                             val = act.pop("input")

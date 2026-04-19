@@ -62,10 +62,10 @@ async def run_agent_task(task_id: int, prompt: str):
         timeout=config.LLM_TIMEOUT,
         ollama_options={
             "temperature": config.TEMPERATURE,
-            "num_ctx": config.CONTEXT_WINDOW,
-            "num_predict": 1024,
+            "num_ctx": 32768, # Increased from default to handle long DOM + history
+            "num_predict": 2048, # Increased to prevent JSON truncation
             "num_thread": 8,
-            "repeat_penalty": 1.2,
+            "repeat_penalty": 1.3, # Slightly increased to break loops
             "top_k": 40,
             "top_p": 0.9
         }
@@ -115,9 +115,12 @@ async def run_agent_task(task_id: int, prompt: str):
                 
                 # Stall Detection logic
                 current_url = agent_state.url
-                current_thinking = getattr(model_output, 'thinking', '')
+                current_thinking = str(getattr(model_output, 'thinking', ''))
                 
-                if current_url == last_url and current_thinking == last_thinking:
+                # Check for repetition loops (identical URL + similar thinking)
+                is_stalled = (current_url == last_url and (current_thinking == last_thinking or len(current_thinking) > 1000))
+                
+                if is_stalled:
                     stall_count += 1
                 else:
                     stall_count = 0
@@ -126,14 +129,17 @@ async def run_agent_task(task_id: int, prompt: str):
                 last_thinking = current_thinking
                 
                 if stall_count >= 2:
-                    # Inject a system correction hint if stuck
+                    # Provide a strong visual/textual hint in the log
                     with open(log_path, "a", encoding="utf-8") as f:
-                        f.write(f"STALL DETECTED (count={stall_count}). Injecting correction hint.\n")
-                    # Note: Actually injecting into agent state depends on browser-use internals, 
-                    # but we can influence the NEXT thinking by returning logic here if the library allows.
-                    # For now, we log it and rely on the updated prompt rules.
+                        f.write(f"\n--- STALL INTERVENTION (count={stall_count}) ---\n")
+                        f.write("ADVICE: You are repeating yourself. STOP searching for the same text.\n")
+                        f.write("ADVICE: If a site-specific skill fails, try a broader keyword or scroll down.\n")
+                        f.write("ACTION: Try a different Skill, or use scroll() to find new elements.\n\n")
+
+
             except Exception:
                 pass  # Non-fatal
+
         
         context_str = await get_relevant_context_str(db, prompt, log_path)
         
@@ -156,7 +162,9 @@ async def run_agent_task(task_id: int, prompt: str):
                 "CRITICAL RULES:\n"
                 "- Use exact strings from Context for smart_click and smart_type.\n"
                 "- Prefer site-specific skills if listed in the available skills.\n"
+                "- For site-specific skills (like safeway_click_details), use the MOST UNIQUE product title discovered on the page as the keyword.\n"
                 "- If a page has many similar buttons (like 'Details'), specify which product it belongs to in the verify condition.\n"
+                "- FORBIDDEN: Do NOT use the main website search bar for tasks involving 'Deals' or 'Coupons'. You MUST navigate to the dedicated Deals section first.\n"
                 "Be ULTRA TERSE. No explanations."
             ))
             usr_msg = HumanMessage(content=f"Context:\n{context_str}\n\nTask:\n{prompt}")
@@ -178,9 +186,13 @@ async def run_agent_task(task_id: int, prompt: str):
                 line_stripped = line.strip()
                 # Dynamically extract any constraint the user passed
                 if line_stripped.startswith("FORBIDDEN:") or line_stripped.startswith("MANDATORY:"):
+                    # Avoid injecting old/cluttered checkbox rules that we now handle via skills
+                    if "checkbox-state" in line_stripped.lower():
+                        continue
                     # Avoid adding duplicates if the Orchestrator LLM already successfully included them
                     if line_stripped not in orchestrated_plan:
                         prohibitions.append(line_stripped)
+
             
             if prohibitions:
                 orchestrated_plan += "\n\n" + "\n".join(prohibitions)
@@ -199,16 +211,25 @@ async def run_agent_task(task_id: int, prompt: str):
             "### RULES ###\n"
             "1. STRICT JSON ONLY. NO CHAT. NO MARKDOWN.\n"
             "2. PREFER SKILLS: Use high-level skills instead of raw 'click_element' or 'type_text'.\n"
+            "   - safeway_filter_category(category_name=\"...\"): MANDATORY for Safeway sidebars. Look at the page to discover valid category names.\n"
+            "   - nav_to_url(url=\"...\", verify_text=\"...\"): Use for reliable navigation.\n"
             "   - smart_click(text=\"...\"): Finds and clicks elements by visible text/label.\n"
             "   - smart_type(label=\"...\", text=\"...\"): Finds input by label and types.\n"
-            "   - scroll_to_text(text=\"...\"): Use this if element is not visible.\n"
-            "   - nav_to_url(url=\"...\", verify_text=\"...\"): Use for reliable navigation.\n"
-            "3. STALL PREVENTION: If you are on the same page and same thinking for 2 steps, YOU ARE STUCK. Try a different skill or a different text string.\n"
-            "4. NEVER repeat an identical action. If smart_click failed, use a different text or try scrolling.\n"
+            "3. FORBIDDEN: Do NOT use the built-in 'extract' API tool. It fails on complex layouts.\n"
+            "4. MANDATORY: Read the screen content yourself and provide the answer in the 'done' tool text.\n"
+            "5. DISCOVERY: If you are unsure which category to pick, use 'scroll' or 'find_elements' to see the list first.\n"
+            "6. STALL PREVENTION: If you are on the same page and same thinking for 2 steps, YOU ARE STUCK. Try a different skill or a different text string.\n"
+
+            "6. LOOP RESCUE: If you repeat an action twice with no progress, you MUST scroll(down=True) or try a different keyword. DO NOT stay on the same screen.\n"
+            "7. NEVER repeat an identical action. If smart_click failed, use a different text or try scrolling.\n"
+            "8. FORBIDDEN: Do NOT use the homepage search bar for 'Deals' tasks. You MUST navigate to the dedicated Coupons/Deals page first.\n"
+
+
             "### SCHEMA ###\n"
             "{\"thinking\": \"Short logic\", \"memory\": \"Step progress\", \"action\": []}\n"
             f"### GOAL ###\n{prompt_for_agent}"
         )
+
 
         agent = Agent(
             task=prompt_for_agent,

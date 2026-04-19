@@ -2,10 +2,15 @@
 from browser_use import Controller, BrowserSession
 import logging
 import asyncio
-from site_skills.safeway import safeway_click_details
+from site_skills.safeway import safeway_click_details, safeway_filter_category
 
 logger = logging.getLogger(__name__)
 controller = Controller()
+
+# Exclude distraction tools that contribute to interaction loops
+controller.exclude_action('save_as_pdf')
+controller.exclude_action('screenshot')
+
 
 @controller.action('smart_click')
 async def smart_click(text: str, browser: BrowserSession, index: int = 0):
@@ -138,11 +143,25 @@ def get_skill_descriptions():
     This allows the Orchestrator to learn about available skills dynamically.
     """
     lines = []
-    for action_name, action in controller.registry.actions.items():
-        # Get the first line of the docstring (the summary)
-        desc = action.description.split('\n')[0].strip()
-        lines.append(f"- {action_name}: {desc}")
+    try:
+        # browser-use Registry path can change between versions; try nested registry
+        registry = getattr(controller.registry, 'registry', controller.registry)
+        actions = getattr(registry, 'actions', {})
+        
+        for action_name, action in actions.items():
+            # Get the first line of the docstring (the summary)
+            if hasattr(action, 'description') and action.description:
+                desc = action.description.split('\n')[0].strip()
+                lines.append(f"- {action_name}: {desc}")
+            else:
+                lines.append(f"- {action_name}")
+    except Exception as e:
+        print(f"DEBUG - get_skill_descriptions failed: {e}")
+        return "No skill descriptions available."
+        
     return "\n".join(lines)
 
 # Register Site-Specific Skills manually
 controller.action('safeway_click_details')(safeway_click_details)
+controller.action('safeway_filter_category')(safeway_filter_category)
+
