@@ -269,8 +269,9 @@ async def run_agent_task(task_id: int, prompt: str):
             planning_replan_on_stall=2,
         )
         history = None
+        # Start the agent with strict step enforcement
         try:
-            history = await agent.run()
+            history = await agent.run(max_steps=config.MAX_STEPS)
         except Exception as e:
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"\nAgent execution interrupted: {e}\n")
