@@ -43,37 +43,24 @@ STEALTH_JS = """
 DOM_CLEANUP_JS = """
 (function() {
     try {
-        const EXCLUDE_ATTR = 'data-browser-use-exclude';
+        const attr = 'data-browser-use-exclude';
+        const tags = ['noscript', 'svg', 'path', 'style', 'script', 'map'];
+        tags.forEach(t => document.querySelectorAll(t).forEach(el => el.setAttribute(attr, 'true')));
         
-        // Tags to nuke (Safe list - NO 'nav' or 'aside' as categories often live there)
-        const JUNK_TAGS = ['noscript', 'svg', 'path', 'style', 'script', 'map'];
-
-        JUNK_TAGS.forEach(tag => {
-            document.querySelectorAll(tag).forEach(el => el.setAttribute(EXCLUDE_ATTR, 'true'));
-        });
-
-        // Selectors to nuke (Ads, Navigation bloat, Iframes)
-        const JUNK_SELECTORS = [
+        const selectors = [
             '[class*="ad-"]', '[class*="ads-"]', '[class*="advert"]', '[id*="google_ads"]',
             'iframe', '[class*="social-"]', '[class*="share-"]', '[class*="cookie"]',
             '[class*="chat"]', '[aria-hidden="true"]:not(button):not(input)', '[role="presentation"]',
             '[class*="modal-dialog"]', '[class*="overlay"]'
-
         ];
+        selectors.forEach(s => document.querySelectorAll(s).forEach(el => el.setAttribute(attr, 'true')));
         
-        JUNK_SELECTORS.forEach(selector => {
-            document.querySelectorAll(selector).forEach(el => el.setAttribute(EXCLUDE_ATTR, 'true'));
-        });
-
-        // Hidden elements
         document.querySelectorAll('[style*="display: none"], [style*="visibility: hidden"], [hidden]').forEach(el => {
-            el.setAttribute(EXCLUDE_ATTR, 'true');
+            el.setAttribute(attr, 'true');
         });
-
-        return document.querySelectorAll('[' + EXCLUDE_ATTR + '="true"]').length;
-    } catch(e) {
-        return -1;
-    }
+        
+        return document.querySelectorAll('[' + attr + '="true"]').length;
+    } catch(e) { return -1; }
 })();
 """
 

@@ -165,10 +165,9 @@ async def run_agent_task(task_id: int, prompt: str):
                 "Remaining lines: Numbered steps.\n"
                 "CRITICAL RULES:\n"
                 "- Use exact strings from Context for smart_click and smart_type.\n"
-                "- Prefer site-specific skills if listed in the available skills.\n"
-                "- For site-specific skills (like safeway_click_details), use the MOST UNIQUE product title discovered on the page as the keyword.\n"
-                "- If a page has many similar buttons (like 'Details'), specify which product it belongs to in the verify condition.\n"
-                "- FORBIDDEN: Do NOT use the main website search bar for tasks involving 'Deals' or 'Coupons'. You MUST navigate to the dedicated Deals section first.\n"
+                "- For site-specific skills, use the MOST UNIQUE text/title discovered on the page as the keyword.\n"
+                "- If a page has many similar buttons (like 'Details'), specify the item it belongs to in the verify condition.\n"
+                "- FORBIDDEN: Do NOT use global search bars for tasks on specialized discovery pages (like Deals or Coupons).\n"
                 "Be ULTRA TERSE. No explanations."
             ))
             usr_msg = HumanMessage(content=f"Context:\n{context_str}\n\nTask:\n{prompt}")
@@ -213,25 +212,12 @@ async def run_agent_task(task_id: int, prompt: str):
         # CAVEMAN PROTOCOL (Modified for Skill-Based Execution)
         full_protocol = (
             "### RULES ###\n"
-            "1. STRICT JSON ONLY. NO CHAT. NO MARKDOWN.\n"
-            "2. PREFER SKILLS: Use high-level skills instead of raw 'click_element' or 'type_text'.\n"
-            "   - safeway_filter_category(category_name=\"...\"): MANDATORY for Safeway sidebars. Look at the page to discover valid category names.\n"
-            "   - nav_to_url(url=\"...\", verify_text=\"...\"): Use for reliable navigation.\n"
-            "   - smart_click(text=\"...\"): Finds and clicks elements by visible text/label.\n"
-            "   - smart_type(label=\"...\", text=\"...\"): Finds input by label and types.\n"
-            "3. FORBIDDEN: Do NOT use the built-in 'extract' API tool. It fails on complex layouts.\n"
-            "4. MANDATORY: Read the screen content yourself and provide the answer in the 'done' tool text.\n"
-            "5. DISCOVERY: If you are unsure which category to pick, use 'scroll' or 'find_elements' to see the list first.\n"
-            "6. STALL PREVENTION: If you are on the same page and same thinking for 2 steps, YOU ARE STUCK. Try a different skill or a different text string.\n"
-            "7. SECURITY CHECKS: If you see a 'Security Check', 'CAPTCHA', or 'Verify you are human' message: You MUST wait(seconds=5), scroll(down=True), and then try to continue. DO NOT enter an infinite loop of the same action.\n"
-            "8. LOOP RESCUE: If you repeat an action twice with no progress, you MUST scroll(down=True) or try a different keyword. DO NOT stay on the same screen.\n"
-            "9. NEVER repeat an identical action. If smart_click failed, use a different text or try scrolling.\n"
-            "10. FORBIDDEN: Do NOT use the homepage search bar for 'Deals' tasks. You MUST navigate to the dedicated Coupons/Deals page first.\n"
-
-
-
+            "1. JSON ONLY. NO CHAT. USE SKILLS.\n"
+            "2. NO SEARCH BOX ON COUPONS. USE CATEGORIES.\n"
+            "3. NO EXTRACT TOOL. READ SCREEN.\n"
+            "4. ERROR? SCROLL OR CHANGE KEYWORD.\n"
             "### SCHEMA ###\n"
-            "{\"thinking\": \"Short logic\", \"memory\": \"Step progress\", \"action\": []}\n"
+            "{\"thinking\": \"...\", \"memory\": \"...\", \"action\": []}\n"
             f"### GOAL ###\n{prompt_for_agent}"
         )
 

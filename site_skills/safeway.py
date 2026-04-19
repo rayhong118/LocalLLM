@@ -1,11 +1,14 @@
 # site_skills/safeway.py
 from browser_use import BrowserSession
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
 async def safeway_click_details(product_keyword: str, browser: BrowserSession):
-    """SITE-SPECIFIC SKILL: On Safeway.com, use this to view the 'Offer Details' for a specific coupon card.
+    """SITE-SPECIFIC SKILL: Step 2 of Safeway Workflow. Use this to view 'Offer Details' for a specific coupon.
+    
+    IMPORTANT: After clicking, you MUST wait for the details page and verify the item in the 'Qualifying Product(s)' section.
     
     Args:
         product_keyword: Specific text to identify the coupon (e.g., 'Talenti', 'Lucerne').
@@ -21,7 +24,7 @@ async def safeway_click_details(product_keyword: str, browser: BrowserSession):
         xpath = (
             f"//*(contains(text(), '{product_keyword}') or contains(@aria-label, '{product_keyword}'))"
             f"/ancestor::div[contains(@class, 'card') or contains(@class, 'offer') or contains(@class, 'product')][1]"
-            f"//button[contains(., 'Details') or contains(., 'View')]"
+            f"//button[not(contains(@class, 'disabled')) and (contains(., 'Details') or contains(., 'View'))]"
         )
         
         locator = page.locator(xpath).filter(visible=True)
@@ -49,7 +52,9 @@ async def safeway_click_details(product_keyword: str, browser: BrowserSession):
     return f"Failure: Could not 'Target-Lock' any coupon details for '{product_keyword}'. Please ensure the keyword matches a visible coupon title."
 
 async def safeway_filter_category(category_name: str, browser: BrowserSession):
-    """SITE-SPECIFIC SKILL: Use this to apply a category filter (e.g., 'Frozen Foods', 'Beverages') on Safeway.com.
+    """SITE-SPECIFIC SKILL: Step 1 of Safeway Workflow. MANDATORY: Select the category first. 
+    
+    DO NOT use the search box. Select category, then find candidate coupons in the resulting list.
     
     Args:
         category_name: The exact or partial name of the category to filter by (e.g., 'Frozen').
@@ -86,14 +91,15 @@ async def safeway_filter_category(category_name: str, browser: BrowserSession):
                 await target.scroll_into_view_if_needed()
                 await asyncio.sleep(0.5) 
                 
-                # Check if already filtered
-                is_checked = await target.locator("span[checkbox-state='checked']").count() > 0
+                # Check for visual indicators of selection (e.g., aria-checked or specific classes)
+                is_checked = await target.locator("[aria-checked='true'], [class*='checked'], [class*='active']").count() > 0
                 if is_checked:
-                    return f"Success: Category matching '{term}' is already filtered."
+                    return f"Success: Category matching '{term}' is already filtered (Detected via ARIA/Class)."
                 
                 await target.click()
-                await asyncio.sleep(1.0) 
-                return f"Success: Clicked category filter for '{term}'"
+                # Wait for content to potentially shift/reload
+                await asyncio.sleep(2.0) 
+                return f"Success: Applied category filter for '{term}'"
         
     except Exception as e:
         return f"Failure: Error applying filter for '{category_name}': {str(e)}"
