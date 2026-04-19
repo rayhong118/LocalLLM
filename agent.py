@@ -114,7 +114,26 @@ async def run_agent_task(task_id: int, prompt: str):
                 await inject_stealth(browser) # Re-patch in case of navigation/reload
                 await cleanup_dom(browser)
 
-                
+                # --- LIVE LOGGING ---
+                with open(log_path, "a", encoding="utf-8") as f:
+                    # 1. Log result of PREVIOUS step if it exists
+                    if step_number > 1 and agent.history and agent.history.history:
+                        last_step = agent.history.history[-1]
+                        if last_step.result:
+                            for res_idx, res in enumerate(last_step.result):
+                                content = res.extracted_content or res.error or "Action concluded."
+                                f.write(f"RESULT (Step {step_number-1}): {str(content)[:500]}\n")
+                    
+                    # 2. Log current step plan
+                    f.write(f"\n[Step {step_number}]\n")
+                    if model_output:
+                        thinking = getattr(model_output, "thinking", "No thinking")
+                        f.write(f"THINKING: {thinking}\n")
+                        if model_output.action:
+                            for act in model_output.action:
+                                f.write(f"ACTION: {act.model_dump_json(exclude_none=True)}\n")
+                    f.flush()
+
                 # Stall Detection logic
                 current_url = agent_state.url
                 current_thinking = str(getattr(model_output, 'thinking', ''))
@@ -253,33 +272,10 @@ async def run_agent_task(task_id: int, prompt: str):
         history = None
         try:
             history = await agent.run()
-        finally:
-            # Fallback to internal agent history if run() didn't complete cleanly
-            history_to_log = history if history else getattr(agent, 'history', None)
-            
-            if history_to_log and hasattr(history_to_log, 'history'):
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write("\n--- STEP-BY-STEP EXECUTION LOG ---\n")
-                    for i, h in enumerate(history_to_log.history):
-                        f.write(f"\n[Step {i+1}]\n")
-                        if h.model_output:
-                            thinking = getattr(h.model_output, "thinking", "No thinking provided")
-                            memory = getattr(h.model_output, "memory", None)
-                            f.write(f"THINKING: {thinking}\n")
-                            if memory:
-                                f.write(f"MEMORY: {memory}\n")
-                            
-                            if h.model_output.action:
-                                for act_idx, act in enumerate(h.model_output.action):
-                                    act_json = act.model_dump_json(exclude_none=True)
-                                    f.write(f"ACTION {act_idx + 1}: {act_json}\n")
-                        
-                        if h.result:
-                            for res_idx, res in enumerate(h.result):
-                                status = "SUCCESS" if not res.is_done and not getattr(res, "error", None) else "FINISH/ERROR"
-                                content = res.extracted_content or res.error or "Action concluded."
-                                f.write(f"RESULT {res_idx + 1} ({status}): {str(content)[:500]}\n")
-                    f.write("\n--- END OF EXECUTION LOG ---\n\n")
+        except Exception as e:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"\nAgent execution interrupted: {e}\n")
+            history = getattr(agent, 'history', None)
         # Determine Success/Result
         final_res = history.final_result() or "No result extracted"
         if final_res == "No result extracted" and history.history:
