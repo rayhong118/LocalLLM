@@ -99,10 +99,3 @@ async def safeway_filter_category(category_name: str, browser: BrowserSession):
         return f"Failure: Error applying filter for '{category_name}': {str(e)}"
 
     return f"Failure: Could not find any category filter matching keywords from '{category_name}'"
-
-        
-    except Exception as e:
-        return f"Failure: Error applying filter for '{category_name}': {str(e)}"
-
-    return f"Failure: Could not find a category filter matching '{category_name}'"
-
