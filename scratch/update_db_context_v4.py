@@ -26,6 +26,7 @@ PHASE 3: INSPECTION & BOT HANDLING
 List matching products individually with Name, Original Price, and Deal Price.
 
 FORBIDDEN: Do NOT use the built-in 'extract' tool.
+FORBIDDEN: Do NOT click category labels manually; ALWAYS use `safeway_filter_category`.
 FORBIDDEN: Do NOT search for 'checkbox-state' manually."""
         db.commit()
         print("Success: Context updated to V4.")

@@ -126,12 +126,17 @@ async def run_agent_task(task_id: int, prompt: str):
                     
                     # 2. Log current step plan
                     f.write(f"\n[Step {step_number}]\n")
-                    if model_output:
-                        thinking = getattr(model_output, "thinking", "No thinking")
-                        f.write(f"THINKING: {thinking}\n")
-                        if model_output.action:
-                            for act in model_output.action:
-                                f.write(f"ACTION: {act.model_dump_json(exclude_none=True)}\n")
+                    # Capture thinking from multiple possible locations
+                    thinking = "No thinking"
+                    if hasattr(model_output, "thinking") and model_output.thinking:
+                        thinking = model_output.thinking
+                    elif isinstance(model_output, dict) and model_output.get("thinking"):
+                        thinking = model_output["thinking"]
+                    
+                    f.write(f"THINKING: {thinking}\n")
+                    if model_output.action:
+                        for act in model_output.action:
+                            f.write(f"ACTION: {act.model_dump_json(exclude_none=True)}\n")
                     f.flush()
 
                 # Stall Detection logic
@@ -199,28 +204,21 @@ async def run_agent_task(task_id: int, prompt: str):
             if len(plan_lines) > 8:
                 orchestrated_plan = '\n'.join(plan_lines[:8])
             
-            # Auto-inject key constraints from context and prompt that the orchestrator may have dropped
-            # This enables generic task scaling: simply prefix rules with FORBIDDEN: or MANDATORY:
+            # Auto-inject key constraints from context and prompt
             combined_instructions = (context_str or "") + "\n" + (prompt or "")
             prohibitions = []
-            
             for line in combined_instructions.split('\n'):
                 line_stripped = line.strip()
-                # Dynamically extract any constraint the user passed
                 if line_stripped.startswith("FORBIDDEN:") or line_stripped.startswith("MANDATORY:"):
-                    # Avoid injecting old/cluttered checkbox rules that we now handle via skills
-                    if "checkbox-state" in line_stripped.lower():
-                        continue
-                    # Avoid adding duplicates if the Orchestrator LLM already successfully included them
                     if line_stripped not in orchestrated_plan:
                         prohibitions.append(line_stripped)
-
             
             if prohibitions:
                 orchestrated_plan += "\n\n" + "\n".join(prohibitions)
-            
+
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"Orchestrated Plan:\n{orchestrated_plan}\n\n")
+                f.flush()
                 
             prompt_for_agent = orchestrated_plan
         except Exception as e:
@@ -231,12 +229,13 @@ async def run_agent_task(task_id: int, prompt: str):
         # CAVEMAN PROTOCOL (Modified for Skill-Based Execution)
         full_protocol = (
             "### RULES ###\n"
-            "1. JSON ONLY. NO CHAT. USE SKILLS.\n"
-            "2. NO SEARCH BOX ON COUPONS. USE CATEGORIES.\n"
-            "3. NO EXTRACT TOOL. READ SCREEN.\n"
-            "4. ERROR? SCROLL OR CHANGE KEYWORD.\n"
+            "1. JSON ONLY. MUST THINK. FOLLOW PLAN IN ORDER.\n"
+            "2. START BY NAVIGATING. DO NOT SKIP STEP 1.\n"
+            "3. FORBIDDEN: Generic 'click' tool is INHIBITED for Safeway categories and popups. Use 'safeway_filter_category' and 'safeway_click_details' instead.\n"
+            "4. NO SEARCH BOX. USE SKILLS ONLY.\n"
+            "5. NO EXTRACT TOOL.\n"
             "### SCHEMA ###\n"
-            "{\"thinking\": \"...\", \"memory\": \"...\", \"action\": []}\n"
+            "{\"thinking\": \"Logic reflecting current plan step\", \"memory\": \"Step #\", \"action\": []}\n"
             f"### GOAL ###\n{prompt_for_agent}"
         )
 
@@ -254,7 +253,7 @@ async def run_agent_task(task_id: int, prompt: str):
             extend_system_message=full_protocol,
             max_actions_per_step=1,
             include_attributes=["title", "type", "role", "placeholder"],
-            max_clickable_elements_length=3000,  # Reduced from 5000 to prevent context overflow
+            max_clickable_elements_length=5000, 
             register_new_step_callback=_on_new_step,  # DOM cleanup before each step
             # Message compaction: summarize old steps to save context
             message_compaction=MessageCompactionSettings(

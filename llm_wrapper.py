@@ -147,19 +147,28 @@ class JsonStrippingChatOllama(ChatOllama):
         )
 
     def _clean_raw_content(self, text: str) -> str:
-        """Removes non-JSON blocks like <thought> or markdown wrappers."""
-        # Strip fully closed or unclosed <think>/<thought>/<reasoning> blocks
-        # If unclosed, it strips from the tag to the end of the text.
+        """Removes non-JSON blocks like <thought> or markdown wrappers, saving thought content."""
+        # 1. Extract thought content if present to preserve it before stripping
+        thought_match = re.search(r'<(thought|reasoning|thinking|think)>(.*?)</\1>', text, flags=re.IGNORECASE | re.DOTALL)
+        thought_content = thought_match.group(2).strip() if thought_match else ""
+
+        # 2. Strip tags
         text = re.sub(r'<(thought|reasoning|thinking|think)>.*?(?:</\1>|$)', '', text, flags=re.IGNORECASE | re.DOTALL)
         
-        # Strip generic <action> wrapper if it surrounds JSON
+        # 3. Strip other wrappers
         text = re.sub(r'<action>\s*([\[{].*?[\]}])\s*</action>', r'\1', text, flags=re.IGNORECASE | re.DOTALL)
-        
         text = text.replace('---<channel|>', '').replace('---', '')
 
         if '```json' in text:
             text = text.split('```json')[-1].split('```')[0]
-        return text.strip()
+        
+        text = text.strip()
+
+        # 4. If we found thought content but the resulting JSON has no thinking, inject it
+        if thought_content and text.startswith('{') and '"thinking"' not in text:
+            text = text.replace('{', f'{{"thinking": "{thought_content[:500].replace('"', "'")}", ', 1)
+
+        return text
 
     def _repair_json(self, text: str, schema: Any) -> Optional[Any]:
         """Attempts to extract and fix malformed JSON strings or XML fallbacks."""
