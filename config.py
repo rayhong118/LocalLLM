@@ -2,8 +2,8 @@
 import sys
 
 # LLM Configuration
-LLM_MODEL = "gemma4:26b"
-CONTEXT_WINDOW = 32768
+LLM_MODEL = "qwen3.5:9b"
+CONTEXT_WINDOW = 98304
 LLM_TIMEOUT = 300
 TEMPERATURE = 0
 

@@ -26,6 +26,16 @@ STEALTH_JS = """
         window.navigator.permissions.query = (p) => (
             p.name === 'notifications' ? Promise.resolve({ state: Notification.permission }) : originalQuery(p)
         );
+        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+        Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+        // Mask WebGL renderer
+        const getParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(parameter) {
+            if (parameter === 37445) return 'Intel Open Source Technology Center';
+            if (parameter === 37446) return 'Mesa DRI Intel(R) UHD Graphics (CML GT2)';
+            return getParameter.apply(this, arguments);
+        };
+
     } catch(e) {}
 })();
 """
@@ -35,8 +45,9 @@ DOM_CLEANUP_JS = """
     try {
         const EXCLUDE_ATTR = 'data-browser-use-exclude';
         
-        // Tags to nuke
-        const JUNK_TAGS = ['noscript', 'svg', 'path', 'footer', 'aside', 'style', 'script', 'nav', 'map'];
+        // Tags to nuke (Safe list - NO 'nav' or 'aside' as categories often live there)
+        const JUNK_TAGS = ['noscript', 'svg', 'path', 'style', 'script', 'map'];
+
         JUNK_TAGS.forEach(tag => {
             document.querySelectorAll(tag).forEach(el => el.setAttribute(EXCLUDE_ATTR, 'true'));
         });
@@ -45,9 +56,9 @@ DOM_CLEANUP_JS = """
         const JUNK_SELECTORS = [
             '[class*="ad-"]', '[class*="ads-"]', '[class*="advert"]', '[id*="google_ads"]',
             'iframe', '[class*="social-"]', '[class*="share-"]', '[class*="cookie"]',
-            '[class*="chat"]', '[class*="mega-menu"]', '[role="navigation"]',
-            '[aria-hidden="true"]:not(button):not(input)', '[role="presentation"]',
+            '[class*="chat"]', '[aria-hidden="true"]:not(button):not(input)', '[role="presentation"]',
             '[class*="modal-dialog"]', '[class*="overlay"]'
+
         ];
         
         JUNK_SELECTORS.forEach(selector => {

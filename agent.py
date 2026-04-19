@@ -111,7 +111,9 @@ async def run_agent_task(task_id: int, prompt: str):
         async def _on_new_step(agent_state, model_output, step_number):
             nonlocal last_url, last_thinking, stall_count
             try:
+                await inject_stealth(browser) # Re-patch in case of navigation/reload
                 await cleanup_dom(browser)
+
                 
                 # Stall Detection logic
                 current_url = agent_state.url
@@ -134,7 +136,9 @@ async def run_agent_task(task_id: int, prompt: str):
                         f.write(f"\n--- STALL INTERVENTION (count={stall_count}) ---\n")
                         f.write("ADVICE: You are repeating yourself. STOP searching for the same text.\n")
                         f.write("ADVICE: If a site-specific skill fails, try a broader keyword or scroll down.\n")
+                        f.write("ADVICE: If the sidebar is missing, check if it is collapsed or blocked by a modal.\n")
                         f.write("ACTION: Try a different Skill, or use scroll() to find new elements.\n\n")
+
 
 
             except Exception:
@@ -219,10 +223,11 @@ async def run_agent_task(task_id: int, prompt: str):
             "4. MANDATORY: Read the screen content yourself and provide the answer in the 'done' tool text.\n"
             "5. DISCOVERY: If you are unsure which category to pick, use 'scroll' or 'find_elements' to see the list first.\n"
             "6. STALL PREVENTION: If you are on the same page and same thinking for 2 steps, YOU ARE STUCK. Try a different skill or a different text string.\n"
+            "7. SECURITY CHECKS: If you see a 'Security Check', 'CAPTCHA', or 'Verify you are human' message: You MUST wait(seconds=5), scroll(down=True), and then try to continue. DO NOT enter an infinite loop of the same action.\n"
+            "8. LOOP RESCUE: If you repeat an action twice with no progress, you MUST scroll(down=True) or try a different keyword. DO NOT stay on the same screen.\n"
+            "9. NEVER repeat an identical action. If smart_click failed, use a different text or try scrolling.\n"
+            "10. FORBIDDEN: Do NOT use the homepage search bar for 'Deals' tasks. You MUST navigate to the dedicated Coupons/Deals page first.\n"
 
-            "6. LOOP RESCUE: If you repeat an action twice with no progress, you MUST scroll(down=True) or try a different keyword. DO NOT stay on the same screen.\n"
-            "7. NEVER repeat an identical action. If smart_click failed, use a different text or try scrolling.\n"
-            "8. FORBIDDEN: Do NOT use the homepage search bar for 'Deals' tasks. You MUST navigate to the dedicated Coupons/Deals page first.\n"
 
 
             "### SCHEMA ###\n"
