@@ -33,12 +33,21 @@ class JsonStrippingChatOllama(ChatOllama):
             ]
             
             if any(sig in last_msg for sig in bot_signatures):
-                print(f"DEBUG - Bot detection intercepted in page DOM. Failing fast.")
-                wrapped_data = {
-                    "thinking": "Bot detection or CAPTCHA present on page.",
-                    "memory": "BLOCKED. Security check.",
-                    "action": [{"done": {"text": "security check encountered"}}]
-                }
+                # Optimization: If it's just a 'moment' check, tell the agent to wait rather than hard failing
+                if "just a moment" in last_msg or "checking your browser" in last_msg:
+                    print(f"DEBUG - Transient bot check detected. Suggesting wait.")
+                    wrapped_data = {
+                        "thinking": "Browser is being checked by Cloudflare/Provider. Waiting for it to resolve.",
+                        "memory": "Wait for security check.",
+                        "action": [{"wait": {"seconds": 5}}]
+                    }
+                else:
+                    print(f"DEBUG - Hard bot detection intercepted. Failing fast.")
+                    wrapped_data = {
+                        "thinking": "Hard bot detection or CAPTCHA present on page.",
+                        "memory": "BLOCKED. Security check.",
+                        "action": [{"done": {"text": "security check encountered"}}]
+                    }
                 try:
                     return ChatInvokeCompletion(completion=output_format.model_validate(wrapped_data), usage=None)
                 except Exception as e:
@@ -148,9 +157,20 @@ class JsonStrippingChatOllama(ChatOllama):
 
     def _clean_raw_content(self, text: str) -> str:
         """Removes non-JSON blocks like <thought> or markdown wrappers, saving thought content."""
-        # 1. Extract thought content if present to preserve it before stripping
+        # 1. Extract thought content if present
         thought_match = re.search(r'<(thought|reasoning|thinking|think)>(.*?)</\1>', text, flags=re.IGNORECASE | re.DOTALL)
-        thought_content = thought_match.group(2).strip() if thought_match else ""
+        thought_content = ""
+        if thought_match:
+            thought_content = thought_match.group(2).strip()
+        else:
+            # Fallback: Capture everything BEFORE the first '{' as thinking if it's long enough
+            first_brace = text.find('{')
+            if first_brace > 20:
+                pre_json = text[:first_brace].strip()
+                # Remove common markdown wrappers from pre_json
+                pre_json = re.sub(r'```[a-z]*', '', pre_json).strip()
+                if len(pre_json) > 10:
+                    thought_content = pre_json
 
         # 2. Strip tags
         text = re.sub(r'<(thought|reasoning|thinking|think)>.*?(?:</\1>|$)', '', text, flags=re.IGNORECASE | re.DOTALL)
@@ -166,7 +186,9 @@ class JsonStrippingChatOllama(ChatOllama):
 
         # 4. If we found thought content but the resulting JSON has no thinking, inject it
         if thought_content and text.startswith('{') and '"thinking"' not in text:
-            text = text.replace('{', f'{{"thinking": "{thought_content[:500].replace('"', "'")}", ', 1)
+            # Escape quotes for JSON injection
+            safe_thought = thought_content[:1000].replace('"', "'").replace('\n', ' ')
+            text = text.replace('{', f'{{"thinking": "{safe_thought}", ', 1)
 
         return text
 

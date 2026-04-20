@@ -25,6 +25,27 @@ logging.getLogger('browser_use').setLevel(logging.WARNING)
 if config.IS_WINDOWS:
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
+class InteractionTracker:
+    def __init__(self, limit=10):
+        self.clicked_indices = []
+        self.clicked_labels = []
+        self.limit = limit
+
+    def add_click(self, index, label=None):
+        self.clicked_indices.append(index)
+        if label: self.clicked_labels.append(label)
+        if len(self.clicked_indices) > self.limit:
+            self.clicked_indices.pop(0)
+        if len(self.clicked_labels) > self.limit:
+            self.clicked_labels.pop(0)
+
+    def is_repetitive(self, index, threshold=2):
+        return self.clicked_indices.count(index) >= threshold
+
+    def get_history_summary(self):
+        if not self.clicked_indices: return "No clicks yet."
+        return f"Last {len(self.clicked_indices)} clicked indices: {self.clicked_indices}"
+
 async def run_agent_task(task_id: int, prompt: str):
     # Ensure logs directory exists
     import os
@@ -104,9 +125,11 @@ async def run_agent_task(task_id: int, prompt: str):
         
         # DOM cleanup callback — runs before each agent step to strip junk elements
         # Also handles Stall Detection: if agent is stuck, provide a "kick" message
+        # Also handles Stall Detection: if agent is stuck, provide a "kick" message
         last_url = None
         last_thinking = None
         stall_count = 0
+        tracker = InteractionTracker()
 
         async def _on_new_step(agent_state, model_output, step_number):
             nonlocal last_url, last_thinking, stall_count
@@ -134,8 +157,17 @@ async def run_agent_task(task_id: int, prompt: str):
                         thinking = model_output["thinking"]
                     
                     f.write(f"THINKING: {thinking}\n")
+                    
                     if model_output.action:
                         for act in model_output.action:
+                            act_json = act.model_dump()
+                            # Track clicks for redundancy detection
+                            if "click_element" in act_json:
+                                idx = act_json["click_element"].get("index")
+                                tracker.add_click(idx)
+                                if tracker.is_repetitive(idx):
+                                    f.write(f"WARNING: Repeating click on index {idx}\n")
+
                             f.write(f"ACTION: {act.model_dump_json(exclude_none=True)}\n")
                     f.flush()
 
@@ -143,8 +175,17 @@ async def run_agent_task(task_id: int, prompt: str):
                 current_url = agent_state.url
                 current_thinking = str(getattr(model_output, 'thinking', ''))
                 
-                # Check for repetition loops (identical URL + similar thinking)
-                is_stalled = (current_url == last_url and (current_thinking == last_thinking or len(current_thinking) > 1000))
+                # Check for redundancy (Same URL + Same Thinking/Action)
+                is_stalled = (current_url == last_url and (current_thinking == last_thinking or len(current_thinking) < 20 or current_thinking == "No thinking"))
+                
+                # Detect and report redundant navigation
+                if model_output.action:
+                    for act in model_output.action:
+                        act_json = act.model_dump()
+                        if "navigate" in act_json and act_json["navigate"].get("url") == current_url:
+                            with open(log_path, "a", encoding="utf-8") as f:
+                                f.write(f"WARNING: Attempted navigation to current URL detected.\n")
+                            is_stalled = True # Force stall logic
                 
                 if is_stalled:
                     stall_count += 1
@@ -155,13 +196,37 @@ async def run_agent_task(task_id: int, prompt: str):
                 last_thinking = current_thinking
                 
                 if stall_count >= 2:
+                    advice = (
+                        f"STALL WARNING: You have been on this page for {stall_count} steps with similar thoughts. "
+                        "STOP repeating actions. If a filter isn't working, SCROLL DOWN to find new elements or "
+                        "try a different site-specific skill. DO NOT click the same element twice."
+                    )
                     # Provide a strong visual/textual hint in the log
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"\n--- STALL INTERVENTION (count={stall_count}) ---\n")
-                        f.write("ADVICE: You are repeating yourself. STOP searching for the same text.\n")
-                        f.write("ADVICE: If a site-specific skill fails, try a broader keyword or scroll down.\n")
-                        f.write("ADVICE: If the sidebar is missing, check if it is collapsed or blocked by a modal.\n")
-                        f.write("ACTION: Try a different Skill, or use scroll() to find new elements.\n\n")
+                        f.write(f"ADVICE: {advice}\n")
+                        f.write("ACTION: Injecting advice into DOM for Agent visibility.\n\n")
+
+                    # INJECT ADVICE INTO DOM so the agent sees it in the next state
+                    page = await browser.get_current_page()
+                    await page.evaluate(f"""
+                        (text) => {{
+                            let div = document.getElementById('agent-stall-advice');
+                            if (!div) {{
+                                div = document.createElement('div');
+                                div.id = 'agent-stall-advice';
+                                div.style.cssText = 'background: yellow; color: red; font-weight: bold; border: 5px solid red; padding: 10px; position: fixed; top: 0; z-index: 99999;';
+                                document.body.appendChild(div);
+                            }}
+                            div.textContent = text;
+                        }}
+                    """, advice)
+                else:
+                    # Clear advice if not stalled
+                    try:
+                        page = await browser.get_current_page()
+                        await page.evaluate("let d = document.getElementById('agent-stall-advice'); if(d) d.remove();")
+                    except: pass
 
 
 
@@ -178,15 +243,17 @@ async def run_agent_task(task_id: int, prompt: str):
         # --- ORCHESTRATOR STEP ---
         with open(log_path, "a", encoding="utf-8") as f:
             f.write("\n--- ORCHESTRATOR STEP ---\n")
-            f.write(f"Diagnostic: Initializing Planner with ctx={config.CONTEXT_WINDOW}...\n")
+            f.write(f"Diagnostic: Initializing Planner with context window of 8192 (Global context: {config.CONTEXT_WINDOW})...\n")
             f.flush()
             
         try:
             skill_list = get_skill_descriptions()
+            # The planner doesn't need huge context, reducing to 8k for stability
             planner = ChatOllama(
                 model=config.LLM_MODEL, 
                 temperature=0.1,
-                num_ctx=config.CONTEXT_WINDOW
+                num_ctx=8192,
+                timeout=60 # 1 minute timeout for planning
             )
             sys_msg = SystemMessage(content=(
                 "You are a browser automation planner using the SKILLS-FIRST pattern.\n"
@@ -206,6 +273,10 @@ async def run_agent_task(task_id: int, prompt: str):
             ))
             usr_msg = HumanMessage(content=f"Context:\n{context_str}\n\nTask:\n{prompt}")
             
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write("Diagnostic: Requesting plan from Ollama...\n")
+                f.flush()
+                
             plan_res = await planner.ainvoke([sys_msg, usr_msg])
             orchestrated_plan = plan_res.content.strip()
             
@@ -239,13 +310,14 @@ async def run_agent_task(task_id: int, prompt: str):
         # CAVEMAN PROTOCOL (Modified for Skill-Based Execution)
         full_protocol = (
             "### RULES ###\n"
-            "1. JSON ONLY. YOU MUST THINK AND EXPLAIN YOUR PLAN IN 'thinking' FIELD.\n"
-            "2. START BY NAVIGATING to a relevant URL. DO NOT SKIP STEP 1.\n"
-            "3. SKILLS-FIRST: If a site-specific skill exists (e.g. starting with site name), you MUST use it instead of generic tools for that purpose.\n"
-            "4. TOOL SAFETY: NEVER use 'evaluate()' to call skills. Use tools directly from the provided list.\n"
-            "5. NO EXTRACT TOOL: Use specialized skills or vision/observation to gather data.\n"
+            "1. JSON ONLY. YOU MUST EXPLAIN YOUR STRATEGY IN THE 'thinking' FIELD (min 20 characters).\n"
+            "2. THINKING IS MANDATORY: If you skip or produce trivial thinking, you will be penalized. Explain WHY you chose this specific element or skill.\n"
+            "3. NO REPETITIVE NAVIGATION: Do NOT use the 'navigate' tool or 'nav_to_url' to go to a URL you are already on. This wastes turns and triggers security checks.\n"
+            "4. SKILLS-FIRST: If a site-specific skill exists (e.g. `safeway_filter_category`), you MUST use it instead of generic tools for those actions.\n"
+            "5. NO REPETITION: Check the 'Interaction History' in the DOM. Do NOT click the same index twice if nothing changed.\n"
+            "6. SKELETON LOADER AWARENESS: If the page is gray/loading, use `wait_seconds(5)` instead of scrolling aimlessly.\n"
             "### SCHEMA ###\n"
-            "{\"thinking\": \"Logic reflecting current plan step\", \"memory\": \"Step #\", \"action\": []}\n"
+            "{\"thinking\": \"Critical logic + Why this action? (Min 20 chars)\", \"memory\": \"Task state\", \"action\": []}\n"
             f"### GOAL ###\n{prompt_for_agent}"
         )
 
@@ -331,7 +403,9 @@ async def run_agent_task(task_id: int, prompt: str):
                 if history.has_errors(): f.write(f" - history.errors(): {history.errors()}\n")
 
         try:
-            db.add(Output(task_id=task_id, content=final_res))
+            # Overwrite old results: Delete previous outputs for this task before saving the new one
+            db.query(DBOutput).filter(DBOutput.task_id == task_id).delete()
+            db.add(DBOutput(task_id=task_id, content=final_res))
             task.status = "COMPLETED" if is_success else "FAILED"
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"Final Success State: {is_success}\nFinal Result: {final_res[:2000]}...\n")

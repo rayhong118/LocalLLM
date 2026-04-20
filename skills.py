@@ -63,7 +63,7 @@ async def smart_click(text: str, browser: BrowserSession, index: int = 0):
             return f"Success: Clicked element with placeholder '{text}'"
     except Exception: pass
 
-    return f"Failure: Could not find any clickable element matching '{text}'"
+    return f"Failure: Could not find any clickable element matching '{text}'. Try describing a nearby element or scrolling."
 
 @controller.action('smart_type')
 async def smart_type(label: str, text: str, browser: BrowserSession):
@@ -101,7 +101,7 @@ async def smart_type(label: str, text: str, browser: BrowserSession):
             return f"Success: Typed '{text}' into input found near text '{label}'"
     except Exception: pass
 
-    return f"Failure: Could not find an input field for label '{label}'"
+    return f"Failure: Could not find an input field for label '{label}'. Try using a more specific label or checking if the form is in an iframe."
 
 @controller.action('scroll_to_text')
 async def scroll_to_text(text: str, browser: BrowserSession):
@@ -137,6 +137,19 @@ async def nav_to_url(url: str, verify_text: str, browser: BrowserSession):
             return f"Partial Success: Navigated to {url} but verify text '{verify_text}' not found."
     except Exception as e:
         return f"Failure: Navigation to {url} failed: {str(e)}"
+
+@controller.action('refresh_page')
+async def refresh_page(browser: BrowserSession):
+    """Reloads the current page. Useful if the site is frozen or stuck in a loading state."""
+    page = await browser.get_current_page()
+    await page.reload(wait_until="networkidle")
+    return "Success: Page refreshed."
+
+@controller.action('wait_seconds')
+async def wait_seconds(seconds: int, browser: BrowserSession):
+    """Pauses execution for a specified number of seconds. Use this to wait for lazy-loading content."""
+    await asyncio.sleep(seconds)
+    return f"Success: Waited for {seconds} seconds."
 
 def get_skill_descriptions():
     """Returns a formatted string of all registered skills and their docstrings.

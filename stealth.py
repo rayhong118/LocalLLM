@@ -50,11 +50,18 @@ DOM_CLEANUP_JS = """
     
     const items = [
         '[id*="google_ads"]', 'iframe', '[class*="cookie"]', '[class*="modal-dialog"]', 
-        '[class*="overlay"]', '[style*="display: none"]', '[hidden]'
+        '[class*="overlay"]', '[style*="display: none"]', '[hidden]',
+        'footer', 'header', '.footer', '.header', '#footer', '#header',
+        '.skip-link', '.nav-menu', '.top-nav', '.chatbot', '#customer-support',
+        '.marketing-banner', '.promo-strip', '.newsletter-signup'
     ];
     items.forEach(s => {
         try {
-            document.querySelectorAll(s).forEach(el => el.setAttribute(attr, 'true'));
+            document.querySelectorAll(s).forEach(el => {
+                el.setAttribute(attr, 'true');
+                // Also hide physically to ensure it doesn't interfere with interaction
+                el.style.display = 'none';
+            });
         } catch(e) {}
     });
     

@@ -32,12 +32,16 @@ async def safeway_click_details(browser: BrowserSession, index: int):
             
         target = locator.nth(index)
         await target.scroll_into_view_if_needed()
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.3)
         await target.click()
         
-        # 2. Wait for the popup to appear
-        await asyncio.sleep(2.0)
-        return f"Success: Clicked 'Offer Details' for coupon at index {index}."
+        # 2. Wait for the popup to appear (usually indicated by an 'Eligible Items' header or similar)
+        try:
+            await page.wait_for_selector("text=Eligible Items", timeout=5000)
+        except:
+            await asyncio.sleep(1.0)
+            
+        return f"Success: Clicked 'Offer Details' for coupon at index {index}. Verification: Popup visible."
 
     except Exception as e:
         return f"Failure: Error in safeway_click_details: {str(e)}"
@@ -55,8 +59,11 @@ async def safeway_filter_category(category_name: str, browser: BrowserSession):
     """
     page = await browser.get_current_page()
     try:
-        # Give the sidebar/page a moment to populate
-        await asyncio.sleep(3.0)
+        # Give the sidebar/page a moment to populate or wait for any filter label
+        try:
+            await page.wait_for_selector("label", timeout=5000)
+        except:
+            await asyncio.sleep(2.0)
         
         # Use case-insensitive XPath logic
         xpath_translate = 'translate(., "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")'
@@ -89,9 +96,9 @@ async def safeway_filter_category(category_name: str, browser: BrowserSession):
                 # RETRY LOGIC: Safeway clicks often fail if the site is slow or skeleton.
                 for attempt in range(3):
                     await target.scroll_into_view_if_needed()
-                    await asyncio.sleep(0.5) 
+                    await asyncio.sleep(0.2) 
                     await target.click()
-                    await asyncio.sleep(2.0)
+                    await asyncio.sleep(1.5)
                     
                     # Verify if it actually worked (check for checked state on target or its siblings)
                     is_checked = await target.locator("[aria-checked='true'], [class*='checked'], [class*='active']").count() > 0
