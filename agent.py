@@ -62,10 +62,10 @@ async def run_agent_task(task_id: int, prompt: str):
         timeout=config.LLM_TIMEOUT,
         ollama_options={
             "temperature": config.TEMPERATURE,
-            "num_ctx": 32768, # Increased from default to handle long DOM + history
-            "num_predict": 2048, # Increased to prevent JSON truncation
+            "num_ctx": config.CONTEXT_WINDOW, 
+            "num_predict": 2048,
             "num_thread": 8,
-            "repeat_penalty": 1.3, # Slightly increased to break loops
+            "repeat_penalty": 1.3,
             "top_k": 40,
             "top_p": 0.9
         }
@@ -169,15 +169,25 @@ async def run_agent_task(task_id: int, prompt: str):
                 pass  # Non-fatal
 
         
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write("Diagnostic: Retrieving DB Context...\n")
+            f.flush()
+            
         context_str = await get_relevant_context_str(db, prompt, log_path)
         
         # --- ORCHESTRATOR STEP ---
         with open(log_path, "a", encoding="utf-8") as f:
             f.write("\n--- ORCHESTRATOR STEP ---\n")
+            f.write(f"Diagnostic: Initializing Planner with ctx={config.CONTEXT_WINDOW}...\n")
+            f.flush()
             
         try:
             skill_list = get_skill_descriptions()
-            planner = ChatOllama(model=config.LLM_MODEL, temperature=0.1)
+            planner = ChatOllama(
+                model=config.LLM_MODEL, 
+                temperature=0.1,
+                num_ctx=config.CONTEXT_WINDOW
+            )
             sys_msg = SystemMessage(content=(
                 "You are a browser automation planner using the SKILLS-FIRST pattern.\n"
                 "Rewrite the user's task into a GOAL and 3-5 high-level steps.\n"
@@ -229,11 +239,11 @@ async def run_agent_task(task_id: int, prompt: str):
         # CAVEMAN PROTOCOL (Modified for Skill-Based Execution)
         full_protocol = (
             "### RULES ###\n"
-            "1. JSON ONLY. MUST THINK. FOLLOW PLAN IN ORDER.\n"
-            "2. START BY NAVIGATING. DO NOT SKIP STEP 1.\n"
-            "3. FORBIDDEN: Generic 'click' tool is INHIBITED for Safeway categories and popups. Use 'safeway_filter_category' and 'safeway_click_details' instead.\n"
-            "4. NO SEARCH BOX. USE SKILLS ONLY.\n"
-            "5. NO EXTRACT TOOL.\n"
+            "1. JSON ONLY. YOU MUST THINK AND EXPLAIN YOUR PLAN IN 'thinking' FIELD.\n"
+            "2. START BY NAVIGATING to a relevant URL. DO NOT SKIP STEP 1.\n"
+            "3. SKILLS-FIRST: If a site-specific skill exists (e.g. starting with site name), you MUST use it instead of generic tools for that purpose.\n"
+            "4. TOOL SAFETY: NEVER use 'evaluate()' to call skills. Use tools directly from the provided list.\n"
+            "5. NO EXTRACT TOOL: Use specialized skills or vision/observation to gather data.\n"
             "### SCHEMA ###\n"
             "{\"thinking\": \"Logic reflecting current plan step\", \"memory\": \"Step #\", \"action\": []}\n"
             f"### GOAL ###\n{prompt_for_agent}"
@@ -286,7 +296,9 @@ async def run_agent_task(task_id: int, prompt: str):
         is_success = is_done and history.is_successful() is not False
         
         if history.has_errors():
-            critical_errors = [e for e in history.errors() if not any(x in str(e).lower() for x in ["closed pipe", "resourcewarning", "connection closed", "failed to parse"])]
+            # Filter out transient LLM errors (formatting/timeouts/parsing) that weren't fatal
+            excluded_phrases = ["closed pipe", "resourcewarning", "connection closed", "failed to parse", "invalid model output format", "timed out"]
+            critical_errors = [e for e in history.errors() if not any(x in str(e).lower() for x in excluded_phrases)]
             if critical_errors: is_success = False
             
         fail_keywords = ["i failed", "could not find", "unable to", "terminated", "no task results", "fail", "hallucination", "plan...",

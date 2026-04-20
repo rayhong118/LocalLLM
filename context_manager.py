@@ -18,8 +18,9 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> str:
         eval_prompt += f"[{i}] {c.name}: {c.content[:250]}\n---\n"
     
     eval_prompt += (
-        f"\nCRITICAL: Strict filter. Select only indices DIRECTLY RELEVANT to: '{prompt}'. "
-        "Ignore generic info or wrong products. If none relevant, return [].\n"
+        f"\nTASK: '{prompt}'.\n"
+        "INSTRUCTION: Select context entries that describe how to use the SITE or the PROCEDURE required for the task. "
+        "If a context entry relates to a website or group mentioned in the task, include it.\n"
         "JSON ONLY: {\"relevant_indices\": [int, ...]}"
     )
 

@@ -42,44 +42,39 @@ STEALTH_JS = """
 
 DOM_CLEANUP_JS = """
 (function() {
-    try {
-        const attr = 'data-browser-use-exclude';
-        const tags = ['noscript', 'svg', 'path', 'style', 'script', 'map'];
-        tags.forEach(t => document.querySelectorAll(t).forEach(el => el.setAttribute(attr, 'true')));
-        
-        const selectors = [
-            '[class*="ad-"]', '[class*="ads-"]', '[class*="advert"]', '[id*="google_ads"]',
-            'iframe', '[class*="social-"]', '[class*="share-"]', '[class*="cookie"]',
-            '[class*="chat"]', '[aria-hidden="true"]:not(button):not(input)', '[role="presentation"]',
-            '[class*="modal-dialog"]', '[class*="overlay"]'
-        ];
-        selectors.forEach(s => document.querySelectorAll(s).forEach(el => el.setAttribute(attr, 'true')));
-        
-        document.querySelectorAll('[style*="display: none"], [style*="visibility: hidden"], [hidden]').forEach(el => {
-            el.setAttribute(attr, 'true');
-        });
-        
-        return document.querySelectorAll('[' + attr + '="true"]').length;
-    } catch(e) { return -1; }
+    const attr = 'data-browser-use-exclude';
+    const tags = ['noscript', 'svg', 'path', 'style', 'script', 'map'];
+    tags.forEach(t => {
+        document.querySelectorAll(t).forEach(el => el.setAttribute(attr, 'true'));
+    });
+    
+    const items = [
+        '[id*="google_ads"]', 'iframe', '[class*="cookie"]', '[class*="modal-dialog"]', 
+        '[class*="overlay"]', '[style*="display: none"]', '[hidden]'
+    ];
+    items.forEach(s => {
+        try {
+            document.querySelectorAll(s).forEach(el => el.setAttribute(attr, 'true'));
+        } catch(e) {}
+    });
+    
+    return document.querySelectorAll('[' + attr + '="true"]').length;
 })();
 """
 
 async def inject_stealth(browser_session):
     try:
         page = await browser_session.get_current_page()
+        # add_init_script is enough for all future navigations
         await page.add_init_script(STEALTH_JS)
-        await page.evaluate(STEALTH_JS)
     except Exception:
         pass
 
 async def cleanup_dom(browser_session):
     try:
         page = await browser_session.get_current_page()
-        # Wait a tiny bit for SPAs to settle if needed, but usually on_new_step is enough
         count = await page.evaluate(DOM_CLEANUP_JS)
-        if count > 0:
-            print(f"  [DOM Cleanup] Excluded {count} elements.")
         return count
     except Exception as e:
-        print(f"  [DOM Cleanup] Failed: {e}")
+        # Don't log syntax errors to console, just fail silently as it's non-critical
         return 0
