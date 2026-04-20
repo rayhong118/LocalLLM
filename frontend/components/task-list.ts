@@ -1,7 +1,7 @@
 import { LitElement, html, css } from 'lit';
-import { customElement, property, state } from 'lit/decorators.js';
-import { marked } from 'marked';
-import { unsafeHTML } from 'lit/directives/unsafe-html.js';
+import { customElement, property } from 'lit/decorators.js';
+import { repeat } from 'lit/directives/repeat.js';
+import './task-item.ts';
 
 interface TaskOutput {
     id: number;
@@ -54,166 +54,6 @@ export class TaskList extends LitElement {
             flex-direction: column; 
             gap: 1rem; 
         }
-
-        .task-item {
-            position: relative;
-            padding: 1.25rem;
-            background: var(--color-card-bg);
-            border: 1px solid var(--color-border);
-            border-radius: 12px;
-            transition: all 0.2s;
-        }
-        .task-item:hover {
-            transform: translateY(-2px);
-            box-shadow: var(--color-shadow-md);
-            border-color: var(--color-border-hover);
-        }
-
-        /* Pulsing animation for active tasks */
-        @keyframes pulse-border {
-            0% { border-color: var(--color-border); box-shadow: 0 0 0 0 var(--color-primary-soft); }
-            50% { border-color: var(--color-primary); box-shadow: 0 0 0 4px var(--color-primary-soft); }
-            100% { border-color: var(--color-border); box-shadow: 0 0 0 0 var(--color-primary-soft); }
-        }
-        .task-item.RUNNING {
-            animation: pulse-border 2s infinite ease-in-out;
-            border-width: 2px;
-        }
-
-        .task-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 1.5rem;
-            margin-bottom: 0.75rem;
-            padding-right: 2rem; /* Make room for absolute delete button */
-        }
-
-        .prompt-text {
-            font-weight: 600;
-            color: var(--color-text-body);
-            flex: 1;
-            line-height: 1.4;
-            font-size: 0.95rem;
-        }
-
-        .status-badge {
-            padding: 0.25rem 0.75rem;
-            border-radius: 999px;
-            font-size: 0.7rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            white-space: nowrap;
-        }
-        .status-badge.COMPLETED { background: var(--color-success-bg); color: var(--color-success); }
-        .status-badge.RUNNING { background: var(--color-warning-bg); color: var(--color-warning); }
-        .status-badge.PENDING { background: var(--color-neutral-bg); color: var(--color-text-muted); }
-        .status-badge.FAILED { background: var(--color-error-bg); color: var(--color-error); }
-        .status-badge.DAILY { background: var(--color-info-bg); color: var(--color-info); }
-        .status-badge.CANCELLED { background: var(--color-neutral-bg); color: var(--color-neutral); }
-
-        .delete-btn {
-            position: absolute;
-            top: 0.75rem;
-            right: 0.75rem;
-            background: var(--color-bg);
-            border: 1px solid var(--color-border);
-            color: var(--color-text-light);
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            transition: all 0.2s;
-            font-size: 1.1rem;
-            line-height: 1;
-            z-index: 10;
-        }
-        .delete-btn:hover {
-            background: var(--color-error-bg);
-            color: var(--color-error);
-            border-color: var(--color-error-bg);
-        }
-
-        .task-actions {
-            display: flex;
-            gap: 0.5rem;
-            align-items: center;
-            flex-shrink: 0;
-        }
-
-        .action-btn {
-            border: none;
-            padding: 0.35rem 0.75rem;
-            border-radius: 8px;
-            font-size: 0.7rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            cursor: pointer;
-            transition: all 0.2s;
-            white-space: nowrap;
-        }
-
-        .retry-btn {
-            background: var(--color-primary);
-            color: white;
-            box-shadow: 0 2px 4px var(--color-primary-soft);
-        }
-        .retry-btn:hover { background: var(--color-primary-hover); transform: translateY(-1px); }
-
-        .cancel-btn {
-            background: var(--color-bg-alt);
-            color: var(--color-text-muted);
-            border: 1px solid var(--color-border);
-        }
-        .cancel-btn:hover { 
-            background: var(--color-neutral-bg); 
-            color: var(--color-text-body);
-            transform: translateY(-1px); 
-        }
-        
-        .view-result-btn {
-            background: none;
-            border: none;
-            padding: 0;
-            margin: 0;
-            font-family: inherit;
-            font-size: 0.75rem;
-            color: var(--color-info);
-            font-weight: 600;
-            cursor: pointer;
-            transition: color 0.1s;
-        }
-        .view-result-btn:hover {
-            color: var(--color-primary);
-        }
-        .view-result-btn:focus-visible {
-            outline: 2px solid var(--color-info);
-            outline-offset: 4px;
-            border-radius: 2px;
-        }
-
-        .time { font-size: 0.75rem; color: var(--color-text-muted); }
-
-        .output-container {
-            margin-top: 1rem;
-            padding: 1.25rem;
-            background: var(--color-bg-alt);
-            border-radius: 8px;
-            border-left: 4px solid var(--color-info);
-            animation: slideDown 0.2s ease-out;
-        }
-        @keyframes slideDown {
-            from { opacity: 0; transform: translateY(-10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        .markdown-body { font-size: 0.95rem; line-height: 1.6; color: var(--color-text-body); }
-        .markdown-body h1, .markdown-body h2 { border-bottom: 1px solid var(--color-border); padding-bottom: 0.3rem; margin-top: 1.5rem; }
-        .markdown-body code { background: var(--color-neutral-bg); padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 85%; }
-        .markdown-body pre { background: var(--color-neutral-bg); padding: 1rem; border-radius: 8px; overflow-x: auto; }
         
         .empty-state {
             padding: 3rem;
@@ -228,8 +68,6 @@ export class TaskList extends LitElement {
     @property({ type: Array })
     tasks: Task[] = [];
 
-    @state()
-    private _expandedTaskId: number | null = null;
 
     private async _deleteTask(taskId: number, needCancel: boolean) {
         if (!confirm('Are you sure you want to delete this task?')) return;
@@ -282,11 +120,6 @@ export class TaskList extends LitElement {
         }
     }
 
-    private _getTimezoneAbbreviation() {
-        return new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' })
-            .formatToParts(new Date())
-            .find(p => p.type === 'timeZoneName')?.value || '';
-    }
 
     private _toLocalDate(dateStr: string | null) {
         if (!dateStr) return new Date();
@@ -308,14 +141,24 @@ export class TaskList extends LitElement {
             ${recurring.length > 0 ? html`
                 <div class="section-header">Recurring Tasks <span>${recurring.length}</span></div>
                 <div class="list-container">
-                    ${recurring.map(t => this._renderTaskItem(t))}
+                    ${repeat(recurring, t => t.id, t => html`<task-item .task=${t} 
+                        @task-delete=${(e: CustomEvent) => this._deleteTask(e.detail.taskId, e.detail.status !== 'RUNNING')}
+                        @task-retry=${(e: CustomEvent) => this._retryTask(e.detail.taskId)}
+                        @task-run-now=${(e: CustomEvent) => this._runNowTask(e.detail.taskId)}
+                        @task-cancel=${(e: CustomEvent) => this._cancelTask(e.detail.taskId)}
+                    ></task-item>`)}
                 </div>
             ` : ''}
 
             ${pending.length > 0 ? html`
                 <div class="section-header">Pending Tasks Queue <span>${pending.length}</span></div>
                 <div class="list-container">
-                    ${pending.map(t => this._renderTaskItem(t))}
+                    ${repeat(pending, t => t.id, t => html`<task-item .task=${t} 
+                        @task-delete=${(e: CustomEvent) => this._deleteTask(e.detail.taskId, e.detail.status !== 'RUNNING')}
+                        @task-retry=${(e: CustomEvent) => this._retryTask(e.detail.taskId)}
+                        @task-run-now=${(e: CustomEvent) => this._runNowTask(e.detail.taskId)}
+                        @task-cancel=${(e: CustomEvent) => this._cancelTask(e.detail.taskId)}
+                    ></task-item>`)}
                 </div>
             ` : ''}
 
@@ -323,59 +166,12 @@ export class TaskList extends LitElement {
             <div class="list-container">
                 ${history.length === 0 ? html`
                     <div class="empty-state">No task history yet.</div>
-                ` : history.map(t => this._renderTaskItem(t))}
-            </div>
-        `;
-    }
-
-    private _renderTaskItem(task: Task) {
-        const isExpanded = this._expandedTaskId === task.id;
-        const hasOutput = task.outputs && task.outputs.length > 0;
-
-        return html`
-            <div class="task-item ${task.status}">
-                <button class="delete-btn" title="Delete" @click=${(e: Event) => { e.stopPropagation(); this._deleteTask(task.id, task.status !== 'RUNNING'); }}>&times;</button>
-                
-                <div class="task-header">
-                    <div style="display: flex; gap: 0.75rem; align-items: center; flex: 1; min-width: 0;">
-                        <span class="status-badge ${task.frequency === 'DAILY' ? 'DAILY' : task.status}">${task.frequency === 'DAILY' ? 'DAILY' : task.status}</span>
-                        <span class="prompt-text">${task.prompt}</span>
-                    </div>
-                    <div class="task-actions">
-                        ${task.frequency === 'DAILY' && task.status !== 'RUNNING' ? html`
-                            <button class="action-btn retry-btn" @click=${(e: Event) => { e.stopPropagation(); this._runNowTask(task.id); }}>Run Now</button>
-                        ` : ''}
-                        ${(task.status === 'FAILED' || task.status === 'CANCELLED') && task.frequency !== 'DAILY' ? html`
-                            <button class="action-btn retry-btn" @click=${(e: Event) => { e.stopPropagation(); this._retryTask(task.id); }}>Retry</button>
-                        ` : ''}
-                        ${task.status === 'RUNNING' ? html`
-                            <button class="action-btn cancel-btn" @click=${(e: Event) => { e.stopPropagation(); this._cancelTask(task.id); }}>Cancel</button>
-                        ` : ''}
-                    </div>
-                </div>
-
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span class="time">
-                        ${task.frequency === 'DAILY' ? `Every day at ${String(task.hour_of_day).padStart(2, '0')}:00 ${this._getTimezoneAbbreviation()}` :
-                task.status === 'RUNNING' ? `Started: ${this._toLocalDate(task.started_at).toLocaleTimeString()} ${this._getTimezoneAbbreviation()}` :
-                    task.status === 'CANCELLED' ? `Cancelled at: ${this._toLocalDate(task.updated_at).toLocaleTimeString()} ${this._getTimezoneAbbreviation()}` :
-                        `Last Run: ${this._toLocalDate(task.updated_at).toLocaleString()} ${this._getTimezoneAbbreviation()}`}
-                    </span>
-                    ${hasOutput ? html`
-                        <button class="view-result-btn"
-                              @click=${() => this._expandedTaskId = isExpanded ? null : task.id}>
-                            ${isExpanded ? 'Hide Result ↑' : 'View Result ↓'}
-                        </button>
-                    ` : ''}
-                </div>
-
-                ${isExpanded && hasOutput ? html`
-                    <div class="output-container" @click=${(e: Event) => e.stopPropagation()}>
-                        <div class="markdown-body">
-                            ${unsafeHTML(marked.parse(task.outputs[0].content, { async: false }) as string)}
-                        </div>
-                    </div>
-                ` : ''}
+                ` : repeat(history, t => t.id, t => html`<task-item .task=${t} 
+                        @task-delete=${(e: CustomEvent) => this._deleteTask(e.detail.taskId, e.detail.status !== 'RUNNING')}
+                        @task-retry=${(e: CustomEvent) => this._retryTask(e.detail.taskId)}
+                        @task-run-now=${(e: CustomEvent) => this._runNowTask(e.detail.taskId)}
+                        @task-cancel=${(e: CustomEvent) => this._cancelTask(e.detail.taskId)}
+                ></task-item>`)}
             </div>
         `;
     }

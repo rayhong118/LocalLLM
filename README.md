@@ -7,7 +7,7 @@ A local AI agent system that allows users to submit tasks via a web UI or API, p
 ### Prerequisites
 
 1.  **Ollama**: Download and install from [ollama.com](https://ollama.com/download).
-    *   Pull the required model: `ollama pull qwen3.5-32k` (or the model specified in `agent.py`).
+    *   Pull the required model: `ollama pull gemma4:26b` (or the model specified in `config.py`).
 2.  **uv**: A fast Python package installer and resolver. Install it from [astral.sh/uv](https://astral.sh/uv).
 
 ### Installation & Running
@@ -34,6 +34,10 @@ The project is built with a decoupled architecture focusing on local execution a
 
 *   **[main.py](file:///c:/LocalLLM/main.py)**: The entry point for the FastAPI application. It defines the API endpoints, serves the static frontend, and manages background tasks.
 *   **[agent.py](file:///c:/LocalLLM/agent.py)**: Contains the core agent logic powered by `browser-use`. It interacts with the browser and the LLM (via Ollama) to accomplish tasks.
+*   **[llm_wrapper.py](file:///c:/LocalLLM/llm_wrapper.py)**: A custom integration to format and parse prompts strictly for reasoning models.
+*   **[config.py](file:///c:/LocalLLM/config.py)**: Contains configuration constants for the app such as the chosen model, timeout limits, and browser settings.
+*   **[context_manager.py](file:///c:/LocalLLM/context_manager.py)**: Dynamically injects context into prompts so the agent remembers global context preferences.
+*   **[skills.py](file:///c:/LocalLLM/skills.py)**: Deterministic skills for the browser automation to execute UI actions.
 *   **[database.py](file:///c:/LocalLLM/database.py)**: Manages persistence using SQLAlchemy and SQLite. It stores tasks and their corresponding outputs in `tasks.db`.
 *   **[utils.py](file:///c:/LocalLLM/utils.py)**: Provides utility functions for saving data in JSON or Markdown formats.
 *   **[run.ps1](file:///c:/LocalLLM/run.ps1)**: An orchestration script that automates the setup and execution environment.

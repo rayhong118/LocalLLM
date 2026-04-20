@@ -29,8 +29,17 @@ if ($headlessChrome) {
 
 # ── 2. Start Ollama server in the background ───────────────────────────────────
 Write-Host "`n[2/4] Starting Ollama server..." -ForegroundColor Yellow
+
+# VRAM optimization: quantize KV cache to q8_0 (~50% KV VRAM savings) and enable flash attention
+# Must set at process level so Start-Process inherits them
+[System.Environment]::SetEnvironmentVariable("OLLAMA_FLASH_ATTENTION", "1", "Process")
+[System.Environment]::SetEnvironmentVariable("OLLAMA_KV_CACHE_TYPE", "q8_0", "Process")
+$env:OLLAMA_FLASH_ATTENTION = "1"
+$env:OLLAMA_KV_CACHE_TYPE = "q8_0"
+Write-Host "  KV cache: q8_0 | Flash Attention: ON" -ForegroundColor Magenta
+
 $ollamaJob = Start-Process -FilePath "ollama" -ArgumentList "serve" `
-    -PassThru -WindowStyle Hidden
+    -PassThru -WindowStyle Hidden -UseNewEnvironment:$false
 
 # Wait a moment for the server to initialize
 Start-Sleep -Seconds 3

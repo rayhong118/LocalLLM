@@ -83,6 +83,19 @@ export class AppRoot extends LitElement {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
+        .spinner {
+            display: inline-block;
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid #cbd5e1;
+            border-top-color: #2563eb;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 0.5rem;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     `;
 
     @state()
@@ -91,22 +104,39 @@ export class AppRoot extends LitElement {
     @state()
     private _currentPage: 'dashboard' | 'contexts' = 'dashboard';
 
-    private _pollInterval?: number;
+    @state()
+    private _isLoading: boolean = false;
+
+    @state()
+    private _isInitialLoaded: boolean = false;
+
+    private _eventSource?: EventSource;
 
     override connectedCallback() {
         super.connectedCallback();
-        this._fetchTasks();
-        this._pollInterval = window.setInterval(() => this._fetchTasks(), 5000);
+        this._isLoading = true;
+        
+        this._eventSource = new EventSource('http://localhost:8000/tasks/stream');
+        this._eventSource.onmessage = (event) => {
+            this._tasks = JSON.parse(event.data);
+            this._isLoading = false;
+            this._isInitialLoaded = true;
+        };
+        this._eventSource.onerror = (err) => {
+            console.error("Task stream error:", err);
+            this._isLoading = false;
+        };
     }
 
     override disconnectedCallback() {
         super.disconnectedCallback();
-        if (this._pollInterval) {
-            clearInterval(this._pollInterval);
+        if (this._eventSource) {
+            this._eventSource.close();
         }
     }
 
     private async _fetchTasks() {
+        this._isLoading = true;
         try {
             const res = await fetch('http://localhost:8000/tasks');
             if (res.ok) {
@@ -114,6 +144,9 @@ export class AppRoot extends LitElement {
             }
         } catch (err) {
             console.error("Failed to fetch tasks:", err);
+        } finally {
+            this._isLoading = false;
+            this._isInitialLoaded = true;
         }
     }
 
@@ -132,7 +165,9 @@ export class AppRoot extends LitElement {
                         class="nav-link ${this._currentPage === 'contexts' ? 'active' : ''}" 
                         @click=${() => this._currentPage = 'contexts'}
                     >Context Manager</span>
-                    <button class="refresh-btn" @click=${this._fetchTasks}>Refresh Status</button>
+                    <button class="refresh-btn" @click=${this._fetchTasks} ?disabled=${this._isLoading}>
+                        ${this._isLoading ? html`<span class="spinner"></span> Refreshing...` : 'Refresh Status'}
+                    </button>
                 </nav>
             </header>
 
@@ -140,7 +175,13 @@ export class AppRoot extends LitElement {
                 ${this._currentPage === 'dashboard' ? html`
                     <task-form @task-created=${this._fetchTasks}></task-form>
                     <h2 style="margin: 2rem 0 1.5rem 0; color: #0f172a; font-size: 1.5rem;">Tasks</h2>
-                    <task-list .tasks=${this._tasks}></task-list>
+                    ${!this._isInitialLoaded ? html`
+                        <div style="display: flex; justify-content: center; align-items: center; padding: 4rem; color: #64748b; font-size: 1.1rem; gap: 0.75rem; border: 2px dashed #e2e8f0; border-radius: 12px;">
+                            <span class="spinner" style="width: 1.5rem; height: 1.5rem; border-width: 3px;"></span> Loading tasks...
+                        </div>
+                    ` : html`
+                        <task-list .tasks=${this._tasks}></task-list>
+                    `}
                 ` : html`
                     <context-manager></context-manager>
                 `}

@@ -18,3 +18,13 @@ def save_to_markdown(data, filename="scraped_data.md"):
     with open(filename, "w", encoding="utf-8") as f:
         f.write(content)
     print(f"Results saved to {filename}")
+
+def caveman_compress(text: str) -> str:
+    """Ultra-terse compression by stripping articles, pronouns, and polite filler."""
+    import re
+    # Strip common filler words
+    filler = r'\b(a|an|the|is|are|am|was|were|be|been|being|have|has|had|do|does|did|will|would|shall|should|can|could|may|might|must|it|its|they|them|their|we|us|our|i|me|my|you|your)\b'
+    text = re.sub(filler, '', text, flags=re.IGNORECASE)
+    # Strip multiple spaces
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text

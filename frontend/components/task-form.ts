@@ -46,6 +46,20 @@ export class TaskForm extends LitElement {
             opacity: 0.5;
             cursor: not-allowed;
         }
+        .spinner {
+            display: inline-block;
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: #ffffff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 0.5rem;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     `;
 
     @state()
@@ -119,8 +133,8 @@ export class TaskForm extends LitElement {
                     ` : ''}
                 </div>
 
-                <button ?disabled=${this.loading} @click=${this._handleSubmit}>
-                    ${this.loading ? 'Scheduling...' : 'Schedule Task'}
+                <button ?disabled=${this.loading} @click=${this._handleSubmit} style="display: flex; align-items: center; justify-content: center;">
+                    ${this.loading ? html`<span class="spinner"></span> Scheduling...` : 'Schedule Task'}
                 </button>
             </div>
         `;
