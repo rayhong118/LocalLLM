@@ -17,6 +17,11 @@ class JsonStrippingChatOllama(ChatOllama):
     # Circuit breaker: abort if LLM fails to produce valid JSON N times in a row
     MAX_CONSECUTIVE_FAILURES = 5
     _consecutive_failures: int = 0
+    
+    # Action-level deduplication: track last N actions to detect semantic loops
+    _recent_actions: list = []
+    _action_repeat_count: int = 0
+    MAX_ACTION_REPEATS = 3  # After this many identical actions, force failure
 
     async def ainvoke(self, messages, output_format=None, **kwargs) -> ChatInvokeCompletion:
         # 0. Early intercept for Bot Detection in the page DOM
@@ -102,8 +107,16 @@ class JsonStrippingChatOllama(ChatOllama):
              print(f"DEBUG - Detected repetition loop featuring '{match.group(1)}'. Truncating safely.")
              content = content[:match.start()]
              if '{' in content and '}' not in content:
-                 # Close the current string and the object
-                 content += '"\n, "action": [], "thinking": "Loop detected" \n}'
+                 # Force a failure response to break the agent out of the loop
+                 print("DEBUG - Overwriting repeated generation with forced loop break.")
+                 return ChatInvokeCompletion(
+                     completion=output_format.model_validate({
+                         "thinking": "CRITICAL LOOP DETECTED. I am repeating myself. I must try a different strategy.", 
+                         "memory": "Stuck in repetition.", 
+                         "action": [{"done": {"text": "FAILED: Agent stuck in generation loop. Need to rethink strategy."}}]
+                     }), 
+                     usage=None
+                 )
 
         # Assistant Fallback
         if '{' not in content and ('|' in content or '###' in content or '1.' in content):
@@ -117,9 +130,13 @@ class JsonStrippingChatOllama(ChatOllama):
                 print("DEBUG - LLM valid JSON contained bot keywords but no 'done' action. Forcing failure.")
                 content = '{"thinking": "Security check detected in output.", "memory": "BLOCKED.", "action": [{"done": {"text": "security check encountered"}}]}'
 
-            result = ChatInvokeCompletion(completion=output_format.model_validate_json(content), usage=None)
+            parsed = output_format.model_validate_json(content)
             self._consecutive_failures = 0  # Reset on success
-            return result
+            
+            # Action-level dedup: check if this is the same action as recent ones
+            parsed = self._check_action_dedup(parsed, output_format)
+            
+            return ChatInvokeCompletion(completion=parsed, usage=None)
         except Exception:
             pass
 
@@ -127,6 +144,8 @@ class JsonStrippingChatOllama(ChatOllama):
         repaired = self._repair_json(content, output_format)
         if repaired:
             self._consecutive_failures = 0  # Reset on success
+            # Action-level dedup: check repair path too
+            repaired = self._check_action_dedup(repaired, output_format)
             return ChatInvokeCompletion(completion=repaired, usage=None)
 
         # 3. Circuit breaker: abort after too many consecutive failures
@@ -339,6 +358,76 @@ class JsonStrippingChatOllama(ChatOllama):
             except Exception:
                 continue
         return None
+    def _check_action_dedup(self, parsed, output_format):
+        """Check if the parsed action is identical to recent actions and escalate."""
+        import json as _json
+        try:
+            # Extract action signature for comparison
+            action_list = getattr(parsed, 'action', [])
+            if not action_list:
+                return parsed  # No action to dedup
+            
+            action_sig = _json.dumps(
+                [a.model_dump(exclude_none=True) for a in action_list], 
+                sort_keys=True
+            )
+            
+            if self._recent_actions and action_sig == self._recent_actions[-1]:
+                self._action_repeat_count += 1
+                log_path = getattr(self, "log_path", None)
+                
+                if self._action_repeat_count == 1:
+                    # First repeat: inject warning into thinking
+                    print(f"DEBUG - Action dedup: 1st repeat detected. Injecting warning.")
+                    if log_path:
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(f"\n--- ACTION DEDUP WARNING (repeat #{self._action_repeat_count}) ---\n")
+                
+                elif self._action_repeat_count == 2:
+                    # Second repeat: replace action with scroll_down
+                    print(f"DEBUG - Action dedup: 2nd repeat. Replacing with scroll_down.")
+                    if log_path:
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(f"\n--- ACTION DEDUP: Forced scroll_down (repeat #{self._action_repeat_count}) ---\n")
+                    try:
+                        replacement = output_format.model_validate({
+                            "thinking": "ACTION DEDUP: I was about to repeat the same action. Scrolling instead to discover new elements.",
+                            "memory": "Must try a DIFFERENT action. Do NOT repeat navigate.",
+                            "action": [{"scroll_down": {"amount": 500}}]
+                        })
+                        return replacement
+                    except Exception:
+                        pass  # If scroll_down isn't in schema, fall through
+                
+                elif self._action_repeat_count >= self.MAX_ACTION_REPEATS:
+                    # Third+ repeat: force failure
+                    print(f"DEBUG - Action dedup: {self._action_repeat_count} repeats. Forcing done/failure.")
+                    if log_path:
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(f"\n--- ACTION DEDUP: Forced FAILURE (repeat #{self._action_repeat_count}) ---\n")
+                    try:
+                        replacement = output_format.model_validate({
+                            "thinking": f"CRITICAL: I have repeated the same action {self._action_repeat_count} times. This is a loop. I must stop.",
+                            "memory": "Loop detected. Aborting.",
+                            "action": [{"done": {"text": f"FAILED: Agent stuck repeating the same action {self._action_repeat_count} times. The page may not have loaded correctly or a required element is missing."}}]
+                        })
+                        self._action_repeat_count = 0
+                        self._recent_actions.clear()
+                        return replacement
+                    except Exception:
+                        pass
+            else:
+                self._action_repeat_count = 0  # Reset on new action
+            
+            # Track this action
+            self._recent_actions.append(action_sig)
+            if len(self._recent_actions) > 5:
+                self._recent_actions.pop(0)
+                
+        except Exception as e:
+            print(f"DEBUG - Action dedup check failed (non-fatal): {e}")
+        
+        return parsed
 
     def _log_failure_trace(self, content: str):
         log_path = getattr(self, "log_path", "format_error_trace.txt")

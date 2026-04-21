@@ -17,7 +17,7 @@ from llm_wrapper import JsonStrippingChatOllama
 from context_manager import get_relevant_context_str
 from skills import controller, get_skill_descriptions
 from browser_utils import cleanup_headless_chrome
-from stealth import inject_stealth, cleanup_dom
+from stealth import inject_stealth, cleanup_dom, inject_stall_banner, remove_stall_banner
 
 # Set up logging
 logging.getLogger('browser_use').setLevel(logging.WARNING)
@@ -65,7 +65,7 @@ async def run_agent_task(task_id: int, prompt: str):
             "num_ctx": config.CONTEXT_WINDOW, 
             "num_predict": 2048,
             "num_thread": 8,
-            "repeat_penalty": 1.3,
+            "repeat_penalty": 1.5,
             "top_k": 40,
             "top_p": 0.9
         }
@@ -103,7 +103,7 @@ async def run_agent_task(task_id: int, prompt: str):
         await inject_stealth(browser)
         
         # DOM cleanup callback — runs before each agent step to strip junk elements
-        # Also handles Stall Detection: if agent is stuck, provide a "kick" message
+        # Also handles Stall Detection via DOM banner injection + add_new_task + hard abort
         last_url = None
         last_thinking = None
         stall_count = 0
@@ -150,20 +150,43 @@ async def run_agent_task(task_id: int, prompt: str):
                     stall_count += 1
                 else:
                     stall_count = 0
+                    # Remove banner when agent makes progress
+                    await remove_stall_banner(browser)
                 
                 last_url = current_url
                 last_thinking = current_thinking
                 
                 if stall_count >= 2:
-                    # Provide a strong visual/textual hint in the log
+                    stall_warning = (
+                        f"STALL DETECTED (count={stall_count}): You are repeating yourself. "
+                        "STOP using navigate. You are ALREADY on this page. "
+                        "Use a site-specific skill like safeway_filter_category, or scroll_down, or smart_click. "
+                        "Do NOT navigate to the same URL again."
+                    )
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"\n--- STALL INTERVENTION (count={stall_count}) ---\n")
-                        f.write("ADVICE: You are repeating yourself. STOP searching for the same text.\n")
-                        f.write("ADVICE: If a site-specific skill fails, try a broader keyword or scroll down.\n")
-                        f.write("ADVICE: If the sidebar is missing, check if it is collapsed or blocked by a modal.\n")
-                        f.write("ACTION: Try a different Skill, or use scroll() to find new elements.\n\n")
-
-
+                        f.write(f"{stall_warning}\n\n")
+                    
+                    # DOM INJECTION: Agent can SEE this banner in the page state
+                    await inject_stall_banner(browser, stall_warning)
+                
+                if stall_count >= 5:
+                    # Escalation: Force redirect via add_new_task
+                    redirect_msg = (
+                        "CRITICAL: You have been stuck for 5+ steps. "
+                        "You are ALREADY on the correct page. "
+                        "Your NEXT action MUST be: safeway_filter_category or scroll_down or smart_click. "
+                        "Do NOT navigate again."
+                    )
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"--- FORCED TASK REDIRECT (stall={stall_count}) ---\n")
+                    agent.add_new_task(redirect_msg)
+                
+                if stall_count >= 8:
+                    # Hard abort: stop wasting compute
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"--- HARD ABORT (stall={stall_count}) --- Agent stuck beyond recovery.\n")
+                    agent.state.stopped = True
 
             except Exception:
                 pass  # Non-fatal
@@ -236,16 +259,17 @@ async def run_agent_task(task_id: int, prompt: str):
                 f.write(f"Orchestrator failed: {e}\nFalling back to original prompt.\n\n")
             prompt_for_agent = prompt
 
-        # CAVEMAN PROTOCOL (Modified for Skill-Based Execution)
+        # CAVEMAN PROTOCOL (Modified for Skill-Based Execution with Schema-Enforced Reasoning)
         full_protocol = (
             "### RULES ###\n"
-            "1. JSON ONLY. YOU MUST THINK AND EXPLAIN YOUR PLAN IN 'thinking' FIELD.\n"
+            "1. THINKING REQUIRED: The 'thinking' field MUST contain 3+ sentences: (a) what you see on the page now, (b) which plan step you are on, (c) why this specific action is correct and DIFFERENT from your last action.\n"
             "2. START BY NAVIGATING to a relevant URL. DO NOT SKIP STEP 1.\n"
             "3. SKILLS-FIRST: If a site-specific skill exists (e.g. starting with site name), you MUST use it instead of generic tools for that purpose.\n"
             "4. TOOL SAFETY: NEVER use 'evaluate()' to call skills. Use tools directly from the provided list.\n"
             "5. NO EXTRACT TOOL: Use specialized skills or vision/observation to gather data.\n"
+            "6. NEVER repeat the same action twice in a row. If your last action was 'navigate', your next action MUST be different (use a skill, scroll, or click).\n"
             "### SCHEMA ###\n"
-            "{\"thinking\": \"Logic reflecting current plan step\", \"memory\": \"Step #\", \"action\": []}\n"
+            "{\"thinking\": \"3+ sentence analysis of page state, plan step, and action rationale\", \"memory\": \"Step #\", \"action\": []}\n"
             f"### GOAL ###\n{prompt_for_agent}"
         )
 
@@ -268,9 +292,9 @@ async def run_agent_task(task_id: int, prompt: str):
             # Message compaction: summarize old steps to save context
             message_compaction=MessageCompactionSettings(
                 enabled=True,
-                compact_every_n_steps=2,  # Compact more often to keep context lean
-                keep_last_items=2,
-                summary_max_chars=1000,  # Shorter summaries
+                compact_every_n_steps=4,  # Compact more often to keep context lean
+                keep_last_items=4,
+                summary_max_chars=2000,  # Shorter summaries
             ),
             # Loop detection: catch repeated actions fast
             loop_detection_enabled=True,

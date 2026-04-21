@@ -104,9 +104,9 @@ async def safeway_filter_category(category_name: str, browser: BrowserSession):
                     
                     logger.warning(f"Filter click attempt {attempt+1} failed to toggle state for {term}. Retrying...")
                 
-                return f"Failure: Clicked '{term}' 3 times but the checkbox state did not change. The page might be frozen."
+                return f"Failure: Clicked '{term}' 3 times but the checkbox state did not change. The page might be frozen, or a modal might be blocking the click."
         
     except Exception as e:
-        return f"Failure: Error applying filter for '{category_name}': {str(e)}"
+        return f"Failure: Error applying filter for '{category_name}'. Sidebar or element may not exist yet or is hidden: {str(e)}"
 
-    return f"Failure: Could not find any category filter matching keywords from '{category_name}'"
+    return f"Failure: Could not find any category filter matching keywords from '{category_name}'. Consider scrolling the page, opening a collapsed sidebar, or checking if the requested category actually exists on this page."
