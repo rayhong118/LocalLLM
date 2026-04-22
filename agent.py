@@ -122,10 +122,11 @@ async def run_agent_task(task_id: int, prompt: str):
         last_url = None
         last_thinking = None
         stall_count = 0
+        no_thinking_count = 0  # Track consecutive steps with no reasoning
         plan_lines = []  # Will be populated after orchestration
 
         async def _on_new_step(agent_state, model_output, step_number):
-            nonlocal last_url, last_thinking, stall_count
+            nonlocal last_url, last_thinking, stall_count, no_thinking_count
             try:
                 await inject_stealth(browser) # Re-patch in case of navigation/reload
                 await cleanup_dom(browser)
@@ -159,6 +160,19 @@ async def run_agent_task(task_id: int, prompt: str):
                             f.write(f"ACTION: {act.model_dump_json(exclude_none=True)}\n")
                     f.flush()
 
+                # No-thinking stall detection: if the model outputs empty reasoning
+                # for 3+ consecutive steps, it's acting reflexively and will loop.
+                if thinking == "No thinking":
+                    no_thinking_count += 1
+                else:
+                    no_thinking_count = 0
+
+                if no_thinking_count >= 3 and stall_count < 2:
+                    stall_count = 2  # Escalate to stall intervention threshold
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"\n--- NO-THINKING STALL (count={no_thinking_count}) ---\n")
+                        f.write("Model has not produced any reasoning for 3+ steps. Escalating to stall intervention.\n")
+
                 # Stall Detection: compare action signatures, not URLs.
                 # URL comparison breaks on SPAs (Safeway) where URL never changes.
                 current_action_sig = ""
@@ -176,7 +190,7 @@ async def run_agent_task(task_id: int, prompt: str):
                 
                 if is_stalled:
                     stall_count += 1
-                else:
+                elif no_thinking_count < 3:
                     stall_count = 0
                     await remove_stall_banner(browser)
                 
@@ -187,7 +201,7 @@ async def run_agent_task(task_id: int, prompt: str):
                     stall_warning = (
                         f"STALL DETECTED (count={stall_count}): You are repeating yourself. "
                         "You MUST use a named skill tool instead of generic actions. "
-                        "AVAILABLE SKILLS: safeway_filter_category, safeway_click_details, smart_click, nav_to_url. "
+                        "AVAILABLE SKILLS: safeway_get_all_deals, safeway_filter_category, safeway_click_details, smart_click, nav_to_url. "
                         "Call the skill DIRECTLY by its tool name. Do NOT use click/input/scroll for what a skill can do."
                     )
                     with open(log_path, "a", encoding="utf-8") as f:
@@ -196,14 +210,18 @@ async def run_agent_task(task_id: int, prompt: str):
                     
                     # DOM INJECTION: Agent can SEE this banner in the page state
                     await inject_stall_banner(browser, stall_warning)
-                
-                if stall_count >= 5:
-                    # Escalation: Force redirect via add_new_task
+                    
+                    # Force add_new_task immediately at count=2 — don't wait for count=5
+                    # Give exact JSON action format — model was misinterpreting Python-call syntax
+                    # as javascript: URIs. Must show the exact schema field names.
+                    short_keyword = prompt.split("items:")[-1].strip().rstrip(".") if "items:" in prompt else prompt[:50]
                     redirect_msg = (
-                        "CRITICAL: You have been stuck for 5+ steps. "
-                        "You are ALREADY on the correct page. "
-                        "Your NEXT action MUST be: safeway_filter_category or scroll_down or smart_click. "
-                        "Do NOT navigate again."
+                        f"STALL #{stall_count}: You MUST output ONE of these JSON actions RIGHT NOW. "
+                        "Do NOT scroll. Do NOT navigate. Copy one of these exactly:\n"
+                        f'  {{"safeway_get_all_deals": {{"keyword": "{short_keyword}"}}}}\n'
+                        '  {"safeway_filter_category": {"category_name": "Beverages"}}\n'
+                        '  {"safeway_click_details": {"index": 0}}\n'
+                        "Put it in your action field. No other action is allowed."
                     )
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"--- FORCED TASK REDIRECT (stall={stall_count}) ---\n")
@@ -327,6 +345,92 @@ async def run_agent_task(task_id: int, prompt: str):
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"Orchestrator failed: {e}\nFalling back to original prompt.\n\n")
             prompt_for_agent = prompt
+
+        # --- PRE-FLIGHT AUTOMATION ---
+        # The LLM (qwen3.5:9b in structured JSON mode) cannot call custom controller skills
+        # via its JSON schema — it only knows built-in browser-use actions. So we run the
+        # Safeway-specific steps here in Python BEFORE the agent starts, then inject the
+        # scraped data into the agent's task so it only needs to format and report results.
+        pre_flight_data = ""
+        try:
+            from site_skills.safeway import safeway_filter_category, safeway_get_all_deals
+
+            # Step 1: Navigate to the deals page
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write("\n--- PRE-FLIGHT: Navigating to Safeway deals page ---\n")
+            page = await browser.get_current_page()
+            await page.goto("https://www.safeway.com/loyalty/coupons-deals")
+            import asyncio as _asyncio
+            try:
+                await page.wait_for_load_state("networkidle", timeout=30000)
+            except Exception:
+                pass  # networkidle may time out on heavy SPAs; page is still usable
+            await _asyncio.sleep(5)  # Wait for SPA to load
+
+            # Step 2: Detect category from prompt and apply filter
+            category_map = {
+                "ice cream": "Frozen Foods", "frozen": "Frozen Foods",
+                "water": "Beverages", "drink": "Beverages", "soda": "Beverages",
+                "beverage": "Beverages", "juice": "Beverages", "coffee": "Beverages",
+                "meat": "Meat & Seafood", "chicken": "Meat & Seafood", "fish": "Meat & Seafood",
+                "bread": "Bakery", "cake": "Bakery", "cookie": "Bakery",
+                "produce": "Produce", "fruit": "Produce", "vegetable": "Produce",
+                "dairy": "Dairy", "cheese": "Dairy", "yogurt": "Dairy", "milk": "Dairy",
+                "snack": "Snacks", "chip": "Snacks", "cracker": "Snacks",
+            }
+            lower_prompt = prompt.lower()
+            category = next((v for k, v in category_map.items() if k in lower_prompt), "")
+
+            filter_result = ""
+            if category:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"PRE-FLIGHT: Applying category filter '{category}'...\n")
+                filter_result = await safeway_filter_category(category, browser)
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"PRE-FLIGHT Filter Result: {filter_result}\n")
+                await _asyncio.sleep(3)
+
+            # Step 3: Extract a keyword from the prompt for deal matching
+            short_keyword = prompt.split("items:")[-1].strip().rstrip(".") if "items:" in prompt else prompt[:60]
+
+            # Step 4: Scrape all deals
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"PRE-FLIGHT: Scraping deals with keyword='{short_keyword}'...\n")
+            scrape_result = await safeway_get_all_deals(browser, keyword=short_keyword)
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"PRE-FLIGHT Scrape Result:\n{scrape_result[:2000]}\n")
+
+            if scrape_result.startswith("Found deals:"):
+                pre_flight_data = scrape_result
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write("PRE-FLIGHT: Data collected. Agent will format results.\n\n")
+            else:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"PRE-FLIGHT: Broad scrape (no keyword match). Retrying without filter...\n")
+                # Retry without keyword filter to get any deals
+                scrape_result = await safeway_get_all_deals(browser, keyword="")
+                pre_flight_data = scrape_result
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"PRE-FLIGHT Broad Result:\n{scrape_result[:2000]}\n\n")
+
+        except Exception as pf_err:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"PRE-FLIGHT FATAL: {pf_err}\n")
+                f.write("Cannot proceed — browser failed to navigate to Safeway. Aborting task.\n\n")
+            raise  # Propagate to outer try/except — marks task FAILED cleanly
+
+        # If we got pre-flight data, inject it into the agent task so it can just report
+        if pre_flight_data:
+            prompt_for_agent = (
+                f"TASK: {prompt}\n\n"
+                f"SCRAPED DEAL DATA (already collected from Safeway):\n{pre_flight_data[:3000]}\n\n"
+                "INSTRUCTIONS: The deal data above was already scraped from the Safeway website. "
+                "Your job is to:\n"
+                "1. Filter the data for items matching the task.\n"
+                "2. Format a clean list of matching deals with Name, Original Price, and Deal Price.\n"
+                "3. Call done(text=<your formatted list>, success=True).\n"
+                "Do NOT navigate or scroll. The data is already here."
+            )
 
         # CAVEMAN PROTOCOL (Modified for Skill-Based Execution with Schema-Enforced Reasoning)
         full_protocol = (
