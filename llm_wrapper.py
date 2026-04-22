@@ -42,7 +42,7 @@ class JsonStrippingChatOllama(ChatOllama):
                 wrapped_data = {
                     "thinking": "Bot detection or CAPTCHA present on page.",
                     "memory": "BLOCKED. Security check.",
-                    "action": [{"done": {"text": "security check encountered"}}]
+                    "action": [{"done": {"text": "security check encountered", "success": False}}]
                 }
                 try:
                     return ChatInvokeCompletion(completion=output_format.model_validate(wrapped_data), usage=None)
@@ -113,7 +113,7 @@ class JsonStrippingChatOllama(ChatOllama):
                      completion=output_format.model_validate({
                          "thinking": "CRITICAL LOOP DETECTED. I am repeating myself. I must try a different strategy.", 
                          "memory": "Stuck in repetition.", 
-                         "action": [{"done": {"text": "FAILED: Agent stuck in generation loop. Need to rethink strategy."}}]
+                         "action": [{"done": {"text": "FAILED: Agent stuck in generation loop. Need to rethink strategy.", "success": False}}]
                      }), 
                      usage=None
                  )
@@ -124,11 +124,18 @@ class JsonStrippingChatOllama(ChatOllama):
 
         # Parsing Pipeline
         try:
-            bot_detection_keywords = ["captcha", "verify you are human", "are you a robot", "security check", "cloudflare", "attention required"]
-            # Force fail if valid JSON says it's a security check but isn't terminating
-            if any(kw in content.lower() for kw in bot_detection_keywords) and '"done"' not in content.lower():
-                print("DEBUG - LLM valid JSON contained bot keywords but no 'done' action. Forcing failure.")
-                content = '{"thinking": "Security check detected in output.", "memory": "BLOCKED.", "action": [{"done": {"text": "security check encountered"}}]}'
+            # Only trigger bot-detection intercept when MULTIPLE strong signals are present
+            # Avoid false positives from our own protocol strings ("security check", "captcha" etc.)
+            hard_bot_keywords = ["verify you are human", "are you a robot", "checking your browser before accessing", "just a moment..."]
+            soft_bot_keywords = ["captcha", "cloudflare", "attention required"]
+            lower_content = content.lower()
+            is_bot_page = (
+                any(kw in lower_content for kw in hard_bot_keywords)
+                or sum(1 for kw in soft_bot_keywords if kw in lower_content) >= 2
+            )
+            if is_bot_page and '"done"' not in lower_content:
+                print("DEBUG - LLM valid JSON contained strong bot-detection signals. Forcing failure.")
+                content = '{"thinking": "Security check detected in output.", "memory": "BLOCKED.", "action": [{"done": {"text": "security check encountered", "success": false}}]}'
 
             parsed = output_format.model_validate_json(content)
             self._consecutive_failures = 0  # Reset on success
@@ -183,9 +190,18 @@ class JsonStrippingChatOllama(ChatOllama):
         
         text = text.strip()
 
-        # 4. If we found thought content but the resulting JSON has no thinking, inject it
-        if thought_content and text.startswith('{') and '"thinking"' not in text:
-            text = text.replace('{', f'{{"thinking": "{thought_content[:500].replace('"', "'")}", ', 1)
+        # 4. If we found thought content, inject it — overwrite empty thinking fields too
+        if thought_content and text.startswith('{'):
+            safe_thought = thought_content[:500].replace('"', "'")
+            if '"thinking"' not in text:
+                text = text.replace('{', f'{{"thinking": "{safe_thought}", ', 1)
+            else:
+                # Overwrite a blank/placeholder thinking value
+                text = re.sub(
+                    r'"thinking"\s*:\s*"[^"]{0,20}"',
+                    f'"thinking": "{safe_thought}"',
+                    text, count=1
+                )
 
         return text
 
@@ -203,7 +219,7 @@ class JsonStrippingChatOllama(ChatOllama):
                 
                 # Treat 'done' specially
                 if func_name.lower() == 'done':
-                    action_obj = {"done": {"text": params.get("text", "Done")}}
+                    action_obj = {"done": {"text": params.get("text", "Done"), "success": params.get("success", True)}}
                 else:
                     # Map common verbs
                     verb_map = {"click": "click_element", "type": "type_text", "hover": "hover_element"}
@@ -227,7 +243,7 @@ class JsonStrippingChatOllama(ChatOllama):
                         "thinking": "Bot detection or CAPTCHA encountered. Cannot proceed.",
                         "memory": "BLOCKED: Site has bot detection that cannot be bypassed.",
                         "next_goal": "Abort",
-                        "action": [{"done": {"text": f"FAILED: Bot detection encountered. {text[:500]}"}}]
+                        "action": [{"done": {"text": f"FAILED: Bot detection encountered. {text[:500]}", "success": False}}]
                     }
                     return schema.model_validate(wrapped_data)
                 
@@ -237,7 +253,7 @@ class JsonStrippingChatOllama(ChatOllama):
                         "evaluation_previous_goal": "Extraction via text fallback",
                         "memory": "Model provided a terminal text answer.",
                         "next_goal": "Finish",
-                        "action": [{"done": {"text": text[:2000]}}]
+                        "action": [{"done": {"text": text[:2000], "success": True}}]
                     }
                     return schema.model_validate(wrapped_data)
                 
@@ -286,7 +302,7 @@ class JsonStrippingChatOllama(ChatOllama):
                         lower_act = data["action"].lower()
                         halluc_verbs = ["plan", "thinking", "action", "step", "goal", "click", "type", "scroll", "wait", "press", "open", "navigate", "smart_click", "smart_type", "scroll_to_text", "nav_to_url", "safeway_"]
                         if not any(lower_act.startswith(h) for h in halluc_verbs):
-                            data["action"] = [{"done": {"text": data["action"]}}]
+                            data["action"] = [{"done": {"text": data["action"], "success": True}}]
                         else:
                             data["action"] = []
                 
@@ -409,7 +425,7 @@ class JsonStrippingChatOllama(ChatOllama):
                         replacement = output_format.model_validate({
                             "thinking": f"CRITICAL: I have repeated the same action {self._action_repeat_count} times. This is a loop. I must stop.",
                             "memory": "Loop detected. Aborting.",
-                            "action": [{"done": {"text": f"FAILED: Agent stuck repeating the same action {self._action_repeat_count} times. The page may not have loaded correctly or a required element is missing."}}]
+                            "action": [{"done": {"text": f"FAILED: Agent stuck repeating the same action {self._action_repeat_count} times. The page may not have loaded correctly or a required element is missing.", "success": False}}]
                         })
                         self._action_repeat_count = 0
                         self._recent_actions.clear()

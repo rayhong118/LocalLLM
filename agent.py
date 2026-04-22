@@ -10,14 +10,12 @@ from browser_use.agent.views import MessageCompactionSettings
 
 # Local imports
 import config
-from langchain_ollama import ChatOllama
-from langchain_core.messages import SystemMessage, HumanMessage
 from database import SessionLocal, Task as DBTask, Output
 from llm_wrapper import JsonStrippingChatOllama
 from context_manager import get_relevant_context_str
 from skills import controller, get_skill_descriptions
 from browser_utils import cleanup_headless_chrome
-from stealth import inject_stealth, cleanup_dom, inject_stall_banner, remove_stall_banner
+from stealth import inject_stealth, cleanup_dom, inject_stall_banner, remove_stall_banner, inject_plan_banner
 
 # Set up logging
 logging.getLogger('browser_use').setLevel(logging.WARNING)
@@ -101,12 +99,30 @@ async def run_agent_task(task_id: int, prompt: str):
         
         # Inject stealth anti-detection scripts before any navigation
         await inject_stealth(browser)
-        
+
+        # Reset stale browser state from previous run so the agent always starts fresh.
+        # Without this, the agent sees Safeway already open (with stale DOM indices) and
+        # skips the nav_to_url step in its plan.
+        try:
+            await browser.start()  # Ensure session is alive before accessing pages
+            page = await browser.get_current_page()
+            if page is not None:
+                await page.goto("about:blank")  # No wait_until — not supported in this playwright version
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write("Diagnostic: Browser reset to about:blank (cleared stale session state).\n")
+            else:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write("Diagnostic: Browser reset skipped (no active page yet — fresh session).\n")
+        except Exception as reset_err:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"Diagnostic: Browser reset skipped ({reset_err}).\n")
+
         # DOM cleanup callback — runs before each agent step to strip junk elements
         # Also handles Stall Detection via DOM banner injection + add_new_task + hard abort
         last_url = None
         last_thinking = None
         stall_count = 0
+        plan_lines = []  # Will be populated after orchestration
 
         async def _on_new_step(agent_state, model_output, step_number):
             nonlocal last_url, last_thinking, stall_count
@@ -114,7 +130,11 @@ async def run_agent_task(task_id: int, prompt: str):
                 await inject_stealth(browser) # Re-patch in case of navigation/reload
                 await cleanup_dom(browser)
 
-                # --- LIVE LOGGING ---
+                # Inject current plan step banner into DOM so LLM always sees it
+                if plan_lines and step_number <= len(plan_lines):
+                    await inject_plan_banner(browser, step_number, plan_lines[step_number - 1], len(plan_lines))
+
+
                 with open(log_path, "a", encoding="utf-8") as f:
                     # 1. Log result of PREVIOUS step if it exists
                     if step_number > 1 and agent.history and agent.history.history:
@@ -139,29 +159,36 @@ async def run_agent_task(task_id: int, prompt: str):
                             f.write(f"ACTION: {act.model_dump_json(exclude_none=True)}\n")
                     f.flush()
 
-                # Stall Detection logic
-                current_url = agent_state.url
-                current_thinking = str(getattr(model_output, 'thinking', ''))
+                # Stall Detection: compare action signatures, not URLs.
+                # URL comparison breaks on SPAs (Safeway) where URL never changes.
+                current_action_sig = ""
+                if model_output and model_output.action:
+                    try:
+                        import json as _json
+                        current_action_sig = _json.dumps(
+                            [a.model_dump(exclude_none=True) for a in model_output.action],
+                            sort_keys=True
+                        )
+                    except Exception:
+                        pass
                 
-                # Check for repetition loops (identical URL + similar thinking)
-                is_stalled = (current_url == last_url and (current_thinking == last_thinking or len(current_thinking) > 1000))
+                is_stalled = (current_action_sig and current_action_sig == last_thinking)
                 
                 if is_stalled:
                     stall_count += 1
                 else:
                     stall_count = 0
-                    # Remove banner when agent makes progress
                     await remove_stall_banner(browser)
                 
-                last_url = current_url
-                last_thinking = current_thinking
+                last_url = None  # current_url is not defined in this scope; stall detection uses action signatures
+                last_thinking = current_action_sig  # Reuse last_thinking slot for action sig
                 
                 if stall_count >= 2:
                     stall_warning = (
                         f"STALL DETECTED (count={stall_count}): You are repeating yourself. "
-                        "STOP using navigate. You are ALREADY on this page. "
-                        "Use a site-specific skill like safeway_filter_category, or scroll_down, or smart_click. "
-                        "Do NOT navigate to the same URL again."
+                        "You MUST use a named skill tool instead of generic actions. "
+                        "AVAILABLE SKILLS: safeway_filter_category, safeway_click_details, smart_click, nav_to_url. "
+                        "Call the skill DIRECTLY by its tool name. Do NOT use click/input/scroll for what a skill can do."
                     )
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"\n--- STALL INTERVENTION (count={stall_count}) ---\n")
@@ -201,23 +228,21 @@ async def run_agent_task(task_id: int, prompt: str):
         # --- ORCHESTRATOR STEP ---
         with open(log_path, "a", encoding="utf-8") as f:
             f.write("\n--- ORCHESTRATOR STEP ---\n")
-            f.write(f"Diagnostic: Initializing Planner with ctx={config.CONTEXT_WINDOW}...\n")
+            f.write("Diagnostic: Running Planner (reusing llm client, no GPU contention)...\n")
             f.flush()
             
         try:
             skill_list = get_skill_descriptions()
-            planner = ChatOllama(
-                model=config.LLM_MODEL, 
-                temperature=0.1,
-                num_ctx=config.CONTEXT_WINDOW
-            )
-            sys_msg = SystemMessage(content=(
+            # Reuse the existing llm's underlying Ollama client instead of creating a second
+            # ChatOllama instance. A second instance causes GPU contention on single-GPU machines,
+            # leading to empty planner responses. We call the raw client with a plain text prompt.
+            planner_system = (
                 "You are a browser automation planner using the SKILLS-FIRST pattern.\n"
                 "Rewrite the user's task into a GOAL and 3-5 high-level steps.\n"
                 "### AVAILABLE SKILLS ###\n"
                 f"{skill_list}\n"
                 "### INSTRUCTIONS ###\n"
-                "Format: X. [Skill to use](params) -> verify: [What must be visible to prove success]\n"
+                "Format: X. Action to take (Tool: skill_name) -> verify: [What must be visible to prove success]\n"
                 "Line 1: One-sentence GOAL in English.\n"
                 "Remaining lines: Numbered steps.\n"
                 "CRITICAL RULES:\n"
@@ -225,29 +250,73 @@ async def run_agent_task(task_id: int, prompt: str):
                 "- For site-specific skills, use the MOST UNIQUE text/title discovered on the page as the keyword.\n"
                 "- If a page has many similar buttons (like 'Details'), specify the item it belongs to in the verify condition.\n"
                 "- FORBIDDEN: Do NOT use global search bars for tasks on specialized discovery pages (like Deals or Coupons).\n"
-                "Be ULTRA TERSE. No explanations."
-            ))
-            usr_msg = HumanMessage(content=f"Context:\n{context_str}\n\nTask:\n{prompt}")
-            
-            plan_res = await planner.ainvoke([sys_msg, usr_msg])
-            orchestrated_plan = plan_res.content.strip()
+                "- FORBIDDEN: Do NOT include an 'extract' step. Use safeway_click_details to get deal info.\n"
+                "Be ULTRA TERSE. No explanations. Output ONLY the GOAL line and numbered steps. No preamble."
+            )
+            planner_user = f"Context:\n{context_str}\n\nTask:\n{prompt}"
+            planner_messages = [
+                {"role": "system", "content": planner_system},
+                {"role": "user", "content": planner_user},
+            ]
+            plan_resp = await llm.get_client().chat(
+                model=config.LLM_MODEL,
+                messages=planner_messages,
+                options={"temperature": 0.1, "num_ctx": 4096, "num_predict": 512},
+            )
+            orchestrated_plan = (plan_resp.message.content or "").strip()
             
             # Truncate overly verbose plans to save context tokens
-            plan_lines = orchestrated_plan.split('\n')
-            if len(plan_lines) > 8:
-                orchestrated_plan = '\n'.join(plan_lines[:8])
+            raw_plan_lines = orchestrated_plan.split('\n')
+            if len(raw_plan_lines) > 8:
+                orchestrated_plan = '\n'.join(raw_plan_lines[:8])
             
-            # Auto-inject key constraints from context and prompt
-            combined_instructions = (context_str or "") + "\n" + (prompt or "")
-            prohibitions = []
-            for line in combined_instructions.split('\n'):
-                line_stripped = line.strip()
-                if line_stripped.startswith("FORBIDDEN:") or line_stripped.startswith("MANDATORY:"):
-                    if line_stripped not in orchestrated_plan:
-                        prohibitions.append(line_stripped)
-            
-            if prohibitions:
-                orchestrated_plan += "\n\n" + "\n".join(prohibitions)
+            # Parse numbered step lines for the DOM banner (e.g. "1. nav_to_url...")
+            import re as _re
+            plan_lines[:] = [
+                _re.sub(r'^\d+\.\s*', '', l).strip()
+                for l in orchestrated_plan.split('\n')
+                if _re.match(r'^\d+\.', l.strip())
+            ]
+
+            # GUARD: Strip any step that uses the forbidden 'extract' tool
+            # Match lines like "4. extract: ..." or "extract: ..." (with or without number prefix)
+            forbidden_step_patterns = [r'(?:^\d+\.\s*)?extract\s*:', r'\bextract\b.*tool']
+            clean_lines = []
+            removed_extract = False
+            for l in orchestrated_plan.split('\n'):
+                is_forbidden = any(_re.search(pat, l.strip(), _re.IGNORECASE) for pat in forbidden_step_patterns)
+                if is_forbidden:
+                    removed_extract = True
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"Orchestrator: Stripped forbidden extract step: {l.strip()}\n")
+                else:
+                    clean_lines.append(l)
+            if removed_extract:
+                orchestrated_plan = '\n'.join(clean_lines)
+                # Re-parse plan_lines after stripping
+                plan_lines[:] = [
+                    _re.sub(r'^\d+\.\s*', '', l).strip()
+                    for l in orchestrated_plan.split('\n')
+                    if _re.match(r'^\d+\.', l.strip())
+                ]
+
+            # GUARD: Reject plan if it has no numbered steps (planner returned junk/empty output)
+            if not plan_lines:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"Orchestrator WARNING: Plan has no numbered steps — output was:\n{orchestrated_plan!r}\nFalling back to original prompt.\n\n")
+                orchestrated_plan = prompt
+            else:
+                # Auto-inject key constraints from context and prompt
+                combined_instructions = (context_str or "") + "\n" + (prompt or "")
+                prohibitions = []
+                for line in combined_instructions.split('\n'):
+                    line_stripped = line.strip()
+                    if line_stripped.startswith("FORBIDDEN:") or line_stripped.startswith("MANDATORY:"):
+                        if line_stripped not in orchestrated_plan:
+                            prohibitions.append(line_stripped)
+                
+                if prohibitions:
+                    orchestrated_plan += "\n\n" + "\n".join(prohibitions)
 
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"Orchestrated Plan:\n{orchestrated_plan}\n\n")
@@ -263,11 +332,12 @@ async def run_agent_task(task_id: int, prompt: str):
         full_protocol = (
             "### RULES ###\n"
             "1. THINKING REQUIRED: The 'thinking' field MUST contain 3+ sentences: (a) what you see on the page now, (b) which plan step you are on, (c) why this specific action is correct and DIFFERENT from your last action.\n"
-            "2. START BY NAVIGATING to a relevant URL. DO NOT SKIP STEP 1.\n"
-            "3. SKILLS-FIRST: If a site-specific skill exists (e.g. starting with site name), you MUST use it instead of generic tools for that purpose.\n"
+            "2. FOLLOW THE PLAN EXACTLY: Execute the GOAL steps in order. Do NOT skip steps. Your first action must match Step 1 of the plan.\n"
+            "3. SKILLS-FIRST: If a site-specific skill exists (e.g. starting with site name like 'safeway_'), you MUST use it. Do NOT use generic index clicks or navigate for what a skill can handle.\n"
             "4. TOOL SAFETY: NEVER use 'evaluate()' to call skills. Use tools directly from the provided list.\n"
-            "5. NO EXTRACT TOOL: Use specialized skills or vision/observation to gather data.\n"
-            "6. NEVER repeat the same action twice in a row. If your last action was 'navigate', your next action MUST be different (use a skill, scroll, or click).\n"
+            "5. NO EXTRACT TOOL: Use specialized skills or observation to gather data. NEVER call 'extract'.\n"
+            "6. NO NAVIGATION LOOPS: Single Page Apps (like Safeway) do NOT change URLs. If you are already at the correct domain, do NOT use 'navigate' again. Perform clicks or scrolls instead.\n"
+            "7. READ BEFORE BACK: When you click 'Offer Details' or open a detail popup, you MUST read and record the product name, original price, and deal price from the page BEFORE clicking 'Back'. Do NOT click 'Back' immediately after opening details.\n"
             "### SCHEMA ###\n"
             "{\"thinking\": \"3+ sentence analysis of page state, plan step, and action rationale\", \"memory\": \"Step #\", \"action\": []}\n"
             f"### GOAL ###\n{prompt_for_agent}"
@@ -289,12 +359,11 @@ async def run_agent_task(task_id: int, prompt: str):
             include_attributes=["title", "type", "role", "placeholder"],
             max_clickable_elements_length=5000, 
             register_new_step_callback=_on_new_step,  # DOM cleanup before each step
-            # Message compaction: summarize old steps to save context
+            # Message compaction: disabled — compaction erases the GOAL and RULES
+            # from context too aggressively, causing the LLM to lose plan adherence.
+            # With num_ctx=32768 we have enough room to keep the full history.
             message_compaction=MessageCompactionSettings(
-                enabled=True,
-                compact_every_n_steps=4,  # Compact more often to keep context lean
-                keep_last_items=4,
-                summary_max_chars=2000,  # Shorter summaries
+                enabled=False,
             ),
             # Loop detection: catch repeated actions fast
             loop_detection_enabled=True,

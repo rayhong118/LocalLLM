@@ -118,3 +118,25 @@ async def remove_stall_banner(browser_session):
         await page.evaluate(REMOVE_STALL_BANNER_JS)
     except Exception:
         pass
+
+PLAN_BANNER_JS = """
+(function(stepNum, stepText, totalSteps) {
+    var old = document.getElementById('__agent_plan_banner');
+    if (old) old.remove();
+    var banner = document.createElement('div');
+    banner.id = '__agent_plan_banner';
+    banner.setAttribute('role', 'note');
+    banner.setAttribute('aria-label', 'PLAN STEP ' + stepNum + ' of ' + totalSteps + ': ' + stepText);
+    banner.textContent = '\u25b6 PLAN STEP ' + stepNum + '/' + totalSteps + ': ' + stepText;
+    banner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:999998;background:#1a6b1a;color:#fff;padding:10px 16px;font-size:15px;font-weight:bold;text-align:left;';
+    document.body.appendChild(banner);
+})(arguments[0], arguments[1], arguments[2]);
+"""
+
+async def inject_plan_banner(browser_session, step_num: int, step_text: str, total_steps: int):
+    """Inject a persistent plan-step banner into the page DOM visible to the agent."""
+    try:
+        page = await browser_session.get_current_page()
+        await page.evaluate(PLAN_BANNER_JS, step_num, step_text, total_steps)
+    except Exception:
+        pass
