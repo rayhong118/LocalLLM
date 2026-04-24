@@ -5,6 +5,7 @@
 from browser_use import BrowserSession
 import logging
 import asyncio
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -185,13 +186,18 @@ async def safeway_get_all_deals(browser: BrowserSession, keyword: str = ""):
             
             const kwLower = (kw || '').toLowerCase();
             const deals = [];
-            const limit = Math.min(cards.length, 30);
+            const seen = new Set();
             
-            for (let i = 0; i < limit; i++) {
+            for (let i = 0; i < cards.length; i++) {
                 try {
                     let text = cards[i].innerText.trim().replace(/\\n/g, ' | ').substring(0, 200);
                     if (kwLower && text.toLowerCase().indexOf(kwLower) === -1) continue;
-                    deals.push('Card ' + i + ': ' + text);
+                    
+                    if (!seen.has(text)) {
+                        seen.add(text);
+                        deals.push('Card ' + i + ': ' + text);
+                        if (deals.length >= 60) break; // Limit applied AFTER filtering and deduping
+                    }
                 } catch(e) {}
             }
             
@@ -253,9 +259,10 @@ async def safeway_filter_category(category_name: str, browser: BrowserSession):
                 );
                 
                 let targetLabel = null;
+                const targetSelectors = 'label, [role="checkbox"], button, a, [data-qa*="category"], [data-testid*="category"]';
                 
                 for (const container of filterContainers) {
-                    const labels = container.querySelectorAll('label, [role="checkbox"]');
+                    const labels = container.querySelectorAll(targetSelectors);
                     for (const label of labels) {
                         if ((label.textContent || '').toLowerCase().includes(targetLower) && label.offsetParent !== null) {
                             targetLabel = label;
@@ -266,7 +273,10 @@ async def safeway_filter_category(category_name: str, browser: BrowserSession):
                 }
                 
                 if (!targetLabel) {
-                    const allLabels = document.querySelectorAll('label, [role="checkbox"]');
+                    const mainArea = document.querySelector('main, [role="main"]') || document.body;
+                    const allLabels = Array.from(mainArea.querySelectorAll(targetSelectors))
+                        .filter(el => !el.closest('header, [class*="global-header"], [id*="header"]'));
+                        
                     for (const label of allLabels) {
                         if ((label.textContent || '').toLowerCase().includes(targetLower) && label.offsetParent !== null) {
                             targetLabel = label;
@@ -307,3 +317,175 @@ async def safeway_filter_category(category_name: str, browser: BrowserSession):
         return f"Failure: Error applying filter for '{category_name}'. Sidebar or element may not exist yet or is hidden: {str(e)}"
 
     return f"Failure: Could not find any category filter matching keywords from '{category_name}'. Consider scrolling the page, opening a collapsed sidebar, or checking if the requested category actually exists on this page."
+
+async def safeway_get_categories(browser: BrowserSession):
+    """SITE-SPECIFIC SKILL: Scrapes the list of all available category filters 
+    from the Safeway sidebar. Returns a list of category names.
+    """
+    page = await browser.get_current_page()
+    try:
+        logger.info("[safeway_get_categories] Waiting for sidebar filters to load...")
+        # Wait for any potential filter container to appear
+        try:
+            await page.wait_for_selector('[class*="filter"], [class*="sidebar"]', timeout=10000)
+            await asyncio.sleep(3) # Wait for SPA to populate the empty container
+        except Exception:
+            await asyncio.sleep(2) # Wait anyway just in case the skeleton selector failed
+            
+        categories_raw = await page.evaluate("""
+        () => {
+            // Attempt to expand a "Filter" or "Categories" drawer if it exists and is closed
+            const openBtns = Array.from(document.querySelectorAll('button')).filter(b => {
+                const txt = (b.textContent || '').toLowerCase();
+                return (txt.includes('filter') || txt.includes('categor')) && b.offsetParent !== null;
+            });
+            if (openBtns.length > 0) {
+                try { openBtns[0].click(); } catch(e) {}
+            }
+
+            const selectors = [
+                '[class*="filter"] label', '[class*="sidebar"] label',
+                '[id*="filter"] label', '[role="checkbox"]',
+                '[class*="filter-label"]', '[class*="category-name"]',
+                'button[class*="filter"]', 'a[class*="category"]',
+                '[data-qa*="category"]', '[data-testid*="category"]'
+            ];
+            const labels = [];
+            for (const sel of selectors) {
+                document.querySelectorAll(sel).forEach(el => {
+                    // Get text and clean it up
+                    let text = (el.innerText || el.textContent || '').trim();
+                    // Some labels have counts like "Produce (12)", strip them
+                    text = text.replace(/\\s*\\(\\d+\\)$/, '');
+                    
+                    // Relaxed visibility check: even if offsetParent is null, Safeway SPA sometimes 
+                    // hides filters in a display:none div that can still be toggled.
+                    if (text && text.length > 1 && text.length < 40) {
+                        if (!labels.includes(text) && !/clear|all|apply|filter|sort/i.test(text)) {
+                            labels.push(text);
+                        }
+                    }
+                });
+            }
+            // Fallback: if we still have 0, look for common grocery terms in main content only
+            if (labels.length === 0) {
+                const commonCats = ['Produce', 'Meat', 'Seafood', 'Dairy', 'Frozen', 'Beverages', 'Bakery', 'Pantry', 'Snacks'];
+                const mainArea = document.querySelector('main, [role="main"], #main-content') || document.body;
+                
+                const candidates = Array.from(mainArea.querySelectorAll('a, button, span, label, [role="checkbox"]'))
+                    .filter(el => !el.closest('header, [class*="global-header"], [id*="header"]'));
+                    
+                candidates.forEach(el => {
+                    const txt = (el.textContent || '').trim().replace(/\\s*\\(\\d+\\)$/, '');
+                    if (commonCats.some(c => txt.toLowerCase().includes(c.toLowerCase())) && !labels.includes(txt)) {
+                        labels.push(txt);
+                    }
+                });
+            }
+            return JSON.stringify(labels);
+        }
+        """)
+        categories = __import__('json').loads(categories_raw)
+        logger.info(f"[safeway_get_categories] Found {len(categories)} categories: {categories}")
+        return categories
+    except Exception as e:
+        logger.error(f"[safeway_get_categories] Failed: {e}")
+        return []
+async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_str: str, log_path: str, llm: Any):
+    """SITE-SPECIFIC AUTOMATION: Handles the heavy lifting of navigation and 
+    scraping for Safeway before the agent starts.
+    """
+    import asyncio as _asyncio
+    import re
+    
+    try:
+        # 1. Navigate to target URL from context
+        target_url = "https://www.safeway.com/loyalty/coupons-deals" # Default
+        if context_str:
+            url_match = re.search(r'https?://[^\s)]+', context_str)
+            if url_match:
+                target_url = url_match.group(0).rstrip('.')
+        
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"\n--- PRE-FLIGHT (Safeway): Navigating to {target_url} ---\n")
+            
+        page = await browser.get_current_page()
+        await page.goto(target_url)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=30000)
+        except Exception:
+            pass
+        await _asyncio.sleep(5)
+
+        # 2. Extract keyword
+        noise_words = {"look", "for", "deals", "safeway", "website", "following", "item:", "items:", "item", "items", "search", "find", "on", "products", "product", "the", "a", "an"}
+        short_keyword = " ".join([w for w in prompt.lower().split() if w not in noise_words and len(w) > 2]).strip()
+        if not short_keyword:
+            short_keyword = prompt[:30]
+
+        # 3. Categorize
+        available_categories = await safeway_get_categories(browser)
+        category = ""
+        if available_categories:
+            selector_system = (
+                "You are a categorization assistant for a grocery store. You must output ONLY a valid JSON object.\n"
+                "Format: {\"category\": \"Category Name\"}\n"
+                "RULES: 1. NEVER pick 'Special Offers' if a specific food category is available. 2. If nothing fits, output {\"category\": \"NONE\"}.\n"
+                f"Available Categories: {', '.join(available_categories)}"
+            )
+            try:
+                import ollama
+                selector_resp = await ollama.AsyncClient().chat(
+                    model=getattr(llm, "model", "qwen2.5:9b"),
+                    messages=[
+                        {"role": "user", "content": f"{selector_system}\n\nThe user is looking for '{short_keyword}'. Which category best matches?"}
+                    ],
+                    format="json"
+                )
+                try:
+                    raw_content = selector_resp.message.content or ""
+                except AttributeError:
+                    raw_content = selector_resp.get('message', {}).get('content', '')
+                
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"PRE-FLIGHT: LLM Category Choice Raw Response: '{raw_content}'\n")
+                
+                import json
+                try:
+                    data = json.loads(raw_content)
+                    category_choice = data.get("category", "NONE").strip()
+                except Exception:
+                    category_choice = raw_content.strip().strip("'\"")
+                    
+                if category_choice and category_choice != "NONE":
+                    if any(c.lower() == category_choice.lower() for c in available_categories):
+                        category = next(c for c in available_categories if c.lower() == category_choice.lower())
+                    else:
+                        for c in available_categories:
+                            if c.lower() in category_choice.lower() or category_choice.lower() in c.lower():
+                                category = c
+                                break
+            except Exception as e:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"PRE-FLIGHT: LLM Category call failed: {e}\n")
+
+        if category:
+            with open(log_path, "a", encoding="utf-8") as f: 
+                f.write(f"PRE-FLIGHT: Applying category filter '{category}'...\n")
+            await safeway_filter_category(category, browser)
+            await _asyncio.sleep(3)
+
+        # 4. Scrape
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"PRE-FLIGHT: Scraping deals for '{short_keyword}'...\n")
+        scrape_result = await safeway_get_all_deals(browser, keyword=short_keyword)
+        
+        if not scrape_result.startswith("Found deals:"):
+            scrape_result = await safeway_get_all_deals(browser, keyword="")
+            
+        return scrape_result
+
+    except Exception as e:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"PRE-FLIGHT ERROR: {e}\n")
+        return ""

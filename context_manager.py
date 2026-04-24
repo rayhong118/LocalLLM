@@ -4,11 +4,11 @@ import httpx
 import config
 from database import Context
 
-async def get_relevant_context_str(db, prompt: str, log_path: str) -> str:
-    """Uses LLM to prune irrelevant contexts to save token window space."""
+async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str, str]:
+    """Uses LLM to identify relevant context and the target site plugin in one step."""
     contexts = db.query(Context).all()
     if not contexts:
-        return ""
+        return "", ""
 
     eval_prompt = (
         f"USER TASK: {prompt}\n\n"
@@ -18,10 +18,11 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> str:
         eval_prompt += f"[{i}] {c.name}: {c.content[:250]}\n---\n"
     
     eval_prompt += (
-        f"\nTASK: '{prompt}'.\n"
-        "INSTRUCTION: Select context entries that describe how to use the SITE or the PROCEDURE required for the task. "
-        "If a context entry relates to a website or group mentioned in the task, include it.\n"
-        "JSON ONLY: {\"relevant_indices\": [int, ...]}"
+        "\nINSTRUCTIONS:\n"
+        "1. Select context entries that describe how to use the WEBSITES or GROUPS mentioned in the task (e.g., Safeway).\n"
+        "2. Even if the specific item (like 'steak') isn't mentioned, if the context explains the 'Deals' or 'Coupons' process for that site, it IS relevant.\n"
+        "3. Identify the core domain name (e.g., 'safeway').\n"
+        "JSON ONLY: {\"relevant_indices\": [int, ...], \"site_plugin\": \"string or NONE\"}"
     )
 
     try:
@@ -37,23 +38,28 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> str:
                 },
                 timeout=config.LLM_TIMEOUT
             )
-            data = resp.json().get("message", {}).get("content", "{}")
-            indices = json.loads(data).get("relevant_indices", [])
-            
+            data_raw = resp.json().get("message", {}).get("content", "{}")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"Context Evaluator: Raw LLM response: {data_raw}\n")
+            data = json.loads(data_raw)
+            indices = data.get("relevant_indices", [])
+            site_plugin = data.get("site_plugin", "NONE").lower()
+            if site_plugin == "none": site_plugin = ""
+
             with open(log_path, "a", encoding="utf-8") as f:
                 if not indices:
-                    f.write("Context Evaluator: No relevant context found in database.\n")
-                    return ""
+                    f.write("Context Evaluator: No relevant context found.\n")
+                    return "", site_plugin
                 
-                f.write(f"Context Evaluator: Selected {len(indices)} relevant entries.\n")
+                f.write(f"Context Evaluator: Selected {len(indices)} entries. Site Plugin: {site_plugin}\n")
                 full_context = "PRIOR KNOWLEDGE:\n"
                 for i in indices:
                     if 0 <= int(i) < len(contexts):
                         c = contexts[int(i)]
                         f.write(f" - Using Context: {c.name}\n")
                         full_context += f"--- {c.name} ---\n{c.content}\n\n"
-                return full_context + "USE THIS TO INFORM YOUR ACTIONS.\n\n"
+                return full_context + "USE THIS TO INFORM YOUR ACTIONS.\n\n", site_plugin
     except Exception as e:
         with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"Context pruning failed: {e}\n")
-        return ""
+            f.write(f"Context analysis failed: {e}\n")
+        return "", ""

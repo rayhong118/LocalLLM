@@ -241,7 +241,24 @@ async def run_agent_task(task_id: int, prompt: str):
             f.write("Diagnostic: Retrieving DB Context...\n")
             f.flush()
             
-        context_str = await get_relevant_context_str(db, prompt, log_path)
+        context_str = ""
+        site_key = ""
+        if db:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write("Diagnostic: Analyzing task and retrieving context...\n")
+                f.flush()
+            context_str, site_key = await get_relevant_context_str(db, prompt, log_path)
+            
+            # FALLBACK: If LLM missed the site plugin in context, check prompt for known plugins
+            if not site_key:
+                import os
+                plugins = [f.replace(".py", "") for f in os.listdir("site_skills") if f.endswith(".py")]
+                for p in plugins:
+                    if p in prompt.lower():
+                        site_key = p
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(f"Context Evaluator: Fallback detected site '{site_key}' from prompt keywords.\n")
+                        break
         
         # --- ORCHESTRATOR STEP ---
         with open(log_path, "a", encoding="utf-8") as f:
@@ -346,89 +363,44 @@ async def run_agent_task(task_id: int, prompt: str):
                 f.write(f"Orchestrator failed: {e}\nFalling back to original prompt.\n\n")
             prompt_for_agent = prompt
 
-        # --- PRE-FLIGHT AUTOMATION ---
-        # The LLM (qwen3.5:9b in structured JSON mode) cannot call custom controller skills
-        # via its JSON schema — it only knows built-in browser-use actions. So we run the
-        # Safeway-specific steps here in Python BEFORE the agent starts, then inject the
-        # scraped data into the agent's task so it only needs to format and report results.
+        # --- PRE-FLIGHT AUTOMATION (Site-Specific Plugin System) ---
         pre_flight_data = ""
         try:
-            from site_skills.safeway import safeway_filter_category, safeway_get_all_deals
-
-            # Step 1: Navigate to the deals page
+            # Dynamically load site automation if a plugin was identified by the context manager
+            if site_key:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"\n--- PRE-FLIGHT HAND-OFF: '{site_key}' plugin ---\n")
+                
+                import importlib
+                import os
+                if os.path.exists(os.path.join("site_skills", f"{site_key}.py")):
+                    try:
+                        module = importlib.import_module(f"site_skills.{site_key}")
+                        automation_fn = getattr(module, f"{site_key}_run_pre_flight", None)
+                        if automation_fn:
+                            pre_flight_data = await automation_fn(browser, prompt, context_str, log_path, llm)
+                            if pre_flight_data:
+                                with open(log_path, "a", encoding="utf-8") as f:
+                                    f.write(f"PRE-FLIGHT SUCCESS: Data injected for '{site_key}' plugin.\n")
+                    except Exception as e:
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(f"PRE-FLIGHT module load failed for '{site_key}': {e}\n")
+        except Exception as e:
             with open(log_path, "a", encoding="utf-8") as f:
-                f.write("\n--- PRE-FLIGHT: Navigating to Safeway deals page ---\n")
-            page = await browser.get_current_page()
-            await page.goto("https://www.safeway.com/loyalty/coupons-deals")
-            import asyncio as _asyncio
-            try:
-                await page.wait_for_load_state("networkidle", timeout=30000)
-            except Exception:
-                pass  # networkidle may time out on heavy SPAs; page is still usable
-            await _asyncio.sleep(5)  # Wait for SPA to load
+                f.write(f"PRE-FLIGHT generic failure: {e}\n")
 
-            # Step 2: Detect category from prompt and apply filter
-            category_map = {
-                "ice cream": "Frozen Foods", "frozen": "Frozen Foods",
-                "water": "Beverages", "drink": "Beverages", "soda": "Beverages",
-                "beverage": "Beverages", "juice": "Beverages", "coffee": "Beverages",
-                "meat": "Meat & Seafood", "chicken": "Meat & Seafood", "fish": "Meat & Seafood",
-                "bread": "Bakery", "cake": "Bakery", "cookie": "Bakery",
-                "produce": "Produce", "fruit": "Produce", "vegetable": "Produce",
-                "dairy": "Dairy", "cheese": "Dairy", "yogurt": "Dairy", "milk": "Dairy",
-                "snack": "Snacks", "chip": "Snacks", "cracker": "Snacks",
-            }
-            lower_prompt = prompt.lower()
-            category = next((v for k, v in category_map.items() if k in lower_prompt), "")
 
-            filter_result = ""
-            if category:
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"PRE-FLIGHT: Applying category filter '{category}'...\n")
-                filter_result = await safeway_filter_category(category, browser)
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"PRE-FLIGHT Filter Result: {filter_result}\n")
-                await _asyncio.sleep(3)
-
-            # Step 3: Extract a keyword from the prompt for deal matching
-            short_keyword = prompt.split("items:")[-1].strip().rstrip(".") if "items:" in prompt else prompt[:60]
-
-            # Step 4: Scrape all deals
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"PRE-FLIGHT: Scraping deals with keyword='{short_keyword}'...\n")
-            scrape_result = await safeway_get_all_deals(browser, keyword=short_keyword)
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"PRE-FLIGHT Scrape Result:\n{scrape_result[:2000]}\n")
-
-            if scrape_result.startswith("Found deals:"):
-                pre_flight_data = scrape_result
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write("PRE-FLIGHT: Data collected. Agent will format results.\n\n")
-            else:
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"PRE-FLIGHT: Broad scrape (no keyword match). Retrying without filter...\n")
-                # Retry without keyword filter to get any deals
-                scrape_result = await safeway_get_all_deals(browser, keyword="")
-                pre_flight_data = scrape_result
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"PRE-FLIGHT Broad Result:\n{scrape_result[:2000]}\n\n")
-
-        except Exception as pf_err:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"PRE-FLIGHT FATAL: {pf_err}\n")
-                f.write("Cannot proceed — browser failed to navigate to Safeway. Aborting task.\n\n")
-            raise  # Propagate to outer try/except — marks task FAILED cleanly
 
         # If we got pre-flight data, inject it into the agent task so it can just report
         if pre_flight_data:
             prompt_for_agent = (
                 f"TASK: {prompt}\n\n"
-                f"SCRAPED DEAL DATA (already collected from Safeway):\n{pre_flight_data[:3000]}\n\n"
-                "INSTRUCTIONS: The deal data above was already scraped from the Safeway website. "
+                f"SCRAPED DATA (already collected for this task):\n{pre_flight_data[:3000]}\n\n"
+                "INSTRUCTIONS: The data above was already scraped from the target website. "
                 "Your job is to:\n"
-                "1. Filter the data for items matching the task.\n"
-                "2. Format a clean list of matching deals with Name, Original Price, and Deal Price.\n"
-                "3. Call done(text=<your formatted list>, success=True).\n"
+                "1. Filter the data strictly for items matching the task. Pay close attention to product categories.\n"
+                "2. Format a clean list of ONLY the perfectly matching entries (e.g., Name, Price, Deal). Do not include duplicates.\n"
+                "3. Call done(text=<your formatted list>, success=True). If no items match perfectly, report that none were found.\n"
                 "Do NOT navigate or scroll. The data is already here."
             )
 
@@ -441,7 +413,8 @@ async def run_agent_task(task_id: int, prompt: str):
             "4. TOOL SAFETY: NEVER use 'evaluate()' to call skills. Use tools directly from the provided list.\n"
             "5. NO EXTRACT TOOL: Use specialized skills or observation to gather data. NEVER call 'extract'.\n"
             "6. NO NAVIGATION LOOPS: Single Page Apps (like Safeway) do NOT change URLs. If you are already at the correct domain, do NOT use 'navigate' again. Perform clicks or scrolls instead.\n"
-            "7. READ BEFORE BACK: When you click 'Offer Details' or open a detail popup, you MUST read and record the product name, original price, and deal price from the page BEFORE clicking 'Back'. Do NOT click 'Back' immediately after opening details.\n"
+            "7. STRICT URLS: NEVER navigate to a URL that is not explicitly provided in the plan or context. Do NOT guess URLs (e.g., do NOT try /deals.html or /coupons). If the planned URL fails, report the failure.\n"
+            "8. READ BEFORE BACK: When you click 'Offer Details' or open a detail popup, you MUST read and record the product name, original price, and deal price from the page BEFORE clicking 'Back'. Do NOT click 'Back' immediately after opening details.\n"
             "### SCHEMA ###\n"
             "{\"thinking\": \"3+ sentence analysis of page state, plan step, and action rationale\", \"memory\": \"Step #\", \"action\": []}\n"
             f"### GOAL ###\n{prompt_for_agent}"
@@ -498,11 +471,25 @@ async def run_agent_task(task_id: int, prompt: str):
             critical_errors = [e for e in history.errors() if not any(x in str(e).lower() for x in excluded_phrases)]
             if critical_errors: is_success = False
             
-        fail_keywords = ["i failed", "could not find", "unable to", "terminated", "no task results", "fail", "hallucination", "plan...",
-                         "captcha", "bot detection", "access denied", "security check", "verify you are human", "blocked"]
+        fail_keywords = [
+            "i failed", "could not find", "unable to", "terminated", "no task results", "fail", "hallucination", 
+            "captcha", "bot detection", "access denied", "security check", "verify you are human", "blocked",
+            "no deals matching", "no deals found", "no matching deals", "no results found",
+            "deals were not found", "not found in the scraped data", "none of the deals found"
+        ]
         lower_res = final_res.lower()
-        if any(kw in lower_res for kw in fail_keywords) or len(lower_res) < 10:
+        
+        # Check if the agent found 'nothing' when it was asked for 'something'
+        not_found_patterns = [
+            "no deals found", "no matching deals", "found nothing", "none found", 
+            "deals were not found", "not found among", "no result for", "found: none", "results: none"
+        ]
+        is_empty_search = any(p in lower_res for p in not_found_patterns)
+        
+        if any(kw in lower_res for kw in fail_keywords) or len(lower_res) < 20 or is_empty_search:
             is_success = False
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"Validation Error: Result contains failure keywords or indicates an empty search result.\n")
             
         stop_words = {'look', 'search', 'find', 'navigate', 'click', 'check', 'website', 'page', 'following', 'today', 'items', 'for', 'the', 'and', 'with', 'from', 'that', 'this', 'these', 'those', 'list', 'show', 'give', 'tell'}
         en_keywords = [w for w in re.findall(r'[a-z]{3,}', prompt.lower()) if w not in stop_words]

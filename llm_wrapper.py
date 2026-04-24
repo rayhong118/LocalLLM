@@ -126,8 +126,11 @@ class JsonStrippingChatOllama(ChatOllama):
         try:
             # Only trigger bot-detection intercept when MULTIPLE strong signals are present
             # Avoid false positives from our own protocol strings ("security check", "captcha" etc.)
-            hard_bot_keywords = ["verify you are human", "are you a robot", "checking your browser before accessing", "just a moment..."]
-            soft_bot_keywords = ["captcha", "cloudflare", "attention required"]
+            hard_bot_keywords = [
+                "verify you are human", "are you a robot", "checking your browser before accessing", 
+                "just a moment...", "skip challenge", "sso/authorize", "access denied"
+            ]
+            soft_bot_keywords = ["captcha", "cloudflare", "attention required", "security check"]
             lower_content = content.lower()
             is_bot_page = (
                 any(kw in lower_content for kw in hard_bot_keywords)
