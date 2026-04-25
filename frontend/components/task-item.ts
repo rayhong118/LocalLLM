@@ -268,7 +268,7 @@ export class TaskItem extends LitElement {
                 ${this._isExpanded && hasOutput ? html`
                     <div class="output-container" @click=${(e: Event) => e.stopPropagation()}>
                         <div class="markdown-body">
-                            ${unsafeHTML(marked.parse(this.task.outputs[0].content, { async: false }) as string)}
+                            ${unsafeHTML(marked.parse(this.task.outputs[this.task.outputs.length - 1].content, { async: false }) as string)}
                         </div>
                     </div>
                 ` : ''}

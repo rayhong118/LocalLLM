@@ -1,8 +1,11 @@
 # skills.py
+# Rewritten to use CDP-compatible page.evaluate() instead of Playwright locators.
+# browser-use's Page object is a CDP wrapper — .locator(), .get_by_text(), etc. do NOT exist.
+
 from browser_use import Controller, BrowserSession
 import logging
 import asyncio
-from site_skills.safeway import safeway_click_details, safeway_filter_category
+from site_skills.safeway import safeway_click_details, safeway_filter_category, safeway_get_all_deals
 
 logger = logging.getLogger(__name__)
 controller = Controller()
@@ -21,49 +24,78 @@ async def smart_click(text: str, browser: BrowserSession, index: int = 0):
         index: If multiple matches exist, which one to click (0-indexed).
     """
     page = await browser.get_current_page()
-    
-    # Strategy 1: Visible Text (Exact)
-    try:
-        locator = page.get_by_text(text, exact=True).filter(visible=True)
-        if await locator.count() > index:
-            await locator.nth(index).click()
-            return f"Success: Clicked exact text '{text}'"
-    except Exception: pass
+    import json as _json
 
-    # Strategy 2: Visible Text (Fuzzy)
-    try:
-        locator = page.get_by_text(text, exact=False).filter(visible=True)
-        if await locator.count() > index:
-            await locator.nth(index).click()
-            return f"Success: Clicked fuzzy text matching '{text}'"
-    except Exception: pass
+    result = await page.evaluate("""
+    (targetText, targetIndex) => {
+        const textLower = targetText.toLowerCase();
+        
+        // Strategy 1: Exact visible text match
+        const allElements = document.querySelectorAll('a, button, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="checkbox"], label, span, div');
+        let matches = [];
+        
+        for (const el of allElements) {
+            if (el.offsetParent === null) continue;
+            const elText = (el.textContent || '').trim();
+            if (elText.toLowerCase() === textLower) {
+                matches.push({el, strategy: 'exact_text'});
+            }
+        }
+        
+        // Strategy 2: Fuzzy text match (contains)
+        if (matches.length <= targetIndex) {
+            for (const el of allElements) {
+                if (el.offsetParent === null) continue;
+                const elText = (el.textContent || '').trim().toLowerCase();
+                if (elText.includes(textLower) && !matches.some(m => m.el === el)) {
+                    matches.push({el, strategy: 'fuzzy_text'});
+                }
+            }
+        }
+        
+        // Strategy 3: ARIA label match
+        if (matches.length <= targetIndex) {
+            for (const el of allElements) {
+                if (el.offsetParent === null) continue;
+                const label = el.getAttribute('aria-label') || '';
+                if (label.toLowerCase().includes(textLower) && !matches.some(m => m.el === el)) {
+                    matches.push({el, strategy: 'aria_label'});
+                }
+            }
+        }
+        
+        // Strategy 4: Placeholder match
+        if (matches.length <= targetIndex) {
+            const inputs = document.querySelectorAll('input, textarea');
+            for (const el of inputs) {
+                if (el.offsetParent === null) continue;
+                const ph = el.getAttribute('placeholder') || '';
+                if (ph.toLowerCase().includes(textLower) && !matches.some(m => m.el === el)) {
+                    matches.push({el, strategy: 'placeholder'});
+                }
+            }
+        }
+        
+        if (matches.length === 0) {
+            return JSON.stringify({error: 'No clickable element matching "' + targetText + '"'});
+        }
+        
+        if (targetIndex >= matches.length) {
+            return JSON.stringify({error: 'Index ' + targetIndex + ' out of bounds (only ' + matches.length + ' matches)'});
+        }
+        
+        const target = matches[targetIndex];
+        target.el.scrollIntoView({block: 'center'});
+        target.el.click();
+        return JSON.stringify({success: true, strategy: target.strategy, text: (target.el.textContent || '').trim().substring(0, 80)});
+    }
+    """, text, index)
 
-    # Strategy 3: Role-based (Button/Link) with text
-    for role in ["button", "link", "menuitem", "tab", "checkbox"]:
-        try:
-            locator = page.get_by_role(role, name=text, exact=False).filter(visible=True)
-            if await locator.count() > index:
-                await locator.nth(index).click()
-                return f"Success: Clicked {role} with name '{text}'"
-        except Exception: continue
+    data = __import__('json').loads(result)
+    if 'error' in data:
+        return f"Failure: {data['error']}"
+    return f"Success: Clicked {data['strategy']} matching '{text}' (text: '{data.get('text', '')}')"
 
-    # Strategy 4: ARIA Label
-    try:
-        locator = page.get_by_label(text, exact=False).filter(visible=True)
-        if await locator.count() > index:
-            await locator.nth(index).click()
-            return f"Success: Clicked element with label '{text}'"
-    except Exception: pass
-
-    # Strategy 5: Placeholder
-    try:
-        locator = page.get_by_placeholder(text, exact=False).filter(visible=True)
-        if await locator.count() > index:
-            await locator.nth(index).click()
-            return f"Success: Clicked element with placeholder '{text}'"
-    except Exception: pass
-
-    return f"Failure: Could not find any clickable element matching '{text}'"
 
 @controller.action('smart_type')
 async def smart_type(label: str, text: str, browser: BrowserSession):
@@ -74,34 +106,80 @@ async def smart_type(label: str, text: str, browser: BrowserSession):
         text: The text to type.
     """
     page = await browser.get_current_page()
-    
-    # Strategy 1: Direct Label
-    try:
-        locator = page.get_by_label(label, exact=False).filter(visible=True)
-        if await locator.count() > 0:
-            await locator.first.fill(text)
-            return f"Success: Typed '{text}' into input with label '{label}'"
-    except Exception: pass
 
-    # Strategy 2: Placeholder
-    try:
-        locator = page.get_by_placeholder(label, exact=False).filter(visible=True)
-        if await locator.count() > 0:
-            await locator.first.fill(text)
-            return f"Success: Typed '{text}' into input with placeholder '{label}'"
-    except Exception: pass
+    result = await page.evaluate("""
+    (labelText, inputText) => {
+        const labelLower = labelText.toLowerCase();
+        
+        // Strategy 1: Direct label with 'for' attribute
+        const labels = document.querySelectorAll('label');
+        for (const lbl of labels) {
+            if (lbl.textContent.toLowerCase().includes(labelLower)) {
+                const forId = lbl.getAttribute('for');
+                if (forId) {
+                    const input = document.getElementById(forId);
+                    if (input) {
+                        input.focus();
+                        input.value = inputText;
+                        input.dispatchEvent(new Event('input', {bubbles: true}));
+                        input.dispatchEvent(new Event('change', {bubbles: true}));
+                        return JSON.stringify({success: true, strategy: 'label_for'});
+                    }
+                }
+            }
+        }
+        
+        // Strategy 2: Placeholder match
+        const inputs = document.querySelectorAll('input, textarea');
+        for (const input of inputs) {
+            if (input.offsetParent === null) continue;
+            const ph = (input.getAttribute('placeholder') || '').toLowerCase();
+            if (ph.includes(labelLower)) {
+                input.focus();
+                input.value = inputText;
+                input.dispatchEvent(new Event('input', {bubbles: true}));
+                input.dispatchEvent(new Event('change', {bubbles: true}));
+                return JSON.stringify({success: true, strategy: 'placeholder'});
+            }
+        }
+        
+        // Strategy 3: ARIA label match
+        for (const input of inputs) {
+            if (input.offsetParent === null) continue;
+            const aria = (input.getAttribute('aria-label') || '').toLowerCase();
+            if (aria.includes(labelLower)) {
+                input.focus();
+                input.value = inputText;
+                input.dispatchEvent(new Event('input', {bubbles: true}));
+                input.dispatchEvent(new Event('change', {bubbles: true}));
+                return JSON.stringify({success: true, strategy: 'aria_label'});
+            }
+        }
+        
+        // Strategy 4: Nearest input after label text
+        for (const lbl of labels) {
+            if (lbl.textContent.toLowerCase().includes(labelLower)) {
+                const nextInput = lbl.parentElement?.querySelector('input, textarea') ||
+                                  lbl.nextElementSibling;
+                if (nextInput && (nextInput.tagName === 'INPUT' || nextInput.tagName === 'TEXTAREA')) {
+                    nextInput.focus();
+                    nextInput.value = inputText;
+                    nextInput.dispatchEvent(new Event('input', {bubbles: true}));
+                    nextInput.dispatchEvent(new Event('change', {bubbles: true}));
+                    return JSON.stringify({success: true, strategy: 'nearest_input'});
+                }
+            }
+        }
+        
+        return JSON.stringify({error: 'Could not find input field for label "' + labelText + '"'});
+    }
+    """, label, text)
 
-    # Strategy 3: Find nearest input to a text label (common for Safeway/complex forms)
-    try:
-        # Use XPath to find an input following specific text
-        xpath = f"//*[contains(text(), '{label}')]/following::input[1]"
-        locator = page.locator(xpath).filter(visible=True)
-        if await locator.count() > 0:
-            await locator.first.fill(text)
-            return f"Success: Typed '{text}' into input found near text '{label}'"
-    except Exception: pass
+    data = __import__('json').loads(result)
+    if 'error' in data:
+        return f"Failure: {data['error']}"
+    return f"Success: Typed '{text}' into input ({data['strategy']}) for label '{label}'"
 
-    return f"Failure: Could not find an input field for label '{label}'"
 
 @controller.action('scroll_to_text')
 async def scroll_to_text(text: str, browser: BrowserSession):
@@ -112,8 +190,22 @@ async def scroll_to_text(text: str, browser: BrowserSession):
     """
     page = await browser.get_current_page()
     try:
-        locator = page.get_by_text(text, exact=False).first
-        await locator.scroll_into_view_if_needed()
+        result = await page.evaluate("""
+        (targetText) => {
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            while (walker.nextNode()) {
+                if (walker.currentNode.textContent.includes(targetText)) {
+                    walker.currentNode.parentElement.scrollIntoView({block: 'center', behavior: 'smooth'});
+                    return JSON.stringify({success: true});
+                }
+            }
+            return JSON.stringify({error: 'Text not found'});
+        }
+        """, text)
+        
+        data = __import__('json').loads(result)
+        if 'error' in data:
+            return f"Failure: Could not scroll to text '{text}': {data['error']}"
         return f"Success: Scrolled to text '{text}'"
     except Exception as e:
         return f"Failure: Could not scroll to text '{text}': {str(e)}"
@@ -128,10 +220,17 @@ async def nav_to_url(url: str, verify_text: str, browser: BrowserSession):
     """
     page = await browser.get_current_page()
     try:
-        await page.goto(url, wait_until="networkidle", timeout=30000)
-        # Check for verification text
-        locator = page.get_by_text(verify_text, exact=False)
-        if await locator.count() > 0:
+        await page.goto(url)
+        await asyncio.sleep(3)  # Wait for SPA to render
+        
+        # Verify text presence using JS
+        result = await page.evaluate("""
+        (verifyText) => {
+            return document.body.innerText.toLowerCase().includes(verifyText.toLowerCase()) ? 'found' : 'not_found';
+        }
+        """, verify_text)
+        
+        if result == 'found':
             return f"Success: Navigated to {url} and verified content '{verify_text}'"
         else:
             return f"Partial Success: Navigated to {url} but verify text '{verify_text}' not found."
@@ -164,4 +263,4 @@ def get_skill_descriptions():
 # Register Site-Specific Skills manually
 controller.action('safeway_click_details')(safeway_click_details)
 controller.action('safeway_filter_category')(safeway_filter_category)
-
+controller.action('safeway_get_all_deals')(safeway_get_all_deals)

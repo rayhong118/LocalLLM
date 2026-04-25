@@ -1,18 +1,23 @@
-# LocalLLM Agent
+# LocalLLM Agent: Plugin-Oriented Automation
 
-A local AI agent system that allows users to submit tasks via a web UI or API, performing web automation using `browser-use` and `Ollama`.
+A local AI agent system that performs complex web automation tasks using `browser-use` and `Ollama`. It features a hybrid architecture combining general-purpose agent reasoning with high-stability, site-specific automation plugins.
+
+## Key Features
+
+- **Local-First**: Runs entirely on your hardware via Ollama.
+- **Pre-Flight Hand-off**: High-performance "site-skills" handle the heavy lifting (navigation, filtering, scraping) before the main agent loop begins.
+- **Skill-Based Stability**: Uses CDP-compatible `page.evaluate()` JS execution for ultra-reliable DOM interaction, bypassing the fragility of traditional CSS selectors.
+- **Semantic Context Injection**: Automatically retrieves domain knowledge and site-specific instructions based on task analysis.
 
 ## Getting Started
 
 ### Prerequisites
 
 1.  **Ollama**: Download and install from [ollama.com](https://ollama.com/download).
-    *   Pull the required model: `ollama pull gemma4:26b` (or the model specified in `config.py`).
+    *   Pull the required model: `ollama pull qwen3.5:9b` (or the model specified in `config.py`).
 2.  **uv**: A fast Python package installer and resolver. Install it from [astral.sh/uv](https://astral.sh/uv).
 
 ### Installation & Running
-
-The easiest way to start the application is by using the provided PowerShell script.
 
 1.  Open PowerShell in the project directory.
 2.  Run the launcher:
@@ -20,34 +25,31 @@ The easiest way to start the application is by using the provided PowerShell scr
     .\run.ps1
     ```
 
-The `run.ps1` script will:
-*   Stop any existing Ollama processes.
-*   Start a fresh Ollama server in the background.
-*   Sync project dependencies using `uv sync`.
-*   Start the agent/server.
-
 ## Architecture
 
-The project is built with a decoupled architecture focusing on local execution and ease of use.
+The project utilizes a tiered execution model to ensure production-grade reliability on dynamic websites.
+
+### Core Workflow
+
+1. **Context Manager**: Analyzes the user prompt to identify relevant domain knowledge and whether a site-specific **plugin** is required.
+2. **Pre-Flight Hand-off**: If a plugin (e.g., `safeway.py`) matches, it executes a high-speed automation script to handle site navigation, category selection, and exhaustive data extraction.
+3. **Orchestrator Loop**: If no plugin exists, or to process scraped data, the main agent loop executes an orchestrated plan using structured reasoning and "skills."
 
 ### Components
 
-*   **[main.py](file:///c:/LocalLLM/main.py)**: The entry point for the FastAPI application. It defines the API endpoints, serves the static frontend, and manages background tasks.
-*   **[agent.py](file:///c:/LocalLLM/agent.py)**: Contains the core agent logic powered by `browser-use`. It interacts with the browser and the LLM (via Ollama) to accomplish tasks.
-*   **[llm_wrapper.py](file:///c:/LocalLLM/llm_wrapper.py)**: A custom integration to format and parse prompts strictly for reasoning models.
-*   **[config.py](file:///c:/LocalLLM/config.py)**: Contains configuration constants for the app such as the chosen model, timeout limits, and browser settings.
-*   **[context_manager.py](file:///c:/LocalLLM/context_manager.py)**: Dynamically injects context into prompts so the agent remembers global context preferences.
-*   **[skills.py](file:///c:/LocalLLM/skills.py)**: Deterministic skills for the browser automation to execute UI actions.
-*   **[database.py](file:///c:/LocalLLM/database.py)**: Manages persistence using SQLAlchemy and SQLite. It stores tasks and their corresponding outputs in `tasks.db`.
-*   **[utils.py](file:///c:/LocalLLM/utils.py)**: Provides utility functions for saving data in JSON or Markdown formats.
-*   **[run.ps1](file:///c:/LocalLLM/run.ps1)**: An orchestration script that automates the setup and execution environment.
-*   **frontend/**: A directory containing the web UI (HTML, CSS, JS) accessible at `http://localhost:8000` when the server is running.
-*   **pyproject.toml**: Defines project metadata and dependencies.
+*   **[agent.py](file:///c:/LocalLLM/agent.py)**: The central orchestrator. Manages the hand-off between Pre-Flight plugins and the main Reasoning loop.
+*   **[site_skills/](file:///c:/LocalLLM/site_skills/)**: Contains specialized Python plugins for specific domains.
+    *   **[safeway.py](file:///c:/LocalLLM/site_skills/safeway.py)**: Handles complex SPA navigation, filter drawers, and deduplicated coupon scraping for Safeway.
+*   **[llm_wrapper.py](file:///c:/LocalLLM/llm_wrapper.py)**: A custom Ollama integration that enforces clean JSON output and strips reasoning artifacts.
+*   **[config.py](file:///c:/LocalLLM/config.py)**: Global settings for model selection, context window (32k), and browser behavior.
+*   **[context_manager.py](file:///c:/LocalLLM/context_manager.py)**: Semantic analyzer that pairs tasks with relevant database knowledge.
+*   **[skills.py](file:///c:/LocalLLM/skills.py)**: A library of deterministic UI skills (smart_click, smart_type, etc.) available to the agent.
+*   **[database.py](file:///c:/LocalLLM/database.py)**: SQLite persistence layer for task tracking and knowledge retrieval.
+*   **[run.ps1](file:///c:/LocalLLM/run.ps1)**: Orchestrates the background Ollama server, dependency sync, and environment initialization.
 
 ### Technology Stack
 
-*   **Browser Automation**: `browser-use` (with Playwright)
-*   **LLM Provider**: `Ollama` (Local)
-*   **Backend**: `FastAPI`
-*   **Database**: `SQLAlchemy` (SQLite)
-*   **Package Management**: `uv`
+- **Reasoning/Planning**: `qwen3.5:9b` via `Ollama`
+- **Browser Automation**: `browser-use` (Playwright / CDP)
+- **Backend Framework**: `FastAPI`
+- **Dependency Management**: `uv`

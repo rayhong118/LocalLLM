@@ -78,3 +78,65 @@ async def cleanup_dom(browser_session):
     except Exception as e:
         # Don't log syntax errors to console, just fail silently as it's non-critical
         return 0
+
+STALL_BANNER_JS = """
+(function(msg) {
+    // Remove old banner if exists
+    var old = document.getElementById('__agent_stall_banner');
+    if (old) old.remove();
+    
+    var banner = document.createElement('div');
+    banner.id = '__agent_stall_banner';
+    banner.setAttribute('role', 'alert');
+    banner.setAttribute('aria-label', msg);
+    banner.textContent = msg;
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:999999;background:#ff0000;color:#fff;padding:16px;font-size:18px;font-weight:bold;text-align:center;';
+    document.body.prepend(banner);
+})(arguments[0]);
+"""
+
+REMOVE_STALL_BANNER_JS = """
+(function() {
+    var el = document.getElementById('__agent_stall_banner');
+    if (el) el.remove();
+})();
+"""
+
+async def inject_stall_banner(browser_session, message: str):
+    """Inject a highly visible banner into the page DOM that the agent will see."""
+    try:
+        page = await browser_session.get_current_page()
+        # Pass message as argument to the IIFE
+        await page.evaluate(STALL_BANNER_JS, message)
+    except Exception:
+        pass
+
+async def remove_stall_banner(browser_session):
+    """Remove the stall banner from the page DOM."""
+    try:
+        page = await browser_session.get_current_page()
+        await page.evaluate(REMOVE_STALL_BANNER_JS)
+    except Exception:
+        pass
+
+PLAN_BANNER_JS = """
+(function(stepNum, stepText, totalSteps) {
+    var old = document.getElementById('__agent_plan_banner');
+    if (old) old.remove();
+    var banner = document.createElement('div');
+    banner.id = '__agent_plan_banner';
+    banner.setAttribute('role', 'note');
+    banner.setAttribute('aria-label', 'PLAN STEP ' + stepNum + ' of ' + totalSteps + ': ' + stepText);
+    banner.textContent = '\u25b6 PLAN STEP ' + stepNum + '/' + totalSteps + ': ' + stepText;
+    banner.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:999998;background:#1a6b1a;color:#fff;padding:10px 16px;font-size:15px;font-weight:bold;text-align:left;';
+    document.body.appendChild(banner);
+})(arguments[0], arguments[1], arguments[2]);
+"""
+
+async def inject_plan_banner(browser_session, step_num: int, step_text: str, total_steps: int):
+    """Inject a persistent plan-step banner into the page DOM visible to the agent."""
+    try:
+        page = await browser_session.get_current_page()
+        await page.evaluate(PLAN_BANNER_JS, step_num, step_text, total_steps)
+    except Exception:
+        pass
