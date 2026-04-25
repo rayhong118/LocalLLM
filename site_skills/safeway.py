@@ -417,73 +417,145 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
             pass
         await _asyncio.sleep(5)
 
-        # 2. Extract keyword
-        noise_words = {"look", "for", "deals", "safeway", "website", "following", "item:", "items:", "item", "items", "search", "find", "on", "products", "product", "the", "a", "an"}
-        short_keyword = " ".join([w for w in prompt.lower().split() if w not in noise_words and len(w) > 2]).strip()
-        if not short_keyword:
-            short_keyword = prompt[:30]
+        # 2. Extract keywords using LLM
+        extraction_system = (
+            "You are a product extraction assistant. Your job is to extract a list of specific products or items from a user's prompt.\n"
+            "Output ONLY a valid JSON object with the key 'items' containing a list of strings.\n"
+            "Example prompt: 'Get deals for milk, ice cream, and steak'\n"
+            "Output: {\"items\": [\"milk\", \"ice cream\", \"steak\"]}\n"
+            "If no specific items are found, output {\"items\": []}."
+        )
+        items = []
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                extraction_resp = await client.post(
+                    "http://localhost:11434/api/chat",
+                    json={
+                        "model": config.LLM_MODEL,
+                        "messages": [{"role": "user", "content": f"{extraction_system}\n\nPrompt: {prompt}"}],
+                        "stream": False,
+                        "format": "json",
+                        "options": {"temperature": 0, "num_ctx": 4096}
+                    },
+                    timeout=config.LLM_TIMEOUT
+                )
+                raw_content = extraction_resp.json().get("message", {}).get("content", "{}")
+                import json
+                data = json.loads(raw_content)
+                items = data.get("items", [])
+                logger.info(f"[safeway_run_pre_flight] Extracted items from prompt: {items}")
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"PRE-FLIGHT: Extracted items from prompt: {items}\n")
+        except Exception as e:
+            logger.error(f"[safeway_run_pre_flight] Keyword extraction failed: {e}. Falling back to simple extraction.")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"PRE-FLIGHT: Keyword extraction failed: {e}. Falling back to simple extraction.\n")
+            noise_words = {"look", "for", "deals", "safeway", "website", "following", "item:", "items:", "item", "items", "search", "find", "on", "products", "product", "the", "a", "an"}
+            items = [" ".join([w for w in prompt.lower().split() if w not in noise_words and len(w) > 2]).strip()]
 
-        # 3. Categorize
+        if not items:
+            items = [prompt[:30]]
+            
+        logger.info(f"[safeway_run_pre_flight] Final list of items to process: {items}")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"PRE-FLIGHT: Final list of items to process: {items}\n")
+
+        # 3. Categorize items
         available_categories = await safeway_get_categories(browser)
-        category = ""
-        if available_categories:
+        item_category_map = {} # category -> list of items
+        
+        if available_categories and items:
             selector_system = (
                 "You are a categorization assistant for a grocery store. You must output ONLY a valid JSON object.\n"
-                "Format: {\"category\": \"Category Name\"}\n"
-                "RULES: 1. NEVER pick 'Special Offers' if a specific food category is available. 2. If nothing fits, output {\"category\": \"NONE\"}.\n"
+                "Format: {\"mapping\": [{\"item\": \"item name\", \"category\": \"Category Name\"}, ...]}\n"
+                "RULES: 1. NEVER pick 'Special Offers' if a specific food category is available. 2. If nothing fits, use 'NONE' as category.\n"
                 f"Available Categories: {', '.join(available_categories)}"
             )
             try:
-                import ollama
-                selector_resp = await ollama.AsyncClient().chat(
-                    model=getattr(llm, "model", "qwen2.5:9b"),
-                    messages=[
-                        {"role": "user", "content": f"{selector_system}\n\nThe user is looking for '{short_keyword}'. Which category best matches?"}
-                    ],
-                    format="json"
-                )
-                try:
-                    raw_content = selector_resp.message.content or ""
-                except AttributeError:
-                    raw_content = selector_resp.get('message', {}).get('content', '')
-                
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"PRE-FLIGHT: LLM Category Choice Raw Response: '{raw_content}'\n")
-                
-                import json
-                try:
-                    data = json.loads(raw_content)
-                    category_choice = data.get("category", "NONE").strip()
-                except Exception:
-                    category_choice = raw_content.strip().strip("'\"")
+                import httpx
+                async with httpx.AsyncClient() as client:
+                    selector_resp = await client.post(
+                        "http://localhost:11434/api/chat",
+                        json={
+                            "model": config.LLM_MODEL,
+                            "messages": [{"role": "user", "content": f"{selector_system}\n\nItems: {', '.join(items)}"}],
+                            "stream": False,
+                            "format": "json",
+                            "options": {"temperature": 0, "num_ctx": 4096}
+                        },
+                        timeout=config.LLM_TIMEOUT
+                    )
+                    raw_content = selector_resp.json().get("message", {}).get("content", "{}")
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"PRE-FLIGHT: Categorization response: {raw_content}\n")
                     
-                if category_choice and category_choice != "NONE":
-                    if any(c.lower() == category_choice.lower() for c in available_categories):
-                        category = next(c for c in available_categories if c.lower() == category_choice.lower())
-                    else:
-                        for c in available_categories:
-                            if c.lower() in category_choice.lower() or category_choice.lower() in c.lower():
-                                category = c
-                                break
+                    import json
+                    data = json.loads(raw_content)
+                    mappings = data.get("mapping", [])
+                    
+                    logger.info(f"[safeway_run_pre_flight] Item Categorization Breakdown:")
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write("PRE-FLIGHT: Item Categorization Breakdown:\n")
+                    
+                    for m in mappings:
+                        item_name = m.get("item")
+                        category_choice = m.get("category", "NONE").strip()
+                        
+                        logger.info(f"  - Item: '{item_name}' -> Identified Category: '{category_choice}'")
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(f"  - Item: '{item_name}' -> Identified Category: '{category_choice}'\n")
+                        
+                        if category_choice and category_choice != "NONE":
+                            matched_cat = ""
+                            if any(c.lower() == category_choice.lower() for c in available_categories):
+                                matched_cat = next(c for c in available_categories if c.lower() == category_choice.lower())
+                            else:
+                                for c in available_categories:
+                                    if c.lower() in category_choice.lower() or category_choice.lower() in c.lower():
+                                        matched_cat = c
+                                        break
+                            
+                            if matched_cat:
+                                if matched_cat not in item_category_map:
+                                    item_category_map[matched_cat] = []
+                                item_category_map[matched_cat].append(item_name)
             except Exception as e:
                 with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"PRE-FLIGHT: LLM Category call failed: {e}\n")
+                    f.write(f"PRE-FLIGHT: Multi-Category mapping failed: {e}\n")
 
-        if category:
-            with open(log_path, "a", encoding="utf-8") as f: 
-                f.write(f"PRE-FLIGHT: Applying category filter '{category}'...\n")
-            await safeway_filter_category(category, browser)
-            await _asyncio.sleep(3)
+        # Fallback: if mapping failed, put all items in a single list under empty category
+        if not item_category_map:
+            item_category_map[""] = items
 
-        # 4. Scrape
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"PRE-FLIGHT: Scraping deals for '{short_keyword}'...\n")
-        scrape_result = await safeway_get_all_deals(browser, keyword=short_keyword)
-        
-        if not scrape_result.startswith("Found deals:"):
-            scrape_result = await safeway_get_all_deals(browser, keyword="")
+        # 4. Scrape deals per category
+        all_deals = []
+        for category, cat_items in item_category_map.items():
+            if category:
+                with open(log_path, "a", encoding="utf-8") as f: 
+                    f.write(f"PRE-FLIGHT: Applying category filter '{category}' for items: {cat_items}...\n")
+                await safeway_filter_category(category, browser)
+                await _asyncio.sleep(3)
             
-        return scrape_result
+            # Scrape for each item in this category (or once if category is empty)
+            keywords_to_search = cat_items if category else [" ".join(items)]
+            for kw in keywords_to_search:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"PRE-FLIGHT: Scraping deals for '{kw}' in '{category or 'General'}'...\n")
+                scrape_result = await safeway_get_all_deals(browser, keyword=kw)
+                
+                if scrape_result.startswith("Found deals:"):
+                    all_deals.append(f"--- Deals for '{kw}' in '{category or 'General'}' ---\n" + scrape_result)
+                else:
+                    # Fallback scrape if no specific match
+                    scrape_result = await safeway_get_all_deals(browser, keyword="")
+                    if scrape_result.startswith("Found deals:"):
+                        all_deals.append(f"--- General Deals in '{category or 'General'}' (Search for '{kw}' failed) ---\n" + scrape_result)
+
+        if not all_deals:
+            return "No deals found for the requested items."
+            
+        return "\n\n".join(all_deals)
 
     except Exception as e:
         with open(log_path, "a", encoding="utf-8") as f:
