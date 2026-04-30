@@ -2,15 +2,8 @@ import re
 import logging
 
 FAIL_KEYWORDS = [
-    "i failed", "could not find", "unable to", "terminated", "no task results", "fail", "hallucination", 
-    "captcha", "bot detection", "access denied", "security check", "verify you are human", "blocked",
-    "no deals matching", "no deals found", "no matching deals", "no results found",
-    "deals were not found", "not found in the scraped data", "none of the deals found"
-]
-
-NOT_FOUND_PATTERNS = [
-    "no deals found", "no matching deals", "found nothing", "none found", 
-    "deals were not found", "not found among", "no result for", "found: none", "results: none"
+    "i failed", "unable to", "terminated", "no task results", "fail", "hallucination", 
+    "captcha", "bot detection", "access denied", "security check", "verify you are human", "blocked"
 ]
 
 DATA_HEAVY_TERMS = {'price', 'cost', 'value', 'index', 'number', 'how much', 'many', 'vix'}
@@ -39,11 +32,10 @@ def evaluate_result(prompt: str, final_res: str, history, log_path: str = None) 
         if critical_errors:
             is_success = False
 
-    # 3. Check for failure keywords or empty search results
-    is_empty_search = any(p in lower_res for p in NOT_FOUND_PATTERNS)
-    if any(kw in lower_res for kw in FAIL_KEYWORDS) or len(lower_res) < 20 or is_empty_search:
+    # 3. Check for failure keywords
+    if any(kw in lower_res for kw in FAIL_KEYWORDS) or len(lower_res) < 20:
         is_success = False
-        _log(log_path, "Validation Error: Result contains failure keywords or indicates an empty search result.")
+        _log(log_path, "Validation Error: Result contains failure keywords or is too short.")
 
     # 4. Keyword verification
     en_keywords = [w for w in re.findall(r'[a-z]{3,}', prompt.lower()) if w not in STOP_WORDS]

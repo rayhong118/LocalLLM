@@ -31,7 +31,7 @@ CAVEMAN_PROTOCOL_TEMPLATE = """### RULES ###
 STALL_WARNING = (
     "STALL DETECTED (count={stall_count}): You are repeating yourself. "
     "You MUST use a named skill tool instead of generic actions. "
-    "AVAILABLE SKILLS: safeway_get_all_deals, safeway_filter_category, safeway_click_details, smart_click, nav_to_url. "
+    "AVAILABLE SKILLS: safeway_get_all_deals, safeway_filter_category, safeway_click_details, safeway_clip_coupon, safeway_clip_all_matching, smart_click, nav_to_url. "
     "Call the skill DIRECTLY by its tool name. Do NOT use click/input/scroll for what a skill can do."
 )
 
@@ -41,6 +41,8 @@ REDIRECT_MSG_TEMPLATE = (
     "  {{\"safeway_get_all_deals\": {{\"keyword\": \"{{short_keyword}}\"}}}}\n"
     "  {{\"safeway_filter_category\": {{\"category_name\": \"Beverages\"}}}}\n"
     "  {{\"safeway_click_details\": {{\"index\": 0}}}}\n"
+    "  {{\"safeway_clip_coupon\": {{\"index\": 0}}}}\n"
+    "  {{\"safeway_clip_all_matching\": {{\"keyword\": \"ice cream\"}}}}\n"
     "Put it in your action field. No other action is allowed."
 )
 

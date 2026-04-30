@@ -5,7 +5,7 @@
 from browser_use import Controller, BrowserSession
 import logging
 import asyncio
-from site_skills.safeway import safeway_click_details, safeway_filter_category, safeway_get_all_deals
+from site_skills.safeway import safeway_click_details, safeway_filter_category, safeway_get_all_deals, safeway_clip_coupon, safeway_clip_all_matching
 
 logger = logging.getLogger(__name__)
 controller = Controller()
@@ -264,3 +264,5 @@ def get_skill_descriptions():
 controller.action('safeway_click_details')(safeway_click_details)
 controller.action('safeway_filter_category')(safeway_filter_category)
 controller.action('safeway_get_all_deals')(safeway_get_all_deals)
+controller.action('safeway_clip_coupon')(safeway_clip_coupon)
+controller.action('safeway_clip_all_matching')(safeway_clip_all_matching)
