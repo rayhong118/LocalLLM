@@ -46,13 +46,9 @@ REDIRECT_MSG_TEMPLATE = (
     "Put it in your action field. No other action is allowed."
 )
 
-PRE_FLIGHT_DATA_PROMPT = """TASK: {prompt}
+PRE_FLIGHT_DATA_PROMPT = """You already completed all the work. Call done() immediately with the results below.
+RULES: Copy ONLY the block between === SAFEWAY COUPON RESULTS === and the 📊 SUMMARY line (inclusive) into done(). Do NOT include this instruction text. Do NOT navigate or re-search.
 
-SCRAPED DATA (already collected for this task):
 {pre_flight_data}
 
-INSTRUCTIONS: The data above was already scraped from the target website. Your job is to:
-1. Filter the data strictly for items matching the task. Pay close attention to product categories.
-2. Format a clean list of ONLY the perfectly matching entries (e.g., Name, Price, Deal). Do not include duplicates.
-3. Call done(text=<your formatted list>, success=True). If no items match perfectly, report that none were found.
-Do NOT navigate or scroll. The data is already here."""
+Call done(text=<results above>, success=True) now."""

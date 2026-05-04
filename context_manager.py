@@ -34,6 +34,7 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str,
                     "messages": [{"role": "user", "content": eval_prompt}],
                     "stream": False,
                     "format": "json",
+                    "think": False,
                     "options": {"temperature": 0, "num_ctx": 4096}
                 },
                 timeout=config.LLM_TIMEOUT

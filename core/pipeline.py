@@ -42,6 +42,8 @@ class AgentPipeline:
             await self.setup()
             await self.plan()
             pre_flight_data = await self.pre_flight()
+            if pre_flight_data == "PREFLIGHT_FATAL":
+                raise RuntimeError("Pre-flight failed: LLM model errors prevented coupon matching. Check Ollama server status and resource availability.")
             history = await self.execute(pre_flight_data)
             await self.evaluate(history)
         except Exception as e:
@@ -177,6 +179,9 @@ class AgentPipeline:
             if data:
                 self.log(f"PRE-FLIGHT SUCCESS: Data injected for '{self.site_key}' plugin.")
                 return data
+            else:
+                self.log(f"PRE-FLIGHT FAILED: Plugin '{self.site_key}' returned no data (likely LLM errors).")
+                return "PREFLIGHT_FATAL"
         except Exception as e:
             self.log(f"PRE-FLIGHT failure for '{self.site_key}': {e}")
         return ""
@@ -184,7 +189,7 @@ class AgentPipeline:
     async def execute(self, pre_flight_data):
         prompt_for_agent = self.orchestrated_plan
         if pre_flight_data:
-            prompt_for_agent = PRE_FLIGHT_DATA_PROMPT.format(prompt=self.prompt, pre_flight_data=pre_flight_data[:3000])
+            prompt_for_agent = PRE_FLIGHT_DATA_PROMPT.format(pre_flight_data=pre_flight_data[:3000])
 
         full_protocol = CAVEMAN_PROTOCOL_TEMPLATE.format(prompt_for_agent=prompt_for_agent)
 

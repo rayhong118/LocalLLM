@@ -10,10 +10,37 @@ import config
 
 logger = logging.getLogger(__name__)
 
+import re
+
+def _clean_deal_description(desc: str) -> str:
+    """Strip Safeway UI noise (button labels, duplicate expiry formats) from card descriptions."""
+    # Remove common UI button labels
+    noise_patterns = [
+        r'\|\s*Offer Details?\s*',
+        r'\|\s*Clip Coupon\s*',
+        r'\|\s*Clip Deal\s*',
+        r'\|\s*Coupon has already been\s*',
+        r'\|\s*Clipped\s*',
+        r'\|\s*Add to Card\s*',
+        r'\|\s*Load to Card\s*',
+    ]
+    for pattern in noise_patterns:
+        desc = re.sub(pattern, ' | ', desc, flags=re.IGNORECASE)
+    
+    # Remove duplicate expiration (keep short form, drop long form)
+    # e.g. "Expires 5/5/2026 | Expires May 5, 2026" -> "Expires 5/5/2026"
+    desc = re.sub(r'\|\s*Expires\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},?\s*\d{4}\s*', '', desc)
+    
+    # Clean up multiple pipes and trailing pipes
+    desc = re.sub(r'(\s*\|\s*){2,}', ' | ', desc)
+    desc = desc.strip().strip('|').strip()
+    
+    return desc
 
 async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = "") -> list[int]:
     """Use the local LLM to semantically match card texts against a user keyword.
     Returns a list of card indices (from card_texts) that match.
+    Returns None if the LLM call fails (error), vs [] for genuine no-matches.
     E.g. keyword='coke' would match a card containing 'Coca-Cola'.
     """
     if not card_texts or not keyword:
@@ -23,7 +50,8 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
     import json
 
     # Build a numbered list of card summaries (truncated to save tokens)
-    card_list = "\n".join(f"{i}: {text[:100]}" for i, text in enumerate(card_texts))
+    # Keep short — the LLM only needs enough to identify the product, not full details
+    card_list = "\n".join(f"{i}: {text[:120]}" for i, text in enumerate(card_texts))
 
     system_prompt = (
         "You are a product matching assistant. Given a user's search term and a numbered list of coupon card descriptions, "
@@ -45,12 +73,42 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
                     "messages": [{"role": "user", "content": f"{system_prompt}\n\n{user_msg}"}],
                     "stream": False,
                     "format": "json",
-                    "options": {"temperature": 0, "num_ctx": 4096}
+                    "think": False,
+                    "options": {"temperature": 0, "num_ctx": 8192}
                 },
                 timeout=config.LLM_TIMEOUT
             )
-            raw = resp.json().get("message", {}).get("content", "{}")
-            data = json.loads(raw)
+            
+            # Detailed response diagnostics
+            if resp.status_code != 200:
+                err_msg = f"Ollama returned HTTP {resp.status_code}: {resp.text[:200]}"
+                logger.error(f"[_llm_match_cards] {err_msg}")
+                if log_path:
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"PRE-FLIGHT LLM MATCH FAILED: {err_msg}\n")
+                return None
+            
+            resp_json = resp.json()
+            raw = resp_json.get("message", {}).get("content", "")
+            
+            if not raw or not raw.strip():
+                err_msg = f"Ollama returned empty content. Full response keys: {list(resp_json.keys())}, done: {resp_json.get('done')}, done_reason: {resp_json.get('done_reason')}"
+                logger.error(f"[_llm_match_cards] {err_msg}")
+                if log_path:
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"PRE-FLIGHT LLM MATCH FAILED: {err_msg}\n")
+                return None
+            
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as je:
+                err_msg = f"Failed to parse LLM response as JSON: {je}. Raw content: {raw[:300]}"
+                logger.error(f"[_llm_match_cards] {err_msg}")
+                if log_path:
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"PRE-FLIGHT LLM MATCH FAILED: {err_msg}\n")
+                return None
+            
             matches = data.get("matches", [])
 
             # Validate indices are in range
@@ -62,12 +120,27 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
             logger.info(f"[_llm_match_cards] keyword='{keyword}' -> {len(valid)} matches: {valid}")
             return valid
 
-    except Exception as e:
-        logger.error(f"[_llm_match_cards] LLM matching failed for '{keyword}': {e}. Falling back to empty.")
+    except httpx.TimeoutException:
+        err_msg = f"Ollama request timed out after {config.LLM_TIMEOUT}s for keyword '{keyword}' ({len(card_texts)} cards)"
+        logger.error(f"[_llm_match_cards] {err_msg}")
         if log_path:
             with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"PRE-FLIGHT LLM MATCH FAILED: {e}\n")
-        return []
+                f.write(f"PRE-FLIGHT LLM MATCH FAILED (TIMEOUT): {err_msg}\n")
+        return None
+    except httpx.ConnectError as ce:
+        err_msg = f"Cannot connect to Ollama at localhost:11434: {ce}"
+        logger.error(f"[_llm_match_cards] {err_msg}")
+        if log_path:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"PRE-FLIGHT LLM MATCH FAILED (CONNECTION): {err_msg}\n")
+        return None
+    except Exception as e:
+        err_msg = f"LLM matching failed for '{keyword}': {type(e).__name__}: {e}"
+        logger.error(f"[_llm_match_cards] {err_msg}. Falling back to empty.")
+        if log_path:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"PRE-FLIGHT LLM MATCH FAILED: {err_msg}\n")
+        return None
 
 
 async def safeway_click_details(browser: BrowserSession, index: int):
@@ -250,7 +323,7 @@ async def safeway_get_all_deals(browser: BrowserSession, keyword: str = ""):
             
             for (let i = 0; i < cards.length; i++) {
                 try {
-                    let text = cards[i].innerText.trim().replace(/\\n/g, ' | ').substring(0, 200);
+                    let text = cards[i].innerText.trim().replace(/\\n/g, ' | ').substring(0, 300);
                     if (kwLower && text.toLowerCase().indexOf(kwLower) === -1) continue;
                     
                     if (!seen.has(text)) {
@@ -320,7 +393,7 @@ async def safeway_clip_coupon(browser: BrowserSession, index: int):
                 return JSON.stringify({error: 'Index ' + idx + ' out of bounds (' + cards.length + ' cards found)'});
 
             const card = cards[idx];
-            const cardText = (card.innerText || '').substring(0, 120);
+            const cardText = (card.innerText || '').substring(0, 250).replace(/\\n/g, ' | ');
 
             // Check if already clipped
             const alreadyClipped = Array.from(card.querySelectorAll('button, span, div'))
@@ -461,7 +534,7 @@ async def safeway_clip_all_matching(browser: BrowserSession, keyword: str = ""):
 
             for (let i = 0; i < cards.length; i++) {
                 const card = cards[i];
-                const cardText = (card.innerText || '').substring(0, 120).replace(/\\n/g, ' | ');
+                const cardText = (card.innerText || '').substring(0, 250).replace(/\\n/g, ' | ');
 
                 // Keyword filter
                 if (kwLower && cardText.toLowerCase().indexOf(kwLower) === -1) continue;
@@ -588,7 +661,7 @@ async def safeway_clip_by_indices(browser: BrowserSession, indices: list[int], k
                 }
 
                 const card = cards[idx];
-                const cardText = (card.innerText || '').substring(0, 120).replace(/\\n/g, ' | ');
+                const cardText = (card.innerText || '').substring(0, 250).replace(/\\n/g, ' | ');
 
                 // Already clipped?
                 const alreadyClipped = Array.from(card.querySelectorAll('button, span, div'))
@@ -880,6 +953,7 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
                         "messages": [{"role": "user", "content": f"{extraction_system}\n\nPrompt: {prompt}"}],
                         "stream": False,
                         "format": "json",
+                        "think": False,
                         "options": {"temperature": 0, "num_ctx": 4096}
                     },
                     timeout=config.LLM_TIMEOUT
@@ -926,6 +1000,7 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
                             "messages": [{"role": "user", "content": f"{selector_system}\n\nItems: {', '.join(items)}"}],
                             "stream": False,
                             "format": "json",
+                            "think": False,
                             "options": {"temperature": 0, "num_ctx": 4096}
                         },
                         timeout=config.LLM_TIMEOUT
@@ -965,16 +1040,21 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
                                     item_category_map[matched_cat] = []
                                 item_category_map[matched_cat].append(item_name)
             except Exception as e:
+                logger.error(f"[safeway_run_pre_flight] Multi-Category mapping failed: {type(e).__name__}: {e}")
                 with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"PRE-FLIGHT: Multi-Category mapping failed: {e}\n")
+                    f.write(f"PRE-FLIGHT: Multi-Category mapping failed: {type(e).__name__}: {e}\n")
 
-        # Fallback: if mapping failed, put all items in a single list under empty category
+        # Fallback: if mapping failed, process each item individually under empty category
+        # (Do NOT concatenate all items into one keyword — that produces unsearchable strings)
         if not item_category_map:
-            item_category_map[""] = items
+            for item in items:
+                if "" not in item_category_map:
+                    item_category_map[""] = []
+                item_category_map[""].append(item)
 
         # 4. Scrape deals AND clip coupons per category
-        all_deals = []
-        clip_summary = []
+        # Build a concise per-item summary (instead of raw card dumps that get truncated)
+        item_results = []  # list of dicts: {item, category, clipped: [], already: [], no_match: bool}
         for category, cat_items in item_category_map.items():
             if category:
                 with open(log_path, "a", encoding="utf-8") as f: 
@@ -982,22 +1062,22 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
                 await safeway_filter_category(category, browser)
                 await _asyncio.sleep(3)
             
-            # Scrape for each item in this category (or once if category is empty)
-            keywords_to_search = cat_items if category else [" ".join(items)]
+            # Scrape for each item in this category
+            keywords_to_search = cat_items
             for kw in keywords_to_search:
+                result_entry = {"item": kw, "category": category or "General", "clipped": [], "already": [], "no_button": [], "no_match": False, "llm_error": False}
+                
                 with open(log_path, "a", encoding="utf-8") as f:
                     f.write(f"PRE-FLIGHT: Scraping deals for '{kw}' in '{category or 'General'}'...\n")
                 scrape_result = await safeway_get_all_deals(browser, keyword=kw)
                 
                 found_deals = False
                 if scrape_result.startswith("Found deals:"):
-                    all_deals.append(f"--- Deals for '{kw}' in '{category or 'General'}' ---\n" + scrape_result)
                     found_deals = True
                 else:
                     # Fallback scrape if no specific match
                     scrape_result = await safeway_get_all_deals(browser, keyword="")
                     if scrape_result.startswith("Found deals:"):
-                        all_deals.append(f"--- General Deals in '{category or 'General'}' (Search for '{kw}' failed) ---\n" + scrape_result)
                         found_deals = True
 
                 # 5. Auto-clip matching coupons using LLM-based semantic matching
@@ -1006,6 +1086,7 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
                         f.write(f"PRE-FLIGHT: LLM-matching coupons for '{kw}' in '{category or 'General'}'...\n")
                     
                     # Scrape all card texts from the page for LLM matching
+                    # Enhanced: also extract aria-labels, image alts, and title attrs for volume/size info
                     card_texts_raw = await page.evaluate("""
                     () => {
                         const selectors = [
@@ -1021,34 +1102,171 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
                                 if (els.length > 0) { cards = els; break; }
                             } catch(e) {}
                         }
-                        return JSON.stringify(cards.map(c => (c.innerText || '').substring(0, 120).replace(/\\n/g, ' | ')));
+                        return JSON.stringify(cards.map(c => {
+                            let text = (c.innerText || '').substring(0, 250).replace(/\\n/g, ' | ');
+                            
+                            // Extract additional product info from DOM attributes
+                            const extras = [];
+                            
+                            // Image alt text often contains product name + size/volume
+                            c.querySelectorAll('img').forEach(img => {
+                                const alt = (img.getAttribute('alt') || '').trim();
+                                if (alt.length > 5 && !text.toLowerCase().includes(alt.toLowerCase().substring(0, 20))) {
+                                    extras.push(alt);
+                                }
+                            });
+                            
+                            // Aria-labels on child elements may have full descriptions with size info
+                            c.querySelectorAll('[aria-label]').forEach(el => {
+                                const label = (el.getAttribute('aria-label') || '').trim();
+                                if (label.length > 10 && !text.toLowerCase().includes(label.toLowerCase().substring(0, 20))) {
+                                    extras.push(label);
+                                }
+                            });
+                            
+                            // Title attributes
+                            c.querySelectorAll('[title]').forEach(el => {
+                                const title = (el.getAttribute('title') || '').trim();
+                                if (title.length > 5 && !text.toLowerCase().includes(title.toLowerCase().substring(0, 20))) {
+                                    extras.push(title);
+                                }
+                            });
+                            
+                            if (extras.length > 0) {
+                                text += ' || ' + extras.join(' | ');
+                            }
+                            return text.substring(0, 400);
+                        }));
                     }
                     """)
                     import json as _json
                     card_texts = _json.loads(card_texts_raw)
                     
                     # Ask LLM which cards match the keyword semantically
+                    # Returns None on LLM error, [] on genuine no-matches
                     matching_indices = await _llm_match_cards(card_texts, kw, log_path)
                     
-                    if matching_indices:
+                    if matching_indices is None:
+                        # LLM call failed — mark as error, not "no match"
+                        result_entry["llm_error"] = True
+                        clip_result = f"LLM ERROR: Model failed while matching '{kw}' among {len(card_texts)} cards."
+                    elif matching_indices:
+                        # Deduplicate matching indices by card text similarity
+                        seen_texts = {}
+                        unique_indices = []
+                        for idx in matching_indices:
+                            if idx < len(card_texts):
+                                dedup_key = card_texts[idx][:150].strip().lower()
+                                if dedup_key not in seen_texts:
+                                    seen_texts[dedup_key] = idx
+                                    unique_indices.append(idx)
+                        
+                        if len(unique_indices) < len(matching_indices):
+                            with open(log_path, "a", encoding="utf-8") as f:
+                                f.write(f"PRE-FLIGHT DEDUP: Reduced {len(matching_indices)} matches to {len(unique_indices)} unique cards\n")
+                            logger.info(f"[safeway_run_pre_flight] Dedup: {len(matching_indices)} -> {len(unique_indices)} unique for '{kw}'")
+                        
+                        # Clip all matched cards (including duplicates for coverage)
                         clip_result = await safeway_clip_by_indices(browser, matching_indices, keyword=kw)
+                        
+                        # Parse clip_result, deduplicating descriptions in output
+                        seen_descs = set()
+                        for line in clip_result.splitlines():
+                            line_stripped = line.strip()
+                            if "✅ CLIPPED" in line_stripped:
+                                desc = line_stripped.split("CLIPPED - ", 1)[-1] if "CLIPPED - " in line_stripped else line_stripped
+                                desc = _clean_deal_description(desc[:250])
+                                desc_key = desc[:100].lower()
+                                if desc_key not in seen_descs:
+                                    seen_descs.add(desc_key)
+                                    result_entry["clipped"].append(desc)
+                            elif "⏭️ ALREADY" in line_stripped:
+                                desc = line_stripped.split("ALREADY - ", 1)[-1] if "ALREADY - " in line_stripped else line_stripped
+                                desc = _clean_deal_description(desc[:250])
+                                desc_key = desc[:100].lower()
+                                if desc_key not in seen_descs:
+                                    seen_descs.add(desc_key)
+                                    result_entry["already"].append(desc)
+                            elif "➖ NO BUTTON" in line_stripped:
+                                desc = line_stripped.split("NO BUTTON - ", 1)[-1] if "NO BUTTON - " in line_stripped else line_stripped
+                                desc = _clean_deal_description(desc[:250])
+                                desc_key = desc[:100].lower()
+                                if desc_key not in seen_descs:
+                                    seen_descs.add(desc_key)
+                                    result_entry["no_button"].append(desc)
                     else:
+                        result_entry["no_match"] = True
                         clip_result = f"LLM found no semantic matches for '{kw}' among {len(card_texts)} cards."
                     
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"PRE-FLIGHT CLIP RESULT: {clip_result}\n")
                     logger.info(f"[safeway_run_pre_flight] Clip result for '{kw}': {clip_result.splitlines()[0] if clip_result else 'empty'}")
-                    clip_summary.append(f"--- Clip results for '{kw}' ---\n{clip_result}")
+                else:
+                    result_entry["no_match"] = True
+                
+                item_results.append(result_entry)
 
-        if not all_deals:
+        # Build concise summary for agent hand-off
+        if not item_results:
             return "No deals found for the requested items."
         
-        result_parts = all_deals
-        if clip_summary:
-            result_parts.append("\n=== COUPON CLIPPING RESULTS ===")
-            result_parts.extend(clip_summary)
+        summary_lines = ["=== SAFEWAY COUPON RESULTS ==="]
+        total_clipped = 0
+        total_already = 0
+        total_no_button = 0
+        not_found_items = []
+        error_items = []
+        
+        for r in item_results:
+            has_results = r["clipped"] or r["already"] or r["no_button"]
             
-        return "\n\n".join(result_parts)
+            if r.get("llm_error") and not has_results:
+                error_items.append(r["item"])
+                continue
+            
+            if not has_results and r["no_match"]:
+                not_found_items.append(r["item"])
+                continue
+            
+            header = f"\n## {r['item'].upper()} ({r['category']})"
+            summary_lines.append(header)
+            
+            if r["clipped"]:
+                total_clipped += len(r["clipped"])
+                summary_lines.append(f"  ✅ Clipped {len(r['clipped'])} coupon(s):")
+                for i, desc in enumerate(r["clipped"], 1):
+                    summary_lines.append(f"    {i}. {desc}")
+            if r["already"]:
+                total_already += len(r["already"])
+                summary_lines.append(f"  ⏭️ Already clipped: {len(r['already'])}")
+                for i, desc in enumerate(r["already"], 1):
+                    summary_lines.append(f"    {i}. {desc}")
+            if r["no_button"]:
+                total_no_button += len(r["no_button"])
+                summary_lines.append(f"  ➖ Auto-sale (no clip needed): {len(r['no_button'])}")
+                for i, desc in enumerate(r["no_button"], 1):
+                    summary_lines.append(f"    {i}. {desc}")
+        
+        if not_found_items:
+            summary_lines.append("")
+            for item in not_found_items:
+                summary_lines.append(f"❌ {item.upper()} — No coupons found")
+        
+        if error_items:
+            summary_lines.append("")
+            for item in error_items:
+                summary_lines.append(f"⚠️ {item.upper()} — LLM ERROR (model failed, could not search)")
+        
+        summary_lines.append(f"\n📊 SUMMARY: {len(item_results)} items searched | {total_clipped} clipped | {total_already} already clipped | {total_no_button} auto-sale | {len(not_found_items)} not found | {len(error_items)} errors")
+        
+        # If ALL items failed due to LLM errors and nothing was clipped, signal failure
+        if error_items and total_clipped == 0 and total_already == 0 and total_no_button == 0 and not not_found_items:
+            logger.error(f"[safeway_run_pre_flight] ALL items failed due to LLM errors. Signaling task failure.")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"PRE-FLIGHT FATAL: All {len(error_items)} items failed due to LLM errors. Task will be marked FAILED.\n")
+            return ""  # Empty string signals failure to pipeline
+        
+        return "\n".join(summary_lines)
 
     except Exception as e:
         with open(log_path, "a", encoding="utf-8") as f:
