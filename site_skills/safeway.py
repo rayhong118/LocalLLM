@@ -908,6 +908,52 @@ async def safeway_get_categories(browser: BrowserSession):
     except Exception as e:
         logger.error(f"[safeway_get_categories] Failed: {e}")
         return []
+
+CATEGORY_EMOJIS = {
+    "Beverages": "🥤",
+    "Dairy, Eggs & Cheese": "🥛",
+    "Dairy": "🥛",
+    "Meat & Seafood": "🥩",
+    "Fruits & Vegetables": "🍎",
+    "Produce": "🍎",
+    "Frozen Foods": "❄️",
+    "Paper, Cleaning & Home": "🧻",
+    "Paper": "🧻",
+    "Baby Care": "👶",
+    "Bread & Bakery": "🍞",
+    "Breakfast & Cereal": "🥣",
+    "Cookies, Snacks & Candy": "🍪",
+    "Deli": "🧀",
+    "Personal Care & Health": "🧼",
+    "Pet Care": "🐾",
+}
+
+def _format_deal_markdown(desc: str) -> str:
+    parts = [p.strip() for p in desc.split('|') if p.strip()]
+    if not parts:
+        return desc
+    
+    deal = parts[0]
+    product = parts[1] if len(parts) > 1 else ""
+    details = parts[2] if len(parts) > 2 else ""
+    
+    terms = []
+    for p in parts[3:]:
+        if re.search(r'offer details|clip coupon|clip deal|add to card|load to card', p, re.IGNORECASE):
+            continue
+        terms.append(p)
+        
+    formatted = f"**{deal}**"
+    if product:
+        formatted += f" - *{product}*"
+    
+    if details:
+        formatted += f"\n     * *Details:* {details}"
+    if terms:
+        formatted += f"\n     * *Terms:* {' | '.join(terms)}"
+        
+    return formatted
+
 async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_str: str, log_path: str, llm: Any):
     """SITE-SPECIFIC AUTOMATION: Handles the heavy lifting of navigation and 
     scraping for Safeway before the agent starts.
@@ -1210,54 +1256,74 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
         if not item_results:
             return "No deals found for the requested items."
         
-        summary_lines = ["=== SAFEWAY COUPON RESULTS ==="]
+        from collections import defaultdict
+        category_groups = defaultdict(list)
+        for r in item_results:
+            cat = r["category"] or "General Deals"
+            category_groups[cat].append(r)
+            
+        summary_lines = ["# 🛒 Safeway Coupon Results"]
         total_clipped = 0
         total_already = 0
         total_no_button = 0
         not_found_items = []
         error_items = []
         
-        for r in item_results:
-            has_results = r["clipped"] or r["already"] or r["no_button"]
+        for category, results in category_groups.items():
+            category_has_results = False
+            for r in results:
+                has_results = r["clipped"] or r["already"] or r["no_button"]
+                if r.get("llm_error") and not has_results:
+                    error_items.append(r["item"])
+                elif not has_results and r["no_match"]:
+                    not_found_items.append(r["item"])
+                else:
+                    category_has_results = True
             
-            if r.get("llm_error") and not has_results:
-                error_items.append(r["item"])
+            if not category_has_results:
                 continue
+                
+            emoji = CATEGORY_EMOJIS.get(category, "📦")
+            summary_lines.append(f"\n### {emoji} {category}")
             
-            if not has_results and r["no_match"]:
-                not_found_items.append(r["item"])
-                continue
-            
-            header = f"\n## {r['item'].upper()} ({r['category']})"
-            summary_lines.append(header)
-            
-            if r["clipped"]:
-                total_clipped += len(r["clipped"])
-                summary_lines.append(f"  ✅ Clipped {len(r['clipped'])} coupon(s):")
-                for i, desc in enumerate(r["clipped"], 1):
-                    summary_lines.append(f"    {i}. {desc}")
-            if r["already"]:
-                total_already += len(r["already"])
-                summary_lines.append(f"  ⏭️ Already clipped: {len(r['already'])}")
-                for i, desc in enumerate(r["already"], 1):
-                    summary_lines.append(f"    {i}. {desc}")
-            if r["no_button"]:
-                total_no_button += len(r["no_button"])
-                summary_lines.append(f"  ➖ Auto-sale (no clip needed): {len(r['no_button'])}")
-                for i, desc in enumerate(r["no_button"], 1):
-                    summary_lines.append(f"    {i}. {desc}")
+            for r in results:
+                has_results = r["clipped"] or r["already"] or r["no_button"]
+                if not has_results:
+                    continue
+                
+                summary_lines.append(f"\n#### **{r['item'].upper()}**")
+                
+                if r["clipped"]:
+                    total_clipped += len(r["clipped"])
+                    summary_lines.append(f"* **✅ Clipped {len(r['clipped'])} coupon(s):**")
+                    for i, desc in enumerate(r["clipped"], 1):
+                        formatted_desc = _format_deal_markdown(desc)
+                        summary_lines.append(f"  {i}. {formatted_desc}")
+                if r["already"]:
+                    total_already += len(r["already"])
+                    summary_lines.append(f"* **⏭️ Already clipped {len(r['already'])} coupon(s):**")
+                    for i, desc in enumerate(r["already"], 1):
+                        formatted_desc = _format_deal_markdown(desc)
+                        summary_lines.append(f"  {i}. {formatted_desc}")
+                if r["no_button"]:
+                    total_no_button += len(r["no_button"])
+                    summary_lines.append(f"* **➖ Auto-sale (no clip needed): {len(r['no_button'])}**")
+                    for i, desc in enumerate(r["no_button"], 1):
+                        formatted_desc = _format_deal_markdown(desc)
+                        summary_lines.append(f"  {i}. {formatted_desc}")
         
         if not_found_items:
-            summary_lines.append("")
+            summary_lines.append("\n### ❌ No Coupons Found")
             for item in not_found_items:
-                summary_lines.append(f"❌ {item.upper()} — No coupons found")
+                summary_lines.append(f"- **{item.upper()}**")
         
         if error_items:
-            summary_lines.append("")
+            summary_lines.append("\n### ⚠️ LLM Errors")
             for item in error_items:
-                summary_lines.append(f"⚠️ {item.upper()} — LLM ERROR (model failed, could not search)")
+                summary_lines.append(f"- **{item.upper()}** (Model failed, could not search)")
         
-        summary_lines.append(f"\n📊 SUMMARY: {len(item_results)} items searched | {total_clipped} clipped | {total_already} already clipped | {total_no_button} auto-sale | {len(not_found_items)} not found | {len(error_items)} errors")
+        summary_lines.append("\n***")
+        summary_lines.append(f"📊 **SUMMARY:** {len(item_results)} items searched | {total_clipped} clipped | {total_already} already clipped | {total_no_button} auto-sale | {len(not_found_items)} not found | {len(error_items)} errors")
         
         # If ALL items failed due to LLM errors and nothing was clipped, signal failure
         if error_items and total_clipped == 0 and total_already == 0 and total_no_button == 0 and not not_found_items:

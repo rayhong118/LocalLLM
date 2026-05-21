@@ -137,6 +137,23 @@ export class TaskItem extends LitElement {
         }
         .retry-btn:hover { background: var(--color-primary-hover); transform: translateY(-1px); }
 
+        .copy-btn {
+            background: var(--color-bg-alt);
+            color: var(--color-text-muted);
+            border: 1px solid var(--color-border);
+        }
+        .copy-btn:hover {
+            background: var(--color-info-bg);
+            color: var(--color-info);
+            border-color: var(--color-info);
+            transform: translateY(-1px);
+        }
+        .copy-btn.copied {
+            background: var(--color-success-bg);
+            color: var(--color-success);
+            border-color: var(--color-success);
+        }
+
         .cancel-btn {
             background: var(--color-bg-alt);
             color: var(--color-text-muted);
@@ -186,6 +203,11 @@ export class TaskItem extends LitElement {
 
         .markdown-body { font-size: 0.95rem; line-height: 1.6; color: var(--color-text-body); }
         .markdown-body h1, .markdown-body h2 { border-bottom: 1px solid var(--color-border); padding-bottom: 0.3rem; margin-top: 1.5rem; }
+        .markdown-body h3 { font-size: 1.15rem; margin-top: 1.25rem; margin-bottom: 0.75rem; color: var(--color-text-body); font-weight: 700; border-bottom: 1px dashed var(--color-border); padding-bottom: 0.25rem; }
+        .markdown-body h4 { font-size: 1.02rem; margin-top: 1rem; margin-bottom: 0.5rem; color: var(--color-text-body); font-weight: 600; }
+        .markdown-body ul, .markdown-body ol { padding-left: 1.5rem; margin-top: 0.5rem; margin-bottom: 0.5rem; }
+        .markdown-body li { margin-bottom: 0.25rem; }
+        .markdown-body li ul, .markdown-body li ol { margin-top: 0.25rem; margin-bottom: 0.25rem; }
         .markdown-body code { background: var(--color-neutral-bg); padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 85%; }
         .markdown-body pre { background: var(--color-neutral-bg); padding: 1rem; border-radius: 8px; overflow-x: auto; }
     `;
@@ -195,6 +217,9 @@ export class TaskItem extends LitElement {
 
     @state()
     private _isExpanded = false;
+
+    @state()
+    private _copyLabel = 'Copy';
 
     private static _tzAbbreviation?: string;
 
@@ -223,6 +248,25 @@ export class TaskItem extends LitElement {
         }));
     }
 
+    private async _copyPrompt(e: Event) {
+        e.stopPropagation();
+        try {
+            await navigator.clipboard.writeText(this.task.prompt);
+            this._copyLabel = 'Copied!';
+            setTimeout(() => { this._copyLabel = 'Copy'; }, 1500);
+        } catch {
+            // Fallback for non-HTTPS contexts
+            const ta = document.createElement('textarea');
+            ta.value = this.task.prompt;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+            this._copyLabel = 'Copied!';
+            setTimeout(() => { this._copyLabel = 'Copy'; }, 1500);
+        }
+    }
+
     override render() {
         if (!this.task) return html``;
 
@@ -243,6 +287,9 @@ export class TaskItem extends LitElement {
                         ` : ''}
                         ${(this.task.status === 'FAILED' || this.task.status === 'CANCELLED') && this.task.frequency !== 'DAILY' ? html`
                             <button class="action-btn retry-btn" @click=${(e: Event) => { e.stopPropagation(); this._dispatchAction('task-retry'); }}>Retry</button>
+                        ` : ''}
+                        ${this.task.status === 'COMPLETED' ? html`
+                            <button class="action-btn copy-btn ${this._copyLabel === 'Copied!' ? 'copied' : ''}" @click=${(e: Event) => this._copyPrompt(e)}>${this._copyLabel}</button>
                         ` : ''}
                         ${this.task.status === 'RUNNING' ? html`
                             <button class="action-btn cancel-btn" @click=${(e: Event) => { e.stopPropagation(); this._dispatchAction('task-cancel'); }}>Cancel</button>
@@ -268,7 +315,7 @@ export class TaskItem extends LitElement {
                 ${this._isExpanded && hasOutput ? html`
                     <div class="output-container" @click=${(e: Event) => e.stopPropagation()}>
                         <div class="markdown-body">
-                            ${unsafeHTML(marked.parse(this.task.outputs[this.task.outputs.length - 1].content, { async: false }) as string)}
+                            ${unsafeHTML(marked.parse(this.task.outputs[this.task.outputs.length - 1].content, { async: false, gfm: true, breaks: true }) as string)}
                         </div>
                     </div>
                 ` : ''}
