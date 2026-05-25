@@ -36,15 +36,16 @@ class AgentPipeline:
         self.site_key = None
         self.context_str = ""
         self.orchestrated_plan = ""
+        self.pre_flight_data = ""
 
     async def run(self):
         try:
             await self.setup()
             await self.plan()
-            pre_flight_data = await self.pre_flight()
-            if pre_flight_data == "PREFLIGHT_FATAL":
+            self.pre_flight_data = await self.pre_flight()
+            if self.pre_flight_data == "PREFLIGHT_FATAL":
                 raise RuntimeError("Pre-flight failed: LLM model errors prevented coupon matching. Check Ollama server status and resource availability.")
-            history = await self.execute(pre_flight_data)
+            history = await self.execute(self.pre_flight_data)
             await self.evaluate(history)
         except Exception as e:
             await self.handle_fatal_error(e)
@@ -284,11 +285,16 @@ class AgentPipeline:
             last_match = next((h.result[-1].extracted_content for h in reversed(history.history) if h.result), None)
             if last_match: final_res = last_match
 
+        # When pre-flight produced a full summary, use it directly instead of
+        # the agent's token-limited re-generation which truncates the output.
+        if self.pre_flight_data and self.pre_flight_data not in ("PREFLIGHT_FATAL", ""):
+            final_res = self.pre_flight_data
+
         is_success = evaluate_result(self.prompt, final_res, history, self.log_path)
         
         self.task.status = "COMPLETED" if is_success else "FAILED"
         self.db.add(Output(task_id=self.task_id, content=final_res))
-        self.log(f"Final Success State: {is_success}\nFinal Result: {final_res[:2000]}...")
+        self.log(f"Final Success State: {is_success}\nFinal Result: {final_res}")
         self.db.commit()
 
     async def handle_fatal_error(self, e):

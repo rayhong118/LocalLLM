@@ -98,9 +98,12 @@ active_agent_tasks = {}
 def run_agent_process(task_id: int, prompt: str):
     """Run the agent in a totally separate process to preserve logs and prevent event loop crashes."""
     import subprocess
+    import os
     
     # We pass the sys.executable so it uses the same python binary (venv)
-    proc = subprocess.Popen([sys.executable, "agent.py", str(task_id), prompt])
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    proc = subprocess.Popen([sys.executable, "agent.py", str(task_id), prompt], env=env)
     active_agent_tasks[task_id] = {"process": proc}
     
     try:
@@ -210,12 +213,18 @@ app.add_middleware(
 )
 
 # Serve frontend
-app.mount("/static", StaticFiles(directory="frontend"), name="static")
-
-@app.get("/")
-async def read_index():
-    from fastapi.responses import FileResponse
-    return FileResponse(os.path.join("frontend", "index.html"))
+if os.path.exists("frontend/dist"):
+    app.mount("/assets", StaticFiles(directory="frontend/dist/assets"), name="assets")
+    @app.get("/")
+    async def read_index():
+        from fastapi.responses import FileResponse
+        return FileResponse(os.path.join("frontend", "dist", "index.html"))
+else:
+    app.mount("/static", StaticFiles(directory="frontend"), name="static")
+    @app.get("/")
+    async def read_index():
+        from fastapi.responses import FileResponse
+        return FileResponse(os.path.join("frontend", "index.html"))
 
 # Dependency
 def get_db():

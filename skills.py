@@ -6,6 +6,7 @@ from browser_use import Controller, BrowserSession
 import logging
 import asyncio
 from site_skills.safeway import safeway_click_details, safeway_filter_category, safeway_get_all_deals, safeway_clip_coupon, safeway_clip_all_matching
+from site_skills.weee import weee_filter_category, weee_get_all_deals, weee_add_to_favorites_by_indices
 
 logger = logging.getLogger(__name__)
 controller = Controller()
@@ -266,3 +267,8 @@ controller.action('safeway_filter_category')(safeway_filter_category)
 controller.action('safeway_get_all_deals')(safeway_get_all_deals)
 controller.action('safeway_clip_coupon')(safeway_clip_coupon)
 controller.action('safeway_clip_all_matching')(safeway_clip_all_matching)
+
+# Register Weee Site-Specific Skills
+controller.action('weee_filter_category')(weee_filter_category)
+controller.action('weee_get_all_deals')(weee_get_all_deals)
+controller.action('weee_add_to_favorites_by_indices')(weee_add_to_favorites_by_indices)

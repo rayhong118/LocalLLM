@@ -1276,7 +1276,7 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
                 if r.get("llm_error") and not has_results:
                     error_items.append(r["item"])
                 elif not has_results and r["no_match"]:
-                    not_found_items.append(r["item"])
+                    not_found_items.append((r["item"], r["category"]))
                 else:
                     category_has_results = True
             
@@ -1314,8 +1314,8 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
         
         if not_found_items:
             summary_lines.append("\n### ❌ No Coupons Found")
-            for item in not_found_items:
-                summary_lines.append(f"- **{item.upper()}**")
+            for item, cat in not_found_items:
+                summary_lines.append(f"- **{item.upper()}** (searched in {cat})")
         
         if error_items:
             summary_lines.append("\n### ⚠️ LLM Errors")
