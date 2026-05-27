@@ -75,7 +75,7 @@ Write-Host "  Dashboard (Vite): http://localhost:5173" -ForegroundColor Cyan
 Write-Host ("-" * 50) -ForegroundColor DarkGray
 Start-Process "http://localhost:5173"
 try {
-    uv run python main.py
+    uv run python -m backend.main
 } finally {
     $agentExit = $LASTEXITCODE
     Pop-Location

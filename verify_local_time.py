@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 # Add the project directory to sys.path
 sys.path.append(os.getcwd())
 
-from main import calculate_next_run
+from backend.main import calculate_next_run
 
 def test_utc_scheduling_with_local_input():
     # Our code uses datetime.now().astimezone() for local time

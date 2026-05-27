@@ -8,17 +8,18 @@ from datetime import datetime, timezone
 from browser_use import Agent
 from browser_use.agent.views import MessageCompactionSettings
 
-import config
-from database import SessionLocal, Task as DBTask, Output
-from llm_wrapper import JsonStrippingChatOllama
-from context_manager import get_relevant_context_str
-from skills import controller, get_skill_descriptions
-from browser_utils import cleanup_headless_chrome
+from backend import config
+from backend.database.session import SessionLocal
+from backend.database.models import Task as DBTask, Output
+from backend.services.llm import JsonStrippingChatOllama
+from backend.services.context import get_relevant_context_str
+from backend.automation.skills import controller, get_skill_descriptions
+from backend.automation.browser_utils import cleanup_headless_chrome
 
-from core.prompts import PLANNER_SYSTEM, CAVEMAN_PROTOCOL_TEMPLATE, STALL_WARNING, REDIRECT_MSG_TEMPLATE, PRE_FLIGHT_DATA_PROMPT
-from core.evaluator import evaluate_result
-from core.browser import ManagedBrowser
-from core.plugin import PluginRegistry
+from backend.core.prompts import PLANNER_SYSTEM, CAVEMAN_PROTOCOL_TEMPLATE, STALL_WARNING, REDIRECT_MSG_TEMPLATE, PRE_FLIGHT_DATA_PROMPT
+from backend.core.evaluator import evaluate_result
+from backend.core.browser import ManagedBrowser
+from backend.core.plugin import PluginRegistry
 
 class AgentPipeline:
     def __init__(self, task_id: int, prompt: str):

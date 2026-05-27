@@ -1,6 +1,6 @@
-import config
+from backend import config
 from browser_use import BrowserSession
-from stealth import inject_stealth, cleanup_dom, inject_plan_banner, inject_stall_banner, remove_stall_banner
+from backend.automation.stealth import inject_stealth, cleanup_dom, inject_plan_banner, inject_stall_banner, remove_stall_banner
 
 class ManagedBrowser:
     def __init__(self):

@@ -1,8 +1,8 @@
 import asyncio
 import sys
 import logging
-import config
-from core.pipeline import AgentPipeline
+from backend import config
+from backend.core.pipeline import AgentPipeline
 
 # Set up global logging level for browser_use
 logging.getLogger('browser_use').setLevel(logging.WARNING)

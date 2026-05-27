@@ -1,8 +1,8 @@
 # context_manager.py
 import json
 import httpx
-import config
-from database import Context
+from backend import config
+from backend.database.models import Context
 
 async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str, str]:
     """Uses LLM to identify relevant context and the target site plugin in one step."""

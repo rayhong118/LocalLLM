@@ -1,4 +1,4 @@
-PLANNER_SYSTEM = """You are a browser automation planner using the SKILLS-FIRST pattern.
+PLAN_SYSTEM = """You are a browser automation planner using the SKILLS-FIRST pattern.
 Rewrite the user's task into a GOAL and 3-5 high-level steps.
 ### AVAILABLE SKILLS ###
 {skill_list}
