@@ -78,7 +78,9 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, onTasksUpdated }) => 
     const pending = [...tasks]
         .filter(t => t.frequency === 'ONCE' && (t.status === 'PENDING' || t.status === 'RUNNING' || t.status === 'CANCELLED'))
         .sort((a, b) => toLocalDate(a.created_at).getTime() - toLocalDate(b.created_at).getTime());
-    const history = tasks.filter(t => t.frequency === 'ONCE' && (t.status === 'COMPLETED' || t.status === 'FAILED'));
+    const history = [...tasks]
+        .filter(t => t.frequency === 'ONCE' && (t.status === 'COMPLETED' || t.status === 'FAILED'))
+        .sort((a, b) => toLocalDate(b.started_at || b.created_at).getTime() - toLocalDate(a.started_at || a.created_at).getTime());
 
     const totalPages = Math.ceil(history.length / itemsPerPage);
 

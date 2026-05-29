@@ -4,7 +4,7 @@ import sys
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-from fastapi import FastAPI, BackgroundTasks, Depends, HTTPException
+from fastapi import FastAPI, BackgroundTasks, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
@@ -260,9 +260,16 @@ async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
     return db_task
 
 @app.get("/tasks", response_model=List[TaskSchema])
-def list_tasks(db: Session = Depends(get_db)):
-    tasks = db.query(DBTask).order_by(DBTask.created_at.desc()).all()
-    return tasks
+def list_tasks(response: Response, page: Optional[int] = None, limit: Optional[int] = None, db: Session = Depends(get_db)):
+    query = db.query(DBTask).order_by(DBTask.created_at.desc())
+    total_count = query.count()
+    response.headers["X-Total-Count"] = str(total_count)
+    response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
+    
+    if page is not None and limit is not None:
+        offset = (page - 1) * limit
+        return query.offset(offset).limit(limit).all()
+    return query.all()
 
 async def task_event_generator():
     last_update = None
