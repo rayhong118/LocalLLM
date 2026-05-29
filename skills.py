@@ -18,10 +18,10 @@ controller.exclude_action('screenshot')
 
 @controller.action('smart_click')
 async def smart_click(text: str, browser: BrowserSession, index: int = 0):
-    """Robust element clicking using multiple strategies: text matching, ARIA labels, and fuzzy search.
+    """Click an element using text matching, ARIA labels, fuzzy search, or semantic LLM selection.
     
     Args:
-        text: Target text or partial match of the element to click.
+        text: Target text or partial match/intent of the element to click.
         index: If multiple matches exist, which one to click (0-indexed).
     """
     page = await browser.get_current_page()
@@ -92,9 +92,124 @@ async def smart_click(text: str, browser: BrowserSession, index: int = 0):
     }
     """, text, index)
 
-    data = __import__('json').loads(result)
+    data = _json.loads(result)
     if 'error' in data:
-        return f"Failure: {data['error']}"
+        # Standard matching failed. Try semantic LLM selection as a fallback.
+        logger.info(f"Text matching failed for '{text}'. Retrying using LLM selection...")
+        
+        # Extract all visible potentially interactive elements
+        candidates_json = await page.evaluate("""
+        () => {
+            const allElements = document.querySelectorAll('a, button, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="checkbox"], label, span, div, input, textarea');
+            const list = [];
+            for (let i = 0; i < allElements.length; i++) {
+                const el = allElements[i];
+                if (el.offsetParent === null) continue;
+                
+                const rect = el.getBoundingClientRect();
+                if (rect.width === 0 || rect.height === 0) continue;
+                
+                const text = (el.textContent || '').trim().replace(/\\s+/g, ' ');
+                const aria = el.getAttribute('aria-label') || '';
+                const placeholder = el.getAttribute('placeholder') || '';
+                const title = el.getAttribute('title') || '';
+                const role = el.getAttribute('role') || '';
+                
+                const mainText = text || aria || placeholder || title;
+                if (!mainText) continue;
+                
+                list.push({
+                    index: i,
+                    tag: el.tagName.toLowerCase(),
+                    text: text.substring(0, 80),
+                    aria: aria.substring(0, 80),
+                    placeholder: placeholder.substring(0, 80),
+                    role: role
+                });
+            }
+            return JSON.stringify(list.slice(0, 150));
+        }
+        """)
+        
+        candidates = _json.loads(candidates_json)
+        if not candidates:
+            return f"Failure: {data['error']} (and no interactive page elements were found for semantic fallback)"
+            
+        # Format the list of candidates for the LLM prompt
+        candidates_str = ""
+        for c in candidates:
+            parts = []
+            if c['text']: parts.append(f"text: '{c['text']}'")
+            if c['aria']: parts.append(f"aria-label: '{c['aria']}'")
+            if c['placeholder']: parts.append(f"placeholder: '{c['placeholder']}'")
+            if c['role']: parts.append(f"role: '{c['role']}'")
+            parts_str = ", ".join(parts)
+            candidates_str += f"[{c['index']}] <{c['tag']}> {parts_str}\n"
+
+        prompt = (
+            f"You are a web automation assistant.\n"
+            f"Select the single best element from the list below that semantically matches the user's intent to click: '{text}'.\n\n"
+            f"Candidate Elements:\n"
+            f"{candidates_str}\n"
+            f"Select the element that is the closest semantic match for the intent '{text}'. "
+            f"If absolutely none of the elements are a semantic match, respond with 'NONE'.\n\n"
+            f"Your response must be JSON only in this format: {{\"selected_index\": int or null}}"
+        )
+        
+        import httpx
+        import config
+        
+        selected_index = None
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    "http://localhost:11434/api/chat",
+                    json={
+                        "model": config.LLM_MODEL,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": False,
+                        "format": "json",
+                        "options": {"temperature": 0, "num_ctx": 16384}
+                    },
+                    timeout=30
+                )
+                resp_data = resp.json()
+                content = resp_data.get("message", {}).get("content", "{}")
+                result_data = _json.loads(content)
+                selected_index = result_data.get("selected_index")
+        except Exception as e:
+            logger.error(f"LLM semantic selection failed: {e}")
+            
+        if selected_index is not None:
+            try:
+                selected_index = int(selected_index)
+            except (ValueError, TypeError):
+                selected_index = None
+                
+        valid_indices = {c['index'] for c in candidates}
+        if selected_index is not None and selected_index in valid_indices:
+            # Click the selected index in the browser page
+            click_result = await page.evaluate("""
+            (targetIndex) => {
+                const allElements = document.querySelectorAll('a, button, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="checkbox"], label, span, div, input, textarea');
+                if (targetIndex >= allElements.length) {
+                    return JSON.stringify({error: 'Index out of bounds'});
+                }
+                const el = allElements[targetIndex];
+                el.scrollIntoView({block: 'center'});
+                el.click();
+                return JSON.stringify({success: true, tag: el.tagName.toLowerCase(), text: (el.textContent || '').trim().substring(0, 80)});
+            }
+            """, selected_index)
+            
+            click_data = _json.loads(click_result)
+            if 'success' in click_data:
+                return f"Success: LLM matched '{text}' to element <{click_data['tag']}> (text: '{click_data.get('text', '')}') and clicked it."
+            else:
+                return f"Failure: Standard match failed with '{data['error']}'. Tried LLM fallback, but clicking selected element failed: {click_data.get('error', 'unknown error')}"
+        else:
+            return f"Failure: Standard match failed with '{data['error']}'. LLM was unable to find a semantic match."
+
     return f"Success: Clicked {data['strategy']} matching '{text}' (text: '{data.get('text', '')}')"
 
 
