@@ -1033,7 +1033,10 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
             selector_system = (
                 "You are a categorization assistant for a grocery store. You must output ONLY a valid JSON object.\n"
                 "Format: {\"mapping\": [{\"item\": \"item name\", \"category\": \"Category Name\"}, ...]}\n"
-                "RULES: 1. NEVER pick 'Special Offers' if a specific food category is available. 2. If nothing fits, use 'NONE' as category.\n"
+                "RULES:\n"
+                "1. NEVER pick 'Special Offers' if a specific food category is available.\n"
+                "2. If nothing fits, use 'NONE' as category.\n"
+                "3. Crucially, items that are typically sold frozen (e.g., ice cream, frozen meals, frozen pizza, popsicles, frozen waffles, frozen vegetables, frozen fruit) MUST be categorized under 'Frozen Foods' (or similar frozen category) rather than their ingredient-based category (like 'Dairy', 'Meat', or 'Produce').\n"
                 f"Available Categories: {', '.join(available_categories)}"
             )
             try:
