@@ -66,12 +66,13 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
     card_list = "\n".join(f"{i}: {text[:120]}" for i, text in enumerate(card_texts))
 
     system_prompt = (
-        "You are a product matching assistant. Given a user's search term and a numbered list of coupon card descriptions, "
-        "identify which cards match the search term. Use semantic understanding — for example, 'coke' matches 'Coca-Cola', "
-        "'sparkling water' matches 'Topo Chico', 'tissues' matches 'Kleenex' or 'Puffs'.\n"
-        "Output ONLY a valid JSON object: {\"matches\": [0, 3, 7]} with the indices of matching cards.\n"
-        "If no cards match, output: {\"matches\": []}\n"
-        "Be selective — only include cards that are genuinely related to the search term."
+        "You are a strict product matching assistant. Given a search term and a numbered list of coupon descriptions, "
+        "return ONLY the indices of cards whose product is the SAME SPECIFIC ITEM as the search term.\n\n"
+        "STRICT RULES:\n"
+        "1. The product on the card must BE the search term or a specific brand of it.\n"
+        "2. If a card mentions a DIFFERENT brand or a DIFFERENT product type, do NOT match it even if it is in the same category.\n"
+        "3. Evaluate EACH card individually. Do NOT output ranges.\n"
+        "4. Output ONLY: {\"matches\": [0, 3, 7]}  or  {\"matches\": []}\n"
     )
 
     user_msg = f"Search term: \"{keyword}\"\n\nCards:\n{card_list}"
@@ -82,7 +83,10 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
                 "http://localhost:11434/api/chat",
                 json={
                     "model": config.LLM_MODEL,
-                    "messages": [{"role": "user", "content": f"{system_prompt}\n\n{user_msg}"}],
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_msg}
+                    ],
                     "stream": False,
                     "format": "json",
                     "think": False,
@@ -123,6 +127,58 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
             matches = data.get("matches", [])
             valid = [i for i in matches if isinstance(i, int) and 0 <= i < len(card_texts)]
 
+            # --- POST-LLM VALIDATION ---
+            if valid and len(valid) <= 30:
+                verified = []
+                verify_prompt = (
+                    "You are a strict product verification assistant. "
+                    "Answer ONLY with {\"is_match\": true} or {\"is_match\": false}.\n\n"
+                    "Is the following coupon card for the SAME SPECIFIC product as the search term?\n"
+                    "The product must BE the search term or a well-known brand of it.\n"
+                    "A different product from the same store aisle is NOT a match.\n"
+                )
+                
+                for idx in valid:
+                    card_desc = card_texts[idx][:200]
+                    try:
+                        verify_resp = await client.post(
+                            "http://localhost:11434/api/chat",
+                            json={
+                                "model": config.LLM_MODEL,
+                                "messages": [
+                                    {"role": "system", "content": verify_prompt},
+                                    {"role": "user", "content": f"Search term: \"{keyword}\"\nCard: \"{card_desc}\""}
+                                ],
+                                "stream": False,
+                                "format": "json",
+                                "think": False,
+                                "options": {"temperature": 0, "num_ctx": 4096}
+                            },
+                            timeout=15
+                        )
+                        if verify_resp.status_code == 200:
+                            v_raw = verify_resp.json().get("message", {}).get("content", "{}")
+                            v_data = json.loads(v_raw)
+                            if v_data.get("is_match", False):
+                                verified.append(idx)
+                            else:
+                                logger.info(f"[_llm_match_cards] REJECTED card {idx} for '{keyword}': {card_desc[:80]}")
+                                if log_path:
+                                    with open(log_path, "a", encoding="utf-8") as f:
+                                        f.write(f"PRE-FLIGHT LLM VERIFY REJECTED: card {idx} for '{keyword}': {card_desc[:80]}\n")
+                        else:
+                            verified.append(idx)
+                    except Exception as ve:
+                        logger.warning(f"[_llm_match_cards] Verify failed for card {idx}: {ve}, keeping match")
+                        verified.append(idx)
+                
+                if len(verified) < len(valid):
+                    logger.info(f"[_llm_match_cards] Post-verification: {len(valid)} -> {len(verified)} for '{keyword}'")
+                    if log_path:
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(f"PRE-FLIGHT LLM VERIFY: Reduced {len(valid)} -> {len(verified)} matches for '{keyword}'\n")
+                valid = verified
+
             if log_path:
                 with open(log_path, "a", encoding="utf-8") as f:
                     f.write(f"PRE-FLIGHT LLM MATCH: keyword='{keyword}' -> {len(valid)} matches out of {len(card_texts)} cards: {valid}\n")
@@ -159,24 +215,27 @@ async def weee_add_to_favorites_by_indices(browser: BrowserSession, indices: lis
     if not indices:
         return f"No matching cards to add to favorites for '{keyword}'."
 
+    # Deduplicate indices preserving order
+    indices = list(dict.fromkeys(indices))
+
     page = await browser.get_current_page()
     try:
         logger.info(f"[weee_add_to_favorites_by_indices] Adding {len(indices)} cards to favorites for '{keyword}': {indices}")
         await asyncio.sleep(1.0)
 
-        result_raw = await page.evaluate("""
-        (targetIndices) => {
-            const cards = Array.from(document.querySelectorAll('a[aria-label^="weee "]')).filter(el => el.offsetParent !== null);
-            if (cards.length === 0)
-                return JSON.stringify({error: 'No product cards found on the page.'});
+        import json as _json
 
-            const results = [];
+        results = []
 
-            for (const idx of targetIndices) {
-                if (idx >= cards.length) {
-                    results.push({index: idx, status: 'out_of_bounds'});
-                    continue;
-                }
+        for idx in indices:
+            # Probe the card: find the favorite button and return coordinates for real click
+            probe_raw = await page.evaluate("""
+            (idx) => {
+                const cards = Array.from(document.querySelectorAll('a[aria-label^="weee "]')).filter(el => el.offsetParent !== null);
+                if (cards.length === 0)
+                    return JSON.stringify({error: 'No product cards found on the page.'});
+                if (idx >= cards.length)
+                    return JSON.stringify({status: 'out_of_bounds'});
 
                 const card = cards[idx];
                 const label = card.getAttribute('aria-label') || '';
@@ -185,7 +244,7 @@ async def weee_add_to_favorites_by_indices(browser: BrowserSession, indices: lis
                 let title = label.substring(5).trim();
                 const words = title.split(' ');
                 let productId = '';
-                if (words.length > 0 && /^\d+$/.test(words[words.length - 1])) {
+                if (words.length > 0 && /^\\d+$/.test(words[words.length - 1])) {
                     productId = words[words.length - 1];
                     words.pop();
                     title = words.join(' ');
@@ -253,33 +312,73 @@ async def weee_add_to_favorites_by_indices(browser: BrowserSession, indices: lis
                 }
 
                 if (!favBtn) {
-                    results.push({index: idx, status: 'no_button', cardText: title});
-                    continue;
+                    return JSON.stringify({status: 'no_button', cardText: title});
                 }
 
+                // Scroll button into view and return its coordinates for a real Playwright click
                 favBtn.scrollIntoView({block: 'center'});
-                favBtn.click();
-                results.push({index: idx, status: 'clicked', cardText: title});
+                const rect = favBtn.getBoundingClientRect();
+                return JSON.stringify({
+                    status: 'ready_to_click',
+                    cardText: title,
+                    x: Math.round(rect.x + rect.width / 2),
+                    y: Math.round(rect.y + rect.height / 2)
+                });
             }
+            """, idx)
 
-            return JSON.stringify({total: cards.length, results});
-        }
-        """, indices)
+            probe = _json.loads(probe_raw)
 
-        data = json.loads(result_raw)
+            if 'error' in probe:
+                return f"Failure: {probe['error']}"
 
-        if 'error' in data:
-            return f"Failure: {data['error']}"
+            status = probe.get('status')
+            cardText = probe.get('cardText', '')
 
-        results = data.get('results', [])
-        if not results:
-            return f"No cards added to favorites for '{keyword}'."
+            if status == 'ready_to_click':
+                # Use Playwright's real mouse click for proper SPA event handling
+                click_x = probe['x']
+                click_y = probe['y']
+                try:
+                    mouse = await page.mouse
+                    await mouse.click(click_x, click_y)
+                    logger.info(f"[weee_add_to_favorites_by_indices] Real mouse click at ({click_x}, {click_y}) for card {idx}")
+                except Exception as click_err:
+                    logger.warning(f"[weee_add_to_favorites_by_indices] mouse.click failed for card {idx}: {click_err}, falling back to JS click")
+                    await page.evaluate("""
+                    (idx) => {
+                        const cards = Array.from(document.querySelectorAll('a[aria-label^="weee "]')).filter(el => el.offsetParent !== null);
+                        if (idx >= cards.length) return;
+                        const card = cards[idx];
+                        let favBtn = null;
+                        let parent = card.parentElement;
+                        for (let depth = 0; depth < 5; depth++) {
+                            if (!parent) break;
+                            const elements = Array.from(parent.querySelectorAll('button, [role="button"], a, svg, span, div'));
+                            for (const el of elements) {
+                                if (el === card) continue;
+                                const className = (el.className || '').toString().toLowerCase();
+                                const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                                if (aria.includes('favorite') || aria.includes('heart') || className.includes('favorite') || className.includes('heart')) {
+                                    favBtn = el; break;
+                                }
+                            }
+                            if (favBtn) break;
+                            parent = parent.parentElement;
+                        }
+                        if (favBtn) favBtn.click();
+                    }
+                    """, idx)
+
+                # Wait for Weee favorite addition to complete
+                await asyncio.sleep(1.0)
+                results.append({'index': idx, 'status': 'clicked', 'cardText': cardText})
+                logger.info(f"[weee_add_to_favorites_by_indices] ✅ Added card {idx} to favorites")
+            else:
+                results.append({'index': idx, 'status': status, 'cardText': cardText})
 
         added = [r for r in results if r['status'] == 'clicked']
         no_btn = [r for r in results if r['status'] == 'no_button']
-
-        if added:
-            await asyncio.sleep(2.0)
 
         summary_parts = []
         if added:

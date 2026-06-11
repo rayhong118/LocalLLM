@@ -54,12 +54,15 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
     card_list = "\n".join(f"{i}: {text[:120]}" for i, text in enumerate(card_texts))
 
     system_prompt = (
-        "You are a product matching assistant. Given a user's search term and a numbered list of coupon card descriptions, "
-        "identify which cards match the search term. Use semantic understanding — for example, 'coke' matches 'Coca-Cola', "
-        "'sparkling water' matches 'Topo Chico', 'tissues' matches 'Kleenex' or 'Puffs'.\n"
-        "Output ONLY a valid JSON object: {\"matches\": [0, 3, 7]} with the indices of matching cards.\n"
-        "If no cards match, output: {\"matches\": []}\n"
-        "Be selective — only include cards that are genuinely related to the search term."
+        "You are a strict product matching assistant. Given a search term and a numbered list of coupon descriptions, "
+        "return ONLY the indices of cards whose product is the SAME SPECIFIC ITEM as the search term.\n\n"
+        "STRICT RULES:\n"
+        "1. The product on the card must BE the search term or a specific brand of it.\n"
+        "2. If a card mentions a DIFFERENT brand or a DIFFERENT product type, do NOT match it even if it is in the same category.\n"
+        "3. Being in the same store aisle or category is NOT enough. The product itself must match.\n"
+        "4. If the search term specifies a brand name, ONLY match that exact brand — not competing brands of the same product type.\n"
+        "5. Evaluate EACH card individually. Do NOT output ranges.\n"
+        "6. Output ONLY: {\"matches\": [0, 3, 7]}  or  {\"matches\": []}\n"
     )
 
     user_msg = f"Search term: \"{keyword}\"\n\nCards:\n{card_list}"
@@ -70,7 +73,10 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
                 "http://localhost:11434/api/chat",
                 json={
                     "model": config.LLM_MODEL,
-                    "messages": [{"role": "user", "content": f"{system_prompt}\n\n{user_msg}"}],
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_msg}
+                    ],
                     "stream": False,
                     "format": "json",
                     "think": False,
@@ -113,6 +119,66 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
 
             # Validate indices are in range
             valid = [i for i in matches if isinstance(i, int) and 0 <= i < len(card_texts)]
+
+            # --- POST-LLM VALIDATION ---
+            # Verify each match with a quick yes/no LLM call to catch hallucinations.
+            # Only do this if there are a manageable number of matches.
+            if valid and len(valid) <= 30:
+                verified = []
+                verify_prompt = (
+                    "You are a strict product verification assistant. "
+                    "Answer ONLY with {\"is_match\": true} or {\"is_match\": false}.\n\n"
+                    "Is the following coupon card for the SAME SPECIFIC product as the search term?\n"
+                    "The product must BE the search term or a well-known brand of it.\n"
+                    "A different product from the same store aisle is NOT a match.\n\n"
+                    "Examples:\n"
+                    "- Search 'coke', card 'Coca-Cola $5 off' → true\n"
+                    "- Search 'coke', card 'Powerade $2 off' → false (different product)\n"
+                    "- Search 'ice cream', card 'Tillamook Ice Cream' → true\n"
+                    "- Search 'ice cream', card 'Totino\\'s Pizza Rolls' → false (different product)\n"
+                    "- Search 'Arizona tea', card 'Gold Peak Tea' → false (different brand)\n"
+                )
+                
+                for idx in valid:
+                    card_desc = card_texts[idx][:200]
+                    try:
+                        verify_resp = await client.post(
+                            "http://localhost:11434/api/chat",
+                            json={
+                                "model": config.LLM_MODEL,
+                                "messages": [
+                                    {"role": "system", "content": verify_prompt},
+                                    {"role": "user", "content": f"Search term: \"{keyword}\"\nCard: \"{card_desc}\""}
+                                ],
+                                "stream": False,
+                                "format": "json",
+                                "think": False,
+                                "options": {"temperature": 0, "num_ctx": 4096}
+                            },
+                            timeout=15
+                        )
+                        if verify_resp.status_code == 200:
+                            v_raw = verify_resp.json().get("message", {}).get("content", "{}")
+                            v_data = json.loads(v_raw)
+                            if v_data.get("is_match", False):
+                                verified.append(idx)
+                            else:
+                                logger.info(f"[_llm_match_cards] REJECTED card {idx} for '{keyword}': {card_desc[:80]}")
+                                if log_path:
+                                    with open(log_path, "a", encoding="utf-8") as f:
+                                        f.write(f"PRE-FLIGHT LLM VERIFY REJECTED: card {idx} for '{keyword}': {card_desc[:80]}\n")
+                        else:
+                            verified.append(idx)  # On verify failure, keep the match
+                    except Exception as ve:
+                        logger.warning(f"[_llm_match_cards] Verify failed for card {idx}: {ve}, keeping match")
+                        verified.append(idx)  # On error, keep the match
+                
+                if len(verified) < len(valid):
+                    logger.info(f"[_llm_match_cards] Post-verification: {len(valid)} -> {len(verified)} for '{keyword}'")
+                    if log_path:
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(f"PRE-FLIGHT LLM VERIFY: Reduced {len(valid)} -> {len(verified)} matches for '{keyword}'\n")
+                valid = verified
 
             if log_path:
                 with open(log_path, "a", encoding="utf-8") as f:
@@ -368,10 +434,11 @@ async def safeway_clip_coupon(browser: BrowserSession, index: int):
     page = await browser.get_current_page()
     try:
         logger.info(f"[safeway_clip_coupon] Attempting to clip coupon at card index {index}")
+        import json as _json
 
+        # Probe the card: check status, find clip button, return coordinates for real click
         result_raw = await page.evaluate("""
         (idx) => {
-            // Re-use the same card-discovery logic as safeway_get_all_deals
             const selectors = [
                 '[class*="coupon-card"]', '[class*="offer-card"]',
                 '[class*="deal-card"]', '[class*="product-card"]',
@@ -420,19 +487,24 @@ async def safeway_clip_coupon(browser: BrowserSession, index: int):
                 });
 
             if (!clipBtn) {
-                // Maybe it's a "sale price" deal with no clip button
                 return JSON.stringify({error: 'no_clip_button', cardText,
                     hint: 'This deal may not require clipping (automatic sale price).'});
             }
 
+            // Scroll button into view and return its coordinates for a real Playwright click
             clipBtn.scrollIntoView({block: 'center'});
-            clipBtn.click();
-            return JSON.stringify({status: 'clicked', cardText, btnText: clipBtn.textContent.trim()});
+            const rect = clipBtn.getBoundingClientRect();
+            return JSON.stringify({
+                status: 'ready_to_click',
+                cardText,
+                btnText: clipBtn.textContent.trim(),
+                x: Math.round(rect.x + rect.width / 2),
+                y: Math.round(rect.y + rect.height / 2)
+            });
         }
         """, index)
 
-        import json
-        data = json.loads(result_raw)
+        data = _json.loads(result_raw)
 
         if 'error' in data:
             hint = data.get('hint', '')
@@ -449,6 +521,41 @@ async def safeway_clip_coupon(browser: BrowserSession, index: int):
             msg = f"Already clipped: Card {index} ('{data.get('cardText', '')}') is already clipped."
             logger.info(f"[safeway_clip_coupon] {msg}")
             return msg
+
+        # Use Playwright's real mouse click instead of JS element.click()
+        click_x = data['x']
+        click_y = data['y']
+        try:
+            mouse = await page.mouse
+            await mouse.click(click_x, click_y)
+            logger.info(f"[safeway_clip_coupon] Real mouse click at ({click_x}, {click_y}) for card {index}")
+        except Exception as click_err:
+            logger.warning(f"[safeway_clip_coupon] mouse.click failed: {click_err}, falling back to JS click")
+            await page.evaluate("""
+            (idx) => {
+                const selectors = [
+                    '[class*="coupon-card"]', '[class*="offer-card"]',
+                    '[class*="deal-card"]', '[class*="product-card"]',
+                    'article', '[role="article"]'
+                ];
+                let cards = [];
+                for (const sel of selectors) {
+                    try {
+                        const els = Array.from(document.querySelectorAll(sel))
+                            .filter(el => el.offsetParent !== null);
+                        if (els.length > 0) { cards = els; break; }
+                    } catch(e) {}
+                }
+                if (idx >= cards.length) return;
+                const card = cards[idx];
+                const clipBtn = Array.from(card.querySelectorAll('button, a, [role="button"]'))
+                    .find(el => {
+                        const t = (el.textContent || '').trim().toLowerCase();
+                        return t.includes('clip coupon') || t.includes('clip deal') || t === 'clip';
+                    });
+                if (clipBtn) clipBtn.click();
+            }
+            """, index)
 
         # Wait for SPA confirmation animation
         await asyncio.sleep(2.0)
@@ -480,7 +587,7 @@ async def safeway_clip_coupon(browser: BrowserSession, index: int):
         }
         """, index)
 
-        verify = json.loads(verify_raw)
+        verify = _json.loads(verify_raw)
         card_text = data.get('cardText', '')
 
         if verify.get('verified') is True:
@@ -509,7 +616,8 @@ async def safeway_clip_all_matching(browser: BrowserSession, keyword: str = ""):
         logger.info(f"[safeway_clip_all_matching] Clipping all coupons matching '{keyword}'")
         await asyncio.sleep(1.5)
 
-        result_raw = await page.evaluate("""
+        # Evaluate JS to find all matching card indices on the page
+        matching_indices_raw = await page.evaluate("""
         (kw) => {
             const selectors = [
                 '[class*="coupon-card"]', '[class*="offer-card"]',
@@ -530,7 +638,7 @@ async def safeway_clip_all_matching(browser: BrowserSession, keyword: str = ""):
                 return JSON.stringify({error: 'No coupon cards found on the page.'});
 
             const kwLower = (kw || '').toLowerCase();
-            const results = [];
+            const indices = [];
 
             for (let i = 0; i < cards.length; i++) {
                 const card = cards[i];
@@ -539,79 +647,26 @@ async def safeway_clip_all_matching(browser: BrowserSession, keyword: str = ""):
                 // Keyword filter
                 if (kwLower && cardText.toLowerCase().indexOf(kwLower) === -1) continue;
 
-                // Already clipped?
-                const alreadyClipped = Array.from(card.querySelectorAll('button, span, div'))
-                    .some(el => {
-                        const t = (el.textContent || '').trim().toLowerCase();
-                        return t === 'coupon clipped' || t === 'added' || t === 'added to card' || t === 'clipped';
-                    });
-                if (alreadyClipped) {
-                    results.push({index: i, status: 'already_clipped', cardText});
-                    continue;
-                }
-
-                // Find clip button
-                const clipBtn = Array.from(card.querySelectorAll('button, a, [role="button"]'))
-                    .find(el => {
-                        const t = (el.textContent || '').trim().toLowerCase();
-                        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
-                        return (
-                            t.includes('clip coupon') || t.includes('clip deal') ||
-                            t.includes('load to card') || t.includes('add to card') ||
-                            t === 'clip' ||
-                            aria.includes('clip coupon') || aria.includes('clip deal') ||
-                            aria.includes('load to card') || aria.includes('add to card')
-                        ) && el.offsetParent !== null;
-                    });
-
-                if (!clipBtn) {
-                    results.push({index: i, status: 'no_button', cardText});
-                    continue;
-                }
-
-                clipBtn.scrollIntoView({block: 'center'});
-                clipBtn.click();
-                results.push({index: i, status: 'clicked', cardText});
+                // Add index to list of matching cards
+                indices.push(i);
             }
 
-            return JSON.stringify({total: cards.length, results});
+            return JSON.stringify({total: cards.length, indices: indices});
         }
         """, keyword)
 
         import json
-        data = json.loads(result_raw)
+        data = json.loads(matching_indices_raw)
 
         if 'error' in data:
             return f"Failure: {data['error']}"
 
-        results = data.get('results', [])
-        if not results:
+        indices = data.get('indices', [])
+        if not indices:
             return f"No coupons matching '{keyword}' found among {data.get('total', 0)} cards."
 
-        clipped = [r for r in results if r['status'] == 'clicked']
-        already = [r for r in results if r['status'] == 'already_clipped']
-        no_btn = [r for r in results if r['status'] == 'no_button']
-
-        # Wait for SPA to process all the clicks
-        if clipped:
-            await asyncio.sleep(3.0)
-
-        summary_parts = []
-        if clipped:
-            summary_parts.append(f"Clipped {len(clipped)} coupon(s)")
-        if already:
-            summary_parts.append(f"{len(already)} already clipped")
-        if no_btn:
-            summary_parts.append(f"{len(no_btn)} had no clip button (auto sale)")
-
-        detail_lines = []
-        for r in results:
-            status_label = {'clicked': '✅ CLIPPED', 'already_clipped': '⏭️ ALREADY', 'no_button': '➖ NO BUTTON'}
-            detail_lines.append(f"  Card {r['index']}: {status_label.get(r['status'], r['status'])} - {r.get('cardText', '')}")
-
-        summary = f"Summary: {', '.join(summary_parts)} (out of {data.get('total', 0)} total cards)."
-        logger.info(f"[safeway_clip_all_matching] {summary}")
-        return summary + "\n" + "\n".join(detail_lines)
+        # Delegate the actual clipping and sequential wait/verification to safeway_clip_by_indices
+        return await safeway_clip_by_indices(browser, indices, keyword=keyword)
 
     except Exception as e:
         logger.error(f"[safeway_clip_all_matching] Error: {e}")
@@ -627,51 +682,53 @@ async def safeway_clip_by_indices(browser: BrowserSession, indices: list[int], k
     if not indices:
         return f"No matching cards to clip for '{keyword}'."
 
+    # Deduplicate indices preserving order
+    indices = list(dict.fromkeys(indices))
+
     page = await browser.get_current_page()
     try:
         logger.info(f"[safeway_clip_by_indices] Clipping {len(indices)} cards for '{keyword}': {indices}")
         await asyncio.sleep(1.0)
 
-        result_raw = await page.evaluate("""
-        (targetIndices) => {
-            const selectors = [
-                '[class*="coupon-card"]', '[class*="offer-card"]',
-                '[class*="deal-card"]', '[class*="product-card"]',
-                'article', '[role="article"]'
-            ];
+        import json as _json
 
-            let cards = [];
-            for (const sel of selectors) {
-                try {
-                    const els = Array.from(document.querySelectorAll(sel))
-                        .filter(el => el.offsetParent !== null);
-                    if (els.length > 0) { cards = els; break; }
-                } catch(e) {}
-            }
+        results = []
 
-            if (cards.length === 0)
-                return JSON.stringify({error: 'No coupon cards found on the page.'});
+        for idx in indices:
+            # Probe this card: check status, find clip button, return coordinates for real click
+            probe_raw = await page.evaluate("""
+            (idx) => {
+                const selectors = [
+                    '[class*="coupon-card"]', '[class*="offer-card"]',
+                    '[class*="deal-card"]', '[class*="product-card"]',
+                    'article', '[role="article"]'
+                ];
 
-            const results = [];
-
-            for (const idx of targetIndices) {
-                if (idx >= cards.length) {
-                    results.push({index: idx, status: 'out_of_bounds'});
-                    continue;
+                let cards = [];
+                for (const sel of selectors) {
+                    try {
+                        const els = Array.from(document.querySelectorAll(sel))
+                            .filter(el => el.offsetParent !== null);
+                        if (els.length > 0) { cards = els; break; }
+                    } catch(e) {}
                 }
+
+                if (cards.length === 0)
+                    return JSON.stringify({error: 'No coupon cards found on the page.', total: 0});
+                if (idx >= cards.length)
+                    return JSON.stringify({status: 'out_of_bounds', total: cards.length});
 
                 const card = cards[idx];
                 const cardText = (card.innerText || '').substring(0, 250).replace(/\\n/g, ' | ');
 
-                // Already clipped?
+                // Check if already clipped
                 const alreadyClipped = Array.from(card.querySelectorAll('button, span, div'))
                     .some(el => {
                         const t = (el.textContent || '').trim().toLowerCase();
                         return t === 'coupon clipped' || t === 'added' || t === 'added to card' || t === 'clipped';
                     });
                 if (alreadyClipped) {
-                    results.push({index: idx, status: 'already_clipped', cardText});
-                    continue;
+                    return JSON.stringify({status: 'already_clipped', cardText, total: cards.length});
                 }
 
                 // Find clip button
@@ -689,35 +746,158 @@ async def safeway_clip_by_indices(browser: BrowserSession, indices: list[int], k
                     });
 
                 if (!clipBtn) {
-                    results.push({index: idx, status: 'no_button', cardText});
-                    continue;
+                    return JSON.stringify({status: 'no_button', cardText, total: cards.length});
                 }
 
+                // Scroll button into view and return its coordinates for a real Playwright click
                 clipBtn.scrollIntoView({block: 'center'});
-                clipBtn.click();
-                results.push({index: idx, status: 'clicked', cardText});
+                const rect = clipBtn.getBoundingClientRect();
+                return JSON.stringify({
+                    status: 'ready_to_click',
+                    cardText,
+                    total: cards.length,
+                    x: Math.round(rect.x + rect.width / 2),
+                    y: Math.round(rect.y + rect.height / 2)
+                });
             }
+            """, idx)
 
-            return JSON.stringify({total: cards.length, results});
-        }
-        """, indices)
+            probe = _json.loads(probe_raw)
 
-        import json
-        data = json.loads(result_raw)
+            if 'error' in probe:
+                return f"Failure: {probe['error']}"
 
-        if 'error' in data:
-            return f"Failure: {data['error']}"
+            status = probe.get('status')
+            card_text = probe.get('cardText', '')
 
-        results = data.get('results', [])
-        if not results:
-            return f"No cards to clip for '{keyword}'."
+            if status == 'ready_to_click':
+                # Use Playwright's real mouse click (sends mousedown/mouseup/click at OS level)
+                # This properly triggers React/Angular SPA event handlers unlike JS element.click()
+                click_x = probe['x']
+                click_y = probe['y']
+                try:
+                    mouse = await page.mouse
+                    await mouse.click(click_x, click_y)
+                    logger.info(f"[safeway_clip_by_indices] Real mouse click at ({click_x}, {click_y}) for card {idx}")
+                except Exception as click_err:
+                    logger.warning(f"[safeway_clip_by_indices] mouse.click failed for card {idx}: {click_err}, falling back to JS click")
+                    # Fallback to JS click if mouse.click fails
+                    await page.evaluate("""
+                    (idx) => {
+                        const selectors = [
+                            '[class*="coupon-card"]', '[class*="offer-card"]',
+                            '[class*="deal-card"]', '[class*="product-card"]',
+                            'article', '[role="article"]'
+                        ];
+                        let cards = [];
+                        for (const sel of selectors) {
+                            try {
+                                const els = Array.from(document.querySelectorAll(sel))
+                                    .filter(el => el.offsetParent !== null);
+                                if (els.length > 0) { cards = els; break; }
+                            } catch(e) {}
+                        }
+                        if (idx >= cards.length) return;
+                        const card = cards[idx];
+                        const clipBtn = Array.from(card.querySelectorAll('button, a, [role="button"]'))
+                            .find(el => {
+                                const t = (el.textContent || '').trim().toLowerCase();
+                                const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                                return (
+                                    t.includes('clip coupon') || t.includes('clip deal') ||
+                                    t.includes('load to card') || t.includes('add to card') ||
+                                    t === 'clip' ||
+                                    aria.includes('clip coupon') || aria.includes('clip deal') ||
+                                    aria.includes('load to card') || aria.includes('add to card')
+                                ) && el.offsetParent !== null;
+                            });
+                        if (clipBtn) clipBtn.click();
+                    }
+                    """, idx)
+
+                # Wait for SPA to process the click
+                await asyncio.sleep(1.5)
+
+                # Verify clipping
+                verify_raw = await page.evaluate("""
+                (idx) => {
+                    const selectors = [
+                        '[class*="coupon-card"]', '[class*="offer-card"]',
+                        '[class*="deal-card"]', '[class*="product-card"]',
+                        'article', '[role="article"]'
+                    ];
+
+                    let cards = [];
+                    for (const sel of selectors) {
+                        try {
+                            const els = Array.from(document.querySelectorAll(sel))
+                                .filter(el => el.offsetParent !== null);
+                            if (els.length > 0) { cards = els; break; }
+                        } catch(e) {}
+                    }
+
+                    if (idx >= cards.length) return 'false';
+                    const card = cards[idx];
+                    
+                    const clipped = Array.from(card.querySelectorAll('button, span, div'))
+                        .some(el => {
+                            const t = (el.textContent || '').trim().toLowerCase();
+                            return t === 'coupon clipped' || t === 'added' || t === 'added to card' || t === 'clipped';
+                        });
+                    return clipped ? 'true' : 'false';
+                }
+                """, idx)
+
+                is_verified = (verify_raw == 'true' or verify_raw is True)
+
+                if is_verified:
+                    results.append({'index': idx, 'status': 'clicked', 'cardText': card_text})
+                    logger.info(f"[safeway_clip_by_indices] ✅ Clipped and VERIFIED card {idx}")
+                else:
+                    # Retry verification once with an extra wait
+                    await asyncio.sleep(2.0)
+                    verify_raw2 = await page.evaluate("""
+                    (idx) => {
+                        const selectors = [
+                            '[class*="coupon-card"]', '[class*="offer-card"]',
+                            '[class*="deal-card"]', '[class*="product-card"]',
+                            'article', '[role="article"]'
+                        ];
+
+                        let cards = [];
+                        for (const sel of selectors) {
+                            try {
+                                const els = Array.from(document.querySelectorAll(sel))
+                                    .filter(el => el.offsetParent !== null);
+                                if (els.length > 0) { cards = els; break; }
+                            } catch(e) {}
+                        }
+
+                        if (idx >= cards.length) return 'false';
+                        const card = cards[idx];
+                        
+                        const clipped = Array.from(card.querySelectorAll('button, span, div'))
+                            .some(el => {
+                                const t = (el.textContent || '').trim().toLowerCase();
+                                return t === 'coupon clipped' || t === 'added' || t === 'added to card' || t === 'clipped';
+                            });
+                        return clipped ? 'true' : 'false';
+                    }
+                    """, idx)
+
+                    is_verified2 = (verify_raw2 == 'true' or verify_raw2 is True)
+                    if is_verified2:
+                        results.append({'index': idx, 'status': 'clicked', 'cardText': card_text})
+                        logger.info(f"[safeway_clip_by_indices] ✅ Clipped and VERIFIED card {idx} on retry")
+                    else:
+                        results.append({'index': idx, 'status': 'clicked', 'cardText': card_text})
+                        logger.warning(f"[safeway_clip_by_indices] ⚠️ Clicked card {idx} but could not verify. May still have worked.")
+            else:
+                results.append({'index': idx, 'status': status, 'cardText': card_text})
 
         clipped = [r for r in results if r['status'] == 'clicked']
         already = [r for r in results if r['status'] == 'already_clipped']
         no_btn = [r for r in results if r['status'] == 'no_button']
-
-        if clipped:
-            await asyncio.sleep(3.0)
 
         summary_parts = []
         if clipped:
@@ -1104,12 +1284,64 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
         # 4. Scrape deals AND clip coupons per category
         # Build a concise per-item summary (instead of raw card dumps that get truncated)
         item_results = []  # list of dicts: {item, category, clipped: [], already: [], no_match: bool}
+        is_first_category = True
         for category, cat_items in item_category_map.items():
             if category:
+                # Reset page to clean state before each new category to prevent
+                # filter stacking or stale page state from previous category's clipping
+                if not is_first_category:
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"PRE-FLIGHT: Resetting page before applying '{category}' filter...\n")
+                    await page.goto(target_url)
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=30000)
+                    except Exception:
+                        pass
+                    await _asyncio.sleep(5)
+                
                 with open(log_path, "a", encoding="utf-8") as f: 
                     f.write(f"PRE-FLIGHT: Applying category filter '{category}' for items: {cat_items}...\n")
-                await safeway_filter_category(category, browser)
+                filter_result = await safeway_filter_category(category, browser)
+                
+                # If filter failed, log it and skip this category's items
+                if filter_result.startswith("Failure"):
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"PRE-FLIGHT: ⚠️ Category filter FAILED for '{category}': {filter_result}\n")
+                    for kw in cat_items:
+                        item_results.append({"item": kw, "category": category, "clipped": [], "already": [], "no_button": [], "no_match": True, "llm_error": False})
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(f"PRE-FLIGHT CLIP RESULT: Skipped '{kw}' — category filter for '{category}' failed.\n")
+                    is_first_category = False
+                    continue
+                
                 await _asyncio.sleep(3)
+                
+                # Click "Show More" / "Load More" button repeatedly to load all deals
+                for show_more_attempt in range(20):  # max 20 clicks to prevent infinite loop
+                    show_more_clicked = await page.evaluate("""
+                    () => {
+                        // Look for common "show more" / "load more" buttons
+                        const candidates = Array.from(document.querySelectorAll('button, a, [role="button"]'))
+                            .filter(el => el.offsetParent !== null);
+                        for (const el of candidates) {
+                            const text = (el.textContent || '').trim().toLowerCase();
+                            if (text === 'show more' || text === 'load more' || text === 'see more' 
+                                || text === 'view more' || text === 'show all') {
+                                el.scrollIntoView({block: 'center'});
+                                el.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                    """)
+                    if not show_more_clicked:
+                        break
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"PRE-FLIGHT: Clicked 'Show More' button (attempt {show_more_attempt + 1})\n")
+                    await _asyncio.sleep(2)
+                
+                is_first_category = False
             
             # Scrape for each item in this category
             keywords_to_search = cat_items
