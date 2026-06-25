@@ -13,7 +13,7 @@ import json
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import database
-from database import SessionLocal, Task as DBTask, Output as DBOutput, Context as DBContext
+from database import SessionLocal, Task as DBTask, Output as DBOutput, Context as DBContext, SavedTask as DBSavedTask
 import agent
 import uvicorn
 import os
@@ -26,6 +26,22 @@ class TaskCreate(BaseModel):
     prompt: str
     frequency: str = "ONCE" # ONCE, DAILY
     hour_of_day: Optional[int] = None
+
+class SavedTaskCreate(BaseModel):
+    prompt: str
+    frequency: str = "ONCE"
+    hour_of_day: Optional[int] = None
+
+class SavedTaskSchema(BaseModel):
+    id: int
+    prompt: str
+    frequency: str
+    hour_of_day: Optional[int] = None
+    created_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
 
 class ContextCreate(BaseModel):
     name: str
@@ -394,6 +410,56 @@ async def cancel_task(task_id: int, db: Session = Depends(get_db)):
             pass
     
     db_task.status = "CANCELLED"
+    db.commit()
+    db.refresh(db_task)
+    return db_task
+
+# Saved Task endpoints
+@app.get("/saved_tasks", response_model=List[SavedTaskSchema])
+def list_saved_tasks(db: Session = Depends(get_db)):
+    return db.query(DBSavedTask).order_by(DBSavedTask.created_at.desc()).all()
+
+@app.post("/saved_tasks", response_model=SavedTaskSchema)
+def create_saved_task(task: SavedTaskCreate, db: Session = Depends(get_db)):
+    db_saved = DBSavedTask(
+        prompt=task.prompt,
+        frequency=task.frequency,
+        hour_of_day=task.hour_of_day
+    )
+    db.add(db_saved)
+    db.commit()
+    db.refresh(db_saved)
+    return db_saved
+
+@app.delete("/saved_tasks/{task_id}")
+def delete_saved_task(task_id: int, db: Session = Depends(get_db)):
+    db_saved = db.query(DBSavedTask).filter(DBSavedTask.id == task_id).first()
+    if not db_saved:
+        raise HTTPException(status_code=404, detail="Saved task not found")
+    db.delete(db_saved)
+    db.commit()
+    return {"message": "Saved task deleted successfully"}
+
+@app.post("/saved_tasks/{task_id}/run", response_model=TaskSchema)
+async def run_saved_task(task_id: int, db: Session = Depends(get_db)):
+    db_saved = db.query(DBSavedTask).filter(DBSavedTask.id == task_id).first()
+    if not db_saved:
+        raise HTTPException(status_code=404, detail="Saved task not found")
+    
+    # Calculate next run time
+    next_run = calculate_next_run(db_saved.frequency, db_saved.hour_of_day)
+    is_once = db_saved.frequency == "ONCE"
+    if is_once:
+        next_run = None
+
+    db_task = DBTask(
+        prompt=db_saved.prompt,
+        status="PENDING",
+        frequency=db_saved.frequency,
+        hour_of_day=db_saved.hour_of_day,
+        next_run_at=next_run
+    )
+    db.add(db_task)
     db.commit()
     db.refresh(db_task)
     return db_task

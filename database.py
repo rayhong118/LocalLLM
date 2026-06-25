@@ -45,6 +45,15 @@ class Context(Base):
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
+class SavedTask(Base):
+    __tablename__ = "saved_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    prompt = Column(Text, nullable=False)
+    frequency = Column(String, default="ONCE") # ONCE, DAILY
+    hour_of_day = Column(Integer, nullable=True) # 0-23
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
 )

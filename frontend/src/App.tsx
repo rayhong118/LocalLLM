@@ -9,7 +9,8 @@ import {
 import { TaskForm } from './components/TaskForm';
 import { TaskList } from './components/TaskList';
 import { ContextManager } from './components/ContextManager';
-import { Cpu, LayoutDashboard, Settings, RefreshCw } from 'lucide-react';
+import { CommonlyUsedTasks } from './components/CommonlyUsedTasks';
+import { Cpu, LayoutDashboard, Settings, RefreshCw, Sparkles } from 'lucide-react';
 
 export const App: React.FC = () => {
     const [tasks, setTasks] = useAtom(tasksAtom);
@@ -158,6 +159,38 @@ export const App: React.FC = () => {
                         <Settings size={16} /> Context Manager
                     </span>
 
+                    <span 
+                        onClick={() => setCurrentPage('commonly_used')}
+                        style={{ 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            gap: '0.4rem',
+                            cursor: 'pointer',
+                            padding: '0.6rem 1rem',
+                            borderRadius: '8px',
+                            fontSize: '0.9rem',
+                            fontWeight: 600,
+                            transition: 'all 0.2s',
+                            backgroundColor: currentPage === 'commonly_used' ? 'var(--color-primary-soft)' : 'transparent',
+                            color: currentPage === 'commonly_used' ? 'var(--color-primary)' : 'var(--color-text-muted)',
+                            border: currentPage === 'commonly_used' ? '1px solid rgba(59, 130, 246, 0.15)' : '1px solid transparent'
+                        }}
+                        onMouseEnter={(e) => {
+                            if (currentPage !== 'commonly_used') {
+                                e.currentTarget.style.color = 'var(--color-text-main)';
+                                e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.03)';
+                            }
+                        }}
+                        onMouseLeave={(e) => {
+                            if (currentPage !== 'commonly_used') {
+                                e.currentTarget.style.color = 'var(--color-text-muted)';
+                                e.currentTarget.style.backgroundColor = 'transparent';
+                            }
+                        }}
+                    >
+                        <Sparkles size={16} /> Common Tasks
+                    </span>
+
                     <button 
                         className="secondary" 
                         onClick={fetchTasks} 
@@ -177,7 +210,7 @@ export const App: React.FC = () => {
 
             {/* Main dashboard body */}
             <main>
-                {currentPage === 'dashboard' ? (
+                {currentPage === 'dashboard' && (
                     <div>
                         <TaskForm onTaskCreated={fetchTasks} />
                         
@@ -208,9 +241,9 @@ export const App: React.FC = () => {
                             <TaskList tasks={tasks} onTasksUpdated={setTasks} />
                         )}
                     </div>
-                ) : (
-                    <ContextManager />
                 )}
+                {currentPage === 'contexts' && <ContextManager />}
+                {currentPage === 'commonly_used' && <CommonlyUsedTasks />}
             </main>
         </div>
     );

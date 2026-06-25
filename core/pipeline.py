@@ -19,6 +19,7 @@ from core.prompts import PLANNER_SYSTEM, CAVEMAN_PROTOCOL_TEMPLATE, STALL_WARNIN
 from core.evaluator import evaluate_result
 from core.browser import ManagedBrowser
 from core.plugin import PluginRegistry
+from core.notifier import send_telegram_notification
 
 class AgentPipeline:
     def __init__(self, task_id: int, prompt: str):
@@ -297,12 +298,30 @@ class AgentPipeline:
         self.log(f"Final Success State: {is_success}\nFinal Result: {final_res}")
         self.db.commit()
 
+        # Trigger Telegram notification if criteria met
+        if getattr(config, "TELEGRAM_NOTIFY_ALL", False) or self.task.parent_id is not None:
+            await send_telegram_notification(
+                task_id=self.task_id,
+                prompt=self.prompt,
+                status=self.task.status,
+                result_content=final_res
+            )
+
     async def handle_fatal_error(self, e):
         self.log(f"\nFATAL AGENT ERROR: {e}")
         if self.task:
             self.task.status = "FAILED"
             self.db.add(Output(task_id=self.task_id, content=str(e)))
             self.db.commit()
+
+            # Trigger Telegram notification if criteria met
+            if getattr(config, "TELEGRAM_NOTIFY_ALL", False) or self.task.parent_id is not None:
+                await send_telegram_notification(
+                    task_id=self.task_id,
+                    prompt=self.prompt,
+                    status="FAILED",
+                    result_content=f"Error: {e}"
+                )
 
     async def cleanup(self):
         self.log("\n=== AGENT RUN FINISHED ===")
