@@ -2,8 +2,8 @@
 import os
 import json
 import httpx
-import config
-from database import Context
+from backend import config
+from backend.database.models import Context
 
 def _detect_site_from_prompt(prompt: str) -> str:
     """Deterministic check: if prompt contains a known site skill name, return it immediately.

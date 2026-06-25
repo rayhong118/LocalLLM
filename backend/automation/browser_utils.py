@@ -1,6 +1,6 @@
 # browser_utils.py
 import subprocess
-import config
+from backend import config
 
 def cleanup_headless_chrome():
     """Safety cleanup for Windows to prevent CDP zombie processes."""

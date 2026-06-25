@@ -5,9 +5,9 @@ import json
 import asyncio
 import re
 from typing import Any, List, Dict
-from core.plugin import BaseSitePlugin
+from backend.core.plugin import BaseSitePlugin
 from browser_use import BrowserSession
-import config
+from backend import config
 
 logger = logging.getLogger(__name__)
 

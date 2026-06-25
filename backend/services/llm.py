@@ -377,6 +377,7 @@ class JsonStrippingChatOllama(ChatOllama):
             except Exception:
                 continue
         return None
+
     def _check_action_dedup(self, parsed, output_format):
         """Check if the parsed action is identical to recent actions and escalate."""
         import json as _json

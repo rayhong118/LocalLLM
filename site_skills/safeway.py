@@ -6,7 +6,7 @@ from browser_use import BrowserSession
 import logging
 import asyncio
 from typing import Any
-import config
+from backend import config
 
 logger = logging.getLogger(__name__)
 

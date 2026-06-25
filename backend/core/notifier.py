@@ -2,7 +2,7 @@ import html
 import re
 import httpx
 import logging
-import config
+from backend import config
 
 logger = logging.getLogger(__name__)
 

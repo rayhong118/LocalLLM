@@ -157,7 +157,7 @@ async def smart_click(text: str, browser: BrowserSession, index: int = 0):
         )
         
         import httpx
-        import config
+        from backend import config
         
         selected_index = None
         try:

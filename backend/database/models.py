@@ -1,9 +1,7 @@
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
-
-SQLALCHEMY_DATABASE_URL = "sqlite:///./tasks.db"
 
 Base = declarative_base()
 
@@ -53,11 +51,3 @@ class SavedTask(Base):
     frequency = Column(String, default="ONCE") # ONCE, DAILY
     hour_of_day = Column(Integer, nullable=True) # 0-23
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
-
-engine = create_engine(
-    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
-)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-def init_db():
-    Base.metadata.create_all(bind=engine)

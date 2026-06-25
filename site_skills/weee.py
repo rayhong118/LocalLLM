@@ -3,11 +3,11 @@
 # browser-use's Page object is a CDP wrapper — it does NOT have .locator(), .get_by_text(), etc.
 
 from browser_use import BrowserSession
-from core.plugin import BaseSitePlugin
+from backend.core.plugin import BaseSitePlugin
 import logging
 import asyncio
 from typing import Any
-import config
+from backend import config
 import re
 import json
 
@@ -634,7 +634,7 @@ async def weee_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
     import re
     import json
     import httpx
-    import config
+    from backend import config
     
     try:
         target_url = "https://www.sayweee.com/en/on-sale"

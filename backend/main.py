@@ -12,9 +12,10 @@ from fastapi.responses import StreamingResponse
 import json
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-import database
-from database import SessionLocal, Task as DBTask, Output as DBOutput, Context as DBContext, SavedTask as DBSavedTask
-import agent
+from backend.database import session as database
+from backend.database.session import SessionLocal
+from backend.database.models import Task as DBTask, Output as DBOutput, Context as DBContext, SavedTask as DBSavedTask
+from backend import agent
 import uvicorn
 import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -116,10 +117,11 @@ def run_agent_process(task_id: int, prompt: str):
     import subprocess
     import os
     
-    # We pass the sys.executable so it uses the same python binary (venv)
+    # We execute it as a module backend.agent so python can resolve our absolute backend imports
+    # We also pass the environment copy with PYTHONIOENCODING=utf-8 to support Windows console output.
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
-    proc = subprocess.Popen([sys.executable, "agent.py", str(task_id), prompt], env=env)
+    proc = subprocess.Popen([sys.executable, "-m", "backend.agent", str(task_id), prompt], env=env)
     active_agent_tasks[task_id] = {"process": proc}
     
     try:
@@ -465,4 +467,4 @@ async def run_saved_task(task_id: int, db: Session = Depends(get_db)):
     return db_task
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)

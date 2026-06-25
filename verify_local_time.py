@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 # Add the project directory to sys.path
 sys.path.append(os.getcwd())
 
-from main import calculate_next_run
+from backend.main import calculate_next_run
 
 def test_utc_scheduling_with_local_input():
     # Our code uses datetime.now().astimezone() for local time
@@ -24,11 +24,15 @@ def test_utc_scheduling_with_local_input():
     print(f"Calculated next run (UTC): {next_run_utc}")
     
     # Expected UTC run time
-    # It should be roughly 1 hour from now_utc
-    diff = next_run_utc - now_utc
-    print(f"Difference from current UTC: {diff}")
+    target_local = now_local.replace(hour=target_local_hour, minute=0, second=0, microsecond=0)
+    if target_local <= now_local:
+        target_local += timedelta(days=1)
+    expected_utc = target_local.astimezone(timezone.utc).replace(tzinfo=None)
     
-    assert diff > timedelta(minutes=45) and diff < timedelta(minutes=75), "Next run (UTC) should be roughly 1 hour from current UTC"
+    diff = abs((next_run_utc - expected_utc).total_seconds())
+    print(f"Difference from expected UTC: {diff} seconds")
+    
+    assert diff < 2.0, "Calculated next run UTC does not match expected local-to-UTC target time"
     print("Test passed: Local-to-UTC scheduling conversion is working correctly!")
 
 if __name__ == "__main__":
