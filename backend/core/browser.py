@@ -5,7 +5,7 @@ from backend.automation.stealth import inject_stealth, cleanup_dom, inject_plan_
 class ManagedBrowser:
     def __init__(self):
         self.session = BrowserSession(
-            headless=False,
+            headless=config.HEADLESS,
             channel="chrome",
             disable_security=True,
             minimum_wait_page_load_time=config.BROWSER_WAIT_TIME,
