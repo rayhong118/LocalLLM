@@ -20,6 +20,7 @@ from backend.core.prompts import PLANNER_SYSTEM, CAVEMAN_PROTOCOL_TEMPLATE, STAL
 from backend.core.evaluator import evaluate_result
 from backend.core.browser import ManagedBrowser
 from backend.core.plugin import PluginRegistry
+from backend.core.notifier import send_telegram_notification
 
 class AgentPipeline:
     def __init__(self, task_id: int, prompt: str):
@@ -37,13 +38,16 @@ class AgentPipeline:
         self.site_key = None
         self.context_str = ""
         self.orchestrated_plan = ""
+        self.pre_flight_data = ""
 
     async def run(self):
         try:
             await self.setup()
             await self.plan()
-            pre_flight_data = await self.pre_flight()
-            history = await self.execute(pre_flight_data)
+            self.pre_flight_data = await self.pre_flight()
+            if self.pre_flight_data == "PREFLIGHT_FATAL":
+                raise RuntimeError("Pre-flight failed: LLM model errors prevented coupon matching. Check Ollama server status and resource availability.")
+            history = await self.execute(self.pre_flight_data)
             await self.evaluate(history)
         except Exception as e:
             await self.handle_fatal_error(e)
@@ -178,6 +182,9 @@ class AgentPipeline:
             if data:
                 self.log(f"PRE-FLIGHT SUCCESS: Data injected for '{self.site_key}' plugin.")
                 return data
+            else:
+                self.log(f"PRE-FLIGHT FAILED: Plugin '{self.site_key}' returned no data (likely LLM errors).")
+                return "PREFLIGHT_FATAL"
         except Exception as e:
             self.log(f"PRE-FLIGHT failure for '{self.site_key}': {e}")
         return ""
@@ -185,7 +192,7 @@ class AgentPipeline:
     async def execute(self, pre_flight_data):
         prompt_for_agent = self.orchestrated_plan
         if pre_flight_data:
-            prompt_for_agent = PRE_FLIGHT_DATA_PROMPT.format(prompt=self.prompt, pre_flight_data=pre_flight_data[:3000])
+            prompt_for_agent = PRE_FLIGHT_DATA_PROMPT.format(pre_flight_data=pre_flight_data[:3000])
 
         full_protocol = CAVEMAN_PROTOCOL_TEMPLATE.format(prompt_for_agent=prompt_for_agent)
 
@@ -280,12 +287,26 @@ class AgentPipeline:
             last_match = next((h.result[-1].extracted_content for h in reversed(history.history) if h.result), None)
             if last_match: final_res = last_match
 
+        # When pre-flight produced a full summary, use it directly instead of
+        # the agent's token-limited re-generation which truncates the output.
+        if self.pre_flight_data and self.pre_flight_data not in ("PREFLIGHT_FATAL", ""):
+            final_res = self.pre_flight_data
+
         is_success = evaluate_result(self.prompt, final_res, history, self.log_path)
         
         self.task.status = "COMPLETED" if is_success else "FAILED"
         self.db.add(Output(task_id=self.task_id, content=final_res))
-        self.log(f"Final Success State: {is_success}\nFinal Result: {final_res[:2000]}...")
+        self.log(f"Final Success State: {is_success}\nFinal Result: {final_res}")
         self.db.commit()
+
+        # Trigger Telegram notification if criteria met
+        if getattr(config, "TELEGRAM_NOTIFY_ALL", False) or self.task.parent_id is not None:
+            await send_telegram_notification(
+                task_id=self.task_id,
+                prompt=self.prompt,
+                status=self.task.status,
+                result_content=final_res
+            )
 
     async def handle_fatal_error(self, e):
         self.log(f"\nFATAL AGENT ERROR: {e}")
@@ -293,6 +314,15 @@ class AgentPipeline:
             self.task.status = "FAILED"
             self.db.add(Output(task_id=self.task_id, content=str(e)))
             self.db.commit()
+
+            # Trigger Telegram notification if criteria met
+            if getattr(config, "TELEGRAM_NOTIFY_ALL", False) or self.task.parent_id is not None:
+                await send_telegram_notification(
+                    task_id=self.task_id,
+                    prompt=self.prompt,
+                    status="FAILED",
+                    result_content=f"Error: {e}"
+                )
 
     async def cleanup(self):
         self.log("\n=== AGENT RUN FINISHED ===")

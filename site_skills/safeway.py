@@ -6,8 +6,207 @@ from browser_use import BrowserSession
 import logging
 import asyncio
 from typing import Any
+from backend import config
 
 logger = logging.getLogger(__name__)
+
+import re
+
+def _clean_deal_description(desc: str) -> str:
+    """Strip Safeway UI noise (button labels, duplicate expiry formats) from card descriptions."""
+    # Remove common UI button labels
+    noise_patterns = [
+        r'\|\s*Offer Details?\s*',
+        r'\|\s*Clip Coupon\s*',
+        r'\|\s*Clip Deal\s*',
+        r'\|\s*Coupon has already been\s*',
+        r'\|\s*Clipped\s*',
+        r'\|\s*Add to Card\s*',
+        r'\|\s*Load to Card\s*',
+    ]
+    for pattern in noise_patterns:
+        desc = re.sub(pattern, ' | ', desc, flags=re.IGNORECASE)
+    
+    # Remove duplicate expiration (keep short form, drop long form)
+    # e.g. "Expires 5/5/2026 | Expires May 5, 2026" -> "Expires 5/5/2026"
+    desc = re.sub(r'\|\s*Expires\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},?\s*\d{4}\s*', '', desc)
+    
+    # Clean up multiple pipes and trailing pipes
+    desc = re.sub(r'(\s*\|\s*){2,}', ' | ', desc)
+    desc = desc.strip().strip('|').strip()
+    
+    return desc
+
+async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = "") -> list[int]:
+    """Use the local LLM to semantically match card texts against a user keyword.
+    Returns a list of card indices (from card_texts) that match.
+    Returns None if the LLM call fails (error), vs [] for genuine no-matches.
+    E.g. keyword='coke' would match a card containing 'Coca-Cola'.
+    """
+    if not card_texts or not keyword:
+        return []
+
+    import httpx
+    import json
+
+    # Build a numbered list of card summaries (truncated to save tokens)
+    # Keep short — the LLM only needs enough to identify the product, not full details
+    card_list = "\n".join(f"{i}: {text[:120]}" for i, text in enumerate(card_texts))
+
+    system_prompt = (
+        "You are a strict product matching assistant. Given a search term and a numbered list of coupon descriptions, "
+        "return ONLY the indices of cards whose product is the SAME SPECIFIC ITEM as the search term.\n\n"
+        "STRICT RULES:\n"
+        "1. The product on the card must BE the search term or a specific brand of it.\n"
+        "2. If a card mentions a DIFFERENT brand or a DIFFERENT product type, do NOT match it even if it is in the same category.\n"
+        "3. Being in the same store aisle or category is NOT enough. The product itself must match.\n"
+        "4. If the search term specifies a brand name, ONLY match that exact brand — not competing brands of the same product type.\n"
+        "5. Evaluate EACH card individually. Do NOT output ranges.\n"
+        "6. Output ONLY: {\"matches\": [0, 3, 7]}  or  {\"matches\": []}\n"
+    )
+
+    user_msg = f"Search term: \"{keyword}\"\n\nCards:\n{card_list}"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "http://localhost:11434/api/chat",
+                json={
+                    "model": config.LLM_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_msg}
+                    ],
+                    "stream": False,
+                    "format": "json",
+                    "think": False,
+                    "options": {"temperature": 0, "num_ctx": 8192}
+                },
+                timeout=config.LLM_TIMEOUT
+            )
+            
+            # Detailed response diagnostics
+            if resp.status_code != 200:
+                err_msg = f"Ollama returned HTTP {resp.status_code}: {resp.text[:200]}"
+                logger.error(f"[_llm_match_cards] {err_msg}")
+                if log_path:
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"PRE-FLIGHT LLM MATCH FAILED: {err_msg}\n")
+                return None
+            
+            resp_json = resp.json()
+            raw = resp_json.get("message", {}).get("content", "")
+            
+            if not raw or not raw.strip():
+                err_msg = f"Ollama returned empty content. Full response keys: {list(resp_json.keys())}, done: {resp_json.get('done')}, done_reason: {resp_json.get('done_reason')}"
+                logger.error(f"[_llm_match_cards] {err_msg}")
+                if log_path:
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"PRE-FLIGHT LLM MATCH FAILED: {err_msg}\n")
+                return None
+            
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError as je:
+                err_msg = f"Failed to parse LLM response as JSON: {je}. Raw content: {raw[:300]}"
+                logger.error(f"[_llm_match_cards] {err_msg}")
+                if log_path:
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"PRE-FLIGHT LLM MATCH FAILED: {err_msg}\n")
+                return None
+            
+            matches = data.get("matches", [])
+
+            # Validate indices are in range
+            valid = [i for i in matches if isinstance(i, int) and 0 <= i < len(card_texts)]
+
+            # --- POST-LLM VALIDATION ---
+            # Verify each match with a quick yes/no LLM call to catch hallucinations.
+            # Only do this if there are a manageable number of matches.
+            if valid and len(valid) <= 30:
+                verified = []
+                verify_prompt = (
+                    "You are a strict product verification assistant. "
+                    "Answer ONLY with {\"is_match\": true} or {\"is_match\": false}.\n\n"
+                    "Is the following coupon card for the SAME SPECIFIC product as the search term?\n"
+                    "The product must BE the search term or a well-known brand of it.\n"
+                    "A different product from the same store aisle is NOT a match.\n\n"
+                    "Examples:\n"
+                    "- Search 'coke', card 'Coca-Cola $5 off' → true\n"
+                    "- Search 'coke', card 'Powerade $2 off' → false (different product)\n"
+                    "- Search 'ice cream', card 'Tillamook Ice Cream' → true\n"
+                    "- Search 'ice cream', card 'Totino\\'s Pizza Rolls' → false (different product)\n"
+                    "- Search 'Arizona tea', card 'Gold Peak Tea' → false (different brand)\n"
+                )
+                
+                for idx in valid:
+                    card_desc = card_texts[idx][:200]
+                    try:
+                        verify_resp = await client.post(
+                            "http://localhost:11434/api/chat",
+                            json={
+                                "model": config.LLM_MODEL,
+                                "messages": [
+                                    {"role": "system", "content": verify_prompt},
+                                    {"role": "user", "content": f"Search term: \"{keyword}\"\nCard: \"{card_desc}\""}
+                                ],
+                                "stream": False,
+                                "format": "json",
+                                "think": False,
+                                "options": {"temperature": 0, "num_ctx": 4096}
+                            },
+                            timeout=15
+                        )
+                        if verify_resp.status_code == 200:
+                            v_raw = verify_resp.json().get("message", {}).get("content", "{}")
+                            v_data = json.loads(v_raw)
+                            if v_data.get("is_match", False):
+                                verified.append(idx)
+                            else:
+                                logger.info(f"[_llm_match_cards] REJECTED card {idx} for '{keyword}': {card_desc[:80]}")
+                                if log_path:
+                                    with open(log_path, "a", encoding="utf-8") as f:
+                                        f.write(f"PRE-FLIGHT LLM VERIFY REJECTED: card {idx} for '{keyword}': {card_desc[:80]}\n")
+                        else:
+                            verified.append(idx)  # On verify failure, keep the match
+                    except Exception as ve:
+                        logger.warning(f"[_llm_match_cards] Verify failed for card {idx}: {ve}, keeping match")
+                        verified.append(idx)  # On error, keep the match
+                
+                if len(verified) < len(valid):
+                    logger.info(f"[_llm_match_cards] Post-verification: {len(valid)} -> {len(verified)} for '{keyword}'")
+                    if log_path:
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(f"PRE-FLIGHT LLM VERIFY: Reduced {len(valid)} -> {len(verified)} matches for '{keyword}'\n")
+                valid = verified
+
+            if log_path:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"PRE-FLIGHT LLM MATCH: keyword='{keyword}' -> {len(valid)} matches out of {len(card_texts)} cards: {valid}\n")
+            logger.info(f"[_llm_match_cards] keyword='{keyword}' -> {len(valid)} matches: {valid}")
+            return valid
+
+    except httpx.TimeoutException:
+        err_msg = f"Ollama request timed out after {config.LLM_TIMEOUT}s for keyword '{keyword}' ({len(card_texts)} cards)"
+        logger.error(f"[_llm_match_cards] {err_msg}")
+        if log_path:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"PRE-FLIGHT LLM MATCH FAILED (TIMEOUT): {err_msg}\n")
+        return None
+    except httpx.ConnectError as ce:
+        err_msg = f"Cannot connect to Ollama at localhost:11434: {ce}"
+        logger.error(f"[_llm_match_cards] {err_msg}")
+        if log_path:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"PRE-FLIGHT LLM MATCH FAILED (CONNECTION): {err_msg}\n")
+        return None
+    except Exception as e:
+        err_msg = f"LLM matching failed for '{keyword}': {type(e).__name__}: {e}"
+        logger.error(f"[_llm_match_cards] {err_msg}. Falling back to empty.")
+        if log_path:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"PRE-FLIGHT LLM MATCH FAILED: {err_msg}\n")
+        return None
 
 
 async def safeway_click_details(browser: BrowserSession, index: int):
@@ -190,7 +389,7 @@ async def safeway_get_all_deals(browser: BrowserSession, keyword: str = ""):
             
             for (let i = 0; i < cards.length; i++) {
                 try {
-                    let text = cards[i].innerText.trim().replace(/\\n/g, ' | ').substring(0, 200);
+                    let text = cards[i].innerText.trim().replace(/\\n/g, ' | ').substring(0, 300);
                     if (kwLower && text.toLowerCase().indexOf(kwLower) === -1) continue;
                     
                     if (!seen.has(text)) {
@@ -222,6 +421,504 @@ async def safeway_get_all_deals(browser: BrowserSession, keyword: str = ""):
 
     except Exception as e:
         return f"Failure: Error in safeway_get_all_deals: {str(e)}"
+
+
+async def safeway_clip_coupon(browser: BrowserSession, index: int):
+    """SITE-SPECIFIC SKILL: Clips (activates) a coupon on the Safeway deals page by clicking
+    the 'Clip Coupon' button on the coupon card at the given index.
+    Returns success/failure and the coupon name if available.
+
+    Args:
+        index: The index of the coupon card to clip (0 for first, 1 for second, etc.)
+    """
+    page = await browser.get_current_page()
+    try:
+        logger.info(f"[safeway_clip_coupon] Attempting to clip coupon at card index {index}")
+        import json as _json
+
+        # Probe the card: check status, find clip button, return coordinates for real click
+        result_raw = await page.evaluate("""
+        (idx) => {
+            const selectors = [
+                '[class*="coupon-card"]', '[class*="offer-card"]',
+                '[class*="deal-card"]', '[class*="product-card"]',
+                'article', '[role="article"]'
+            ];
+
+            let cards = [];
+            for (const sel of selectors) {
+                try {
+                    const els = Array.from(document.querySelectorAll(sel))
+                        .filter(el => el.offsetParent !== null);
+                    if (els.length > 0) { cards = els; break; }
+                } catch(e) {}
+            }
+
+            if (cards.length === 0)
+                return JSON.stringify({error: 'No coupon cards found on the page.'});
+            if (idx >= cards.length)
+                return JSON.stringify({error: 'Index ' + idx + ' out of bounds (' + cards.length + ' cards found)'});
+
+            const card = cards[idx];
+            const cardText = (card.innerText || '').substring(0, 250).replace(/\\n/g, ' | ');
+
+            // Check if already clipped
+            const alreadyClipped = Array.from(card.querySelectorAll('button, span, div'))
+                .some(el => {
+                    const t = (el.textContent || '').trim().toLowerCase();
+                    return t === 'coupon clipped' || t === 'added' || t === 'added to card' || t === 'clipped';
+                });
+            if (alreadyClipped) {
+                return JSON.stringify({status: 'already_clipped', cardText});
+            }
+
+            // Find the clip button within this card
+            const clipBtn = Array.from(card.querySelectorAll('button, a, [role="button"]'))
+                .find(el => {
+                    const t = (el.textContent || '').trim().toLowerCase();
+                    const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                    return (
+                        t.includes('clip coupon') || t.includes('clip deal') ||
+                        t.includes('load to card') || t.includes('add to card') ||
+                        t === 'clip' ||
+                        aria.includes('clip coupon') || aria.includes('clip deal') ||
+                        aria.includes('load to card') || aria.includes('add to card')
+                    ) && el.offsetParent !== null;
+                });
+
+            if (!clipBtn) {
+                return JSON.stringify({error: 'no_clip_button', cardText,
+                    hint: 'This deal may not require clipping (automatic sale price).'});
+            }
+
+            // Scroll button into view and return its coordinates for a real Playwright click
+            clipBtn.scrollIntoView({block: 'center'});
+            const rect = clipBtn.getBoundingClientRect();
+            return JSON.stringify({
+                status: 'ready_to_click',
+                cardText,
+                btnText: clipBtn.textContent.trim(),
+                x: Math.round(rect.x + rect.width / 2),
+                y: Math.round(rect.y + rect.height / 2)
+            });
+        }
+        """, index)
+
+        data = _json.loads(result_raw)
+
+        if 'error' in data:
+            hint = data.get('hint', '')
+            card_text = data.get('cardText', '')
+            msg = f"Failure: {data['error']}"
+            if hint:
+                msg += f" ({hint})"
+            if card_text:
+                msg += f" Card: '{card_text}'"
+            logger.warning(f"[safeway_clip_coupon] {msg}")
+            return msg
+
+        if data.get('status') == 'already_clipped':
+            msg = f"Already clipped: Card {index} ('{data.get('cardText', '')}') is already clipped."
+            logger.info(f"[safeway_clip_coupon] {msg}")
+            return msg
+
+        # Use Playwright's real mouse click instead of JS element.click()
+        click_x = data['x']
+        click_y = data['y']
+        try:
+            mouse = await page.mouse
+            await mouse.click(click_x, click_y)
+            logger.info(f"[safeway_clip_coupon] Real mouse click at ({click_x}, {click_y}) for card {index}")
+        except Exception as click_err:
+            logger.warning(f"[safeway_clip_coupon] mouse.click failed: {click_err}, falling back to JS click")
+            await page.evaluate("""
+            (idx) => {
+                const selectors = [
+                    '[class*="coupon-card"]', '[class*="offer-card"]',
+                    '[class*="deal-card"]', '[class*="product-card"]',
+                    'article', '[role="article"]'
+                ];
+                let cards = [];
+                for (const sel of selectors) {
+                    try {
+                        const els = Array.from(document.querySelectorAll(sel))
+                            .filter(el => el.offsetParent !== null);
+                        if (els.length > 0) { cards = els; break; }
+                    } catch(e) {}
+                }
+                if (idx >= cards.length) return;
+                const card = cards[idx];
+                const clipBtn = Array.from(card.querySelectorAll('button, a, [role="button"]'))
+                    .find(el => {
+                        const t = (el.textContent || '').trim().toLowerCase();
+                        return t.includes('clip coupon') || t.includes('clip deal') || t === 'clip';
+                    });
+                if (clipBtn) clipBtn.click();
+            }
+            """, index)
+
+        # Wait for SPA confirmation animation
+        await asyncio.sleep(2.0)
+
+        # Verify the clip took effect
+        verify_raw = await page.evaluate("""
+        (idx) => {
+            const selectors = [
+                '[class*="coupon-card"]', '[class*="offer-card"]',
+                '[class*="deal-card"]', '[class*="product-card"]',
+                'article', '[role="article"]'
+            ];
+            let cards = [];
+            for (const sel of selectors) {
+                try {
+                    const els = Array.from(document.querySelectorAll(sel))
+                        .filter(el => el.offsetParent !== null);
+                    if (els.length > 0) { cards = els; break; }
+                } catch(e) {}
+            }
+            if (idx >= cards.length) return JSON.stringify({verified: 'unknown'});
+            const card = cards[idx];
+            const clipped = Array.from(card.querySelectorAll('button, span, div'))
+                .some(el => {
+                    const t = (el.textContent || '').trim().toLowerCase();
+                    return t === 'coupon clipped' || t === 'added' || t === 'added to card' || t === 'clipped';
+                });
+            return JSON.stringify({verified: clipped});
+        }
+        """, index)
+
+        verify = _json.loads(verify_raw)
+        card_text = data.get('cardText', '')
+
+        if verify.get('verified') is True:
+            msg = f"Success: Clipped coupon at card {index} ('{card_text}'). Verified as clipped."
+            logger.info(f"[safeway_clip_coupon] {msg}")
+            return msg
+        else:
+            msg = f"Clicked clip button on card {index} ('{card_text}') but could not verify. It may still have worked."
+            logger.warning(f"[safeway_clip_coupon] {msg}")
+            return msg
+
+    except Exception as e:
+        logger.error(f"[safeway_clip_coupon] Error: {e}")
+        return f"Failure: Error in safeway_clip_coupon: {str(e)}"
+
+
+async def safeway_clip_all_matching(browser: BrowserSession, keyword: str = ""):
+    """SITE-SPECIFIC SKILL: Finds ALL coupon cards matching a keyword and clips every one
+    that has a 'Clip Coupon' button. Returns a summary of how many were clipped.
+
+    Args:
+        keyword: Filter keyword to match against coupon card text (case-insensitive).
+    """
+    page = await browser.get_current_page()
+    try:
+        logger.info(f"[safeway_clip_all_matching] Clipping all coupons matching '{keyword}'")
+        await asyncio.sleep(1.5)
+
+        # Evaluate JS to find all matching card indices on the page
+        matching_indices_raw = await page.evaluate("""
+        (kw) => {
+            const selectors = [
+                '[class*="coupon-card"]', '[class*="offer-card"]',
+                '[class*="deal-card"]', '[class*="product-card"]',
+                'article', '[role="article"]'
+            ];
+
+            let cards = [];
+            for (const sel of selectors) {
+                try {
+                    const els = Array.from(document.querySelectorAll(sel))
+                        .filter(el => el.offsetParent !== null);
+                    if (els.length > 0) { cards = els; break; }
+                } catch(e) {}
+            }
+
+            if (cards.length === 0)
+                return JSON.stringify({error: 'No coupon cards found on the page.'});
+
+            const kwLower = (kw || '').toLowerCase();
+            const indices = [];
+
+            for (let i = 0; i < cards.length; i++) {
+                const card = cards[i];
+                const cardText = (card.innerText || '').substring(0, 250).replace(/\\n/g, ' | ');
+
+                // Keyword filter
+                if (kwLower && cardText.toLowerCase().indexOf(kwLower) === -1) continue;
+
+                // Add index to list of matching cards
+                indices.push(i);
+            }
+
+            return JSON.stringify({total: cards.length, indices: indices});
+        }
+        """, keyword)
+
+        import json
+        data = json.loads(matching_indices_raw)
+
+        if 'error' in data:
+            return f"Failure: {data['error']}"
+
+        indices = data.get('indices', [])
+        if not indices:
+            return f"No coupons matching '{keyword}' found among {data.get('total', 0)} cards."
+
+        # Delegate the actual clipping and sequential wait/verification to safeway_clip_by_indices
+        return await safeway_clip_by_indices(browser, indices, keyword=keyword)
+
+    except Exception as e:
+        logger.error(f"[safeway_clip_all_matching] Error: {e}")
+        return f"Failure: Error in safeway_clip_all_matching: {str(e)}"
+
+async def safeway_clip_by_indices(browser: BrowserSession, indices: list[int], keyword: str = ""):
+    """Clips coupons at specific card indices. Used with _llm_match_cards for semantic matching.
+    
+    Args:
+        indices: List of card indices to clip.
+        keyword: The original keyword (for logging only).
+    """
+    if not indices:
+        return f"No matching cards to clip for '{keyword}'."
+
+    # Deduplicate indices preserving order
+    indices = list(dict.fromkeys(indices))
+
+    page = await browser.get_current_page()
+    try:
+        logger.info(f"[safeway_clip_by_indices] Clipping {len(indices)} cards for '{keyword}': {indices}")
+        await asyncio.sleep(1.0)
+
+        import json as _json
+
+        results = []
+
+        for idx in indices:
+            # Probe this card: check status, find clip button, return coordinates for real click
+            probe_raw = await page.evaluate("""
+            (idx) => {
+                const selectors = [
+                    '[class*="coupon-card"]', '[class*="offer-card"]',
+                    '[class*="deal-card"]', '[class*="product-card"]',
+                    'article', '[role="article"]'
+                ];
+
+                let cards = [];
+                for (const sel of selectors) {
+                    try {
+                        const els = Array.from(document.querySelectorAll(sel))
+                            .filter(el => el.offsetParent !== null);
+                        if (els.length > 0) { cards = els; break; }
+                    } catch(e) {}
+                }
+
+                if (cards.length === 0)
+                    return JSON.stringify({error: 'No coupon cards found on the page.', total: 0});
+                if (idx >= cards.length)
+                    return JSON.stringify({status: 'out_of_bounds', total: cards.length});
+
+                const card = cards[idx];
+                const cardText = (card.innerText || '').substring(0, 250).replace(/\\n/g, ' | ');
+
+                // Check if already clipped
+                const alreadyClipped = Array.from(card.querySelectorAll('button, span, div'))
+                    .some(el => {
+                        const t = (el.textContent || '').trim().toLowerCase();
+                        return t === 'coupon clipped' || t === 'added' || t === 'added to card' || t === 'clipped';
+                    });
+                if (alreadyClipped) {
+                    return JSON.stringify({status: 'already_clipped', cardText, total: cards.length});
+                }
+
+                // Find clip button
+                const clipBtn = Array.from(card.querySelectorAll('button, a, [role="button"]'))
+                    .find(el => {
+                        const t = (el.textContent || '').trim().toLowerCase();
+                        const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                        return (
+                            t.includes('clip coupon') || t.includes('clip deal') ||
+                            t.includes('load to card') || t.includes('add to card') ||
+                            t === 'clip' ||
+                            aria.includes('clip coupon') || aria.includes('clip deal') ||
+                            aria.includes('load to card') || aria.includes('add to card')
+                        ) && el.offsetParent !== null;
+                    });
+
+                if (!clipBtn) {
+                    return JSON.stringify({status: 'no_button', cardText, total: cards.length});
+                }
+
+                // Scroll button into view and return its coordinates for a real Playwright click
+                clipBtn.scrollIntoView({block: 'center'});
+                const rect = clipBtn.getBoundingClientRect();
+                return JSON.stringify({
+                    status: 'ready_to_click',
+                    cardText,
+                    total: cards.length,
+                    x: Math.round(rect.x + rect.width / 2),
+                    y: Math.round(rect.y + rect.height / 2)
+                });
+            }
+            """, idx)
+
+            probe = _json.loads(probe_raw)
+
+            if 'error' in probe:
+                return f"Failure: {probe['error']}"
+
+            status = probe.get('status')
+            card_text = probe.get('cardText', '')
+
+            if status == 'ready_to_click':
+                # Use Playwright's real mouse click (sends mousedown/mouseup/click at OS level)
+                # This properly triggers React/Angular SPA event handlers unlike JS element.click()
+                click_x = probe['x']
+                click_y = probe['y']
+                try:
+                    mouse = await page.mouse
+                    await mouse.click(click_x, click_y)
+                    logger.info(f"[safeway_clip_by_indices] Real mouse click at ({click_x}, {click_y}) for card {idx}")
+                except Exception as click_err:
+                    logger.warning(f"[safeway_clip_by_indices] mouse.click failed for card {idx}: {click_err}, falling back to JS click")
+                    # Fallback to JS click if mouse.click fails
+                    await page.evaluate("""
+                    (idx) => {
+                        const selectors = [
+                            '[class*="coupon-card"]', '[class*="offer-card"]',
+                            '[class*="deal-card"]', '[class*="product-card"]',
+                            'article', '[role="article"]'
+                        ];
+                        let cards = [];
+                        for (const sel of selectors) {
+                            try {
+                                const els = Array.from(document.querySelectorAll(sel))
+                                    .filter(el => el.offsetParent !== null);
+                                if (els.length > 0) { cards = els; break; }
+                            } catch(e) {}
+                        }
+                        if (idx >= cards.length) return;
+                        const card = cards[idx];
+                        const clipBtn = Array.from(card.querySelectorAll('button, a, [role="button"]'))
+                            .find(el => {
+                                const t = (el.textContent || '').trim().toLowerCase();
+                                const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                                return (
+                                    t.includes('clip coupon') || t.includes('clip deal') ||
+                                    t.includes('load to card') || t.includes('add to card') ||
+                                    t === 'clip' ||
+                                    aria.includes('clip coupon') || aria.includes('clip deal') ||
+                                    aria.includes('load to card') || aria.includes('add to card')
+                                ) && el.offsetParent !== null;
+                            });
+                        if (clipBtn) clipBtn.click();
+                    }
+                    """, idx)
+
+                # Wait for SPA to process the click
+                await asyncio.sleep(1.5)
+
+                # Verify clipping
+                verify_raw = await page.evaluate("""
+                (idx) => {
+                    const selectors = [
+                        '[class*="coupon-card"]', '[class*="offer-card"]',
+                        '[class*="deal-card"]', '[class*="product-card"]',
+                        'article', '[role="article"]'
+                    ];
+
+                    let cards = [];
+                    for (const sel of selectors) {
+                        try {
+                            const els = Array.from(document.querySelectorAll(sel))
+                                .filter(el => el.offsetParent !== null);
+                            if (els.length > 0) { cards = els; break; }
+                        } catch(e) {}
+                    }
+
+                    if (idx >= cards.length) return 'false';
+                    const card = cards[idx];
+                    
+                    const clipped = Array.from(card.querySelectorAll('button, span, div'))
+                        .some(el => {
+                            const t = (el.textContent || '').trim().toLowerCase();
+                            return t === 'coupon clipped' || t === 'added' || t === 'added to card' || t === 'clipped';
+                        });
+                    return clipped ? 'true' : 'false';
+                }
+                """, idx)
+
+                is_verified = (verify_raw == 'true' or verify_raw is True)
+
+                if is_verified:
+                    results.append({'index': idx, 'status': 'clicked', 'cardText': card_text})
+                    logger.info(f"[safeway_clip_by_indices] ✅ Clipped and VERIFIED card {idx}")
+                else:
+                    # Retry verification once with an extra wait
+                    await asyncio.sleep(2.0)
+                    verify_raw2 = await page.evaluate("""
+                    (idx) => {
+                        const selectors = [
+                            '[class*="coupon-card"]', '[class*="offer-card"]',
+                            '[class*="deal-card"]', '[class*="product-card"]',
+                            'article', '[role="article"]'
+                        ];
+
+                        let cards = [];
+                        for (const sel of selectors) {
+                            try {
+                                const els = Array.from(document.querySelectorAll(sel))
+                                    .filter(el => el.offsetParent !== null);
+                                if (els.length > 0) { cards = els; break; }
+                            } catch(e) {}
+                        }
+
+                        if (idx >= cards.length) return 'false';
+                        const card = cards[idx];
+                        
+                        const clipped = Array.from(card.querySelectorAll('button, span, div'))
+                            .some(el => {
+                                const t = (el.textContent || '').trim().toLowerCase();
+                                return t === 'coupon clipped' || t === 'added' || t === 'added to card' || t === 'clipped';
+                            });
+                        return clipped ? 'true' : 'false';
+                    }
+                    """, idx)
+
+                    is_verified2 = (verify_raw2 == 'true' or verify_raw2 is True)
+                    if is_verified2:
+                        results.append({'index': idx, 'status': 'clicked', 'cardText': card_text})
+                        logger.info(f"[safeway_clip_by_indices] ✅ Clipped and VERIFIED card {idx} on retry")
+                    else:
+                        results.append({'index': idx, 'status': 'clicked', 'cardText': card_text})
+                        logger.warning(f"[safeway_clip_by_indices] ⚠️ Clicked card {idx} but could not verify. May still have worked.")
+            else:
+                results.append({'index': idx, 'status': status, 'cardText': card_text})
+
+        clipped = [r for r in results if r['status'] == 'clicked']
+        already = [r for r in results if r['status'] == 'already_clipped']
+        no_btn = [r for r in results if r['status'] == 'no_button']
+
+        summary_parts = []
+        if clipped:
+            summary_parts.append(f"Clipped {len(clipped)} coupon(s)")
+        if already:
+            summary_parts.append(f"{len(already)} already clipped")
+        if no_btn:
+            summary_parts.append(f"{len(no_btn)} had no clip button (auto sale)")
+
+        detail_lines = []
+        for r in results:
+            status_label = {'clicked': '✅ CLIPPED', 'already_clipped': '⏭️ ALREADY', 'no_button': '➖ NO BUTTON', 'out_of_bounds': '⚠️ INVALID INDEX'}
+            detail_lines.append(f"  Card {r['index']}: {status_label.get(r['status'], r['status'])} - {r.get('cardText', '')}")
+
+        summary = f"Summary: {', '.join(summary_parts)} (for '{keyword}')."
+        logger.info(f"[safeway_clip_by_indices] {summary}")
+        return summary + "\n" + "\n".join(detail_lines)
+
+    except Exception as e:
+        logger.error(f"[safeway_clip_by_indices] Error: {e}")
+        return f"Failure: Error in safeway_clip_by_indices: {str(e)}"
 
 
 async def safeway_filter_category(category_name: str, browser: BrowserSession):
@@ -391,6 +1088,52 @@ async def safeway_get_categories(browser: BrowserSession):
     except Exception as e:
         logger.error(f"[safeway_get_categories] Failed: {e}")
         return []
+
+CATEGORY_EMOJIS = {
+    "Beverages": "🥤",
+    "Dairy, Eggs & Cheese": "🥛",
+    "Dairy": "🥛",
+    "Meat & Seafood": "🥩",
+    "Fruits & Vegetables": "🍎",
+    "Produce": "🍎",
+    "Frozen Foods": "❄️",
+    "Paper, Cleaning & Home": "🧻",
+    "Paper": "🧻",
+    "Baby Care": "👶",
+    "Bread & Bakery": "🍞",
+    "Breakfast & Cereal": "🥣",
+    "Cookies, Snacks & Candy": "🍪",
+    "Deli": "🧀",
+    "Personal Care & Health": "🧼",
+    "Pet Care": "🐾",
+}
+
+def _format_deal_markdown(desc: str) -> str:
+    parts = [p.strip() for p in desc.split('|') if p.strip()]
+    if not parts:
+        return desc
+    
+    deal = parts[0]
+    product = parts[1] if len(parts) > 1 else ""
+    details = parts[2] if len(parts) > 2 else ""
+    
+    terms = []
+    for p in parts[3:]:
+        if re.search(r'offer details|clip coupon|clip deal|add to card|load to card', p, re.IGNORECASE):
+            continue
+        terms.append(p)
+        
+    formatted = f"**{deal}**"
+    if product:
+        formatted += f" - *{product}*"
+    
+    if details:
+        formatted += f"\n     * *Details:* {details}"
+    if terms:
+        formatted += f"\n     * *Terms:* {' | '.join(terms)}"
+        
+    return formatted
+
 async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_str: str, log_path: str, llm: Any):
     """SITE-SPECIFIC AUTOMATION: Handles the heavy lifting of navigation and 
     scraping for Safeway before the agent starts.
@@ -417,73 +1160,414 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
             pass
         await _asyncio.sleep(5)
 
-        # 2. Extract keyword
-        noise_words = {"look", "for", "deals", "safeway", "website", "following", "item:", "items:", "item", "items", "search", "find", "on", "products", "product", "the", "a", "an"}
-        short_keyword = " ".join([w for w in prompt.lower().split() if w not in noise_words and len(w) > 2]).strip()
-        if not short_keyword:
-            short_keyword = prompt[:30]
+        # 2. Extract keywords using LLM
+        extraction_system = (
+            "You are a product extraction assistant. Your job is to extract a list of specific products or items from a user's prompt.\n"
+            "Output ONLY a valid JSON object with the key 'items' containing a list of strings.\n"
+            "Example prompt: 'Get deals for milk, ice cream, and steak'\n"
+            "Output: {\"items\": [\"milk\", \"ice cream\", \"steak\"]}\n"
+            "If no specific items are found, output {\"items\": []}."
+        )
+        items = []
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                extraction_resp = await client.post(
+                    "http://localhost:11434/api/chat",
+                    json={
+                        "model": config.LLM_MODEL,
+                        "messages": [{"role": "user", "content": f"{extraction_system}\n\nPrompt: {prompt}"}],
+                        "stream": False,
+                        "format": "json",
+                        "think": False,
+                        "options": {"temperature": 0, "num_ctx": 4096}
+                    },
+                    timeout=config.LLM_TIMEOUT
+                )
+                raw_content = extraction_resp.json().get("message", {}).get("content", "{}")
+                import json
+                data = json.loads(raw_content)
+                items = data.get("items", [])
+                logger.info(f"[safeway_run_pre_flight] Extracted items from prompt: {items}")
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"PRE-FLIGHT: Extracted items from prompt: {items}\n")
+        except Exception as e:
+            logger.error(f"[safeway_run_pre_flight] Keyword extraction failed: {e}. Falling back to simple extraction.")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"PRE-FLIGHT: Keyword extraction failed: {e}. Falling back to simple extraction.\n")
+            noise_words = {"look", "for", "deals", "safeway", "website", "following", "item:", "items:", "item", "items", "search", "find", "on", "products", "product", "the", "a", "an"}
+            items = [" ".join([w for w in prompt.lower().split() if w not in noise_words and len(w) > 2]).strip()]
 
-        # 3. Categorize
+        if not items:
+            items = [prompt[:30]]
+            
+        logger.info(f"[safeway_run_pre_flight] Final list of items to process: {items}")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"PRE-FLIGHT: Final list of items to process: {items}\n")
+
+        # 3. Categorize items
         available_categories = await safeway_get_categories(browser)
-        category = ""
-        if available_categories:
+        item_category_map = {} # category -> list of items
+        
+        if available_categories and items:
             selector_system = (
                 "You are a categorization assistant for a grocery store. You must output ONLY a valid JSON object.\n"
-                "Format: {\"category\": \"Category Name\"}\n"
-                "RULES: 1. NEVER pick 'Special Offers' if a specific food category is available. 2. If nothing fits, output {\"category\": \"NONE\"}.\n"
+                "Format: {\"mapping\": [{\"item\": \"item name\", \"category\": \"Category Name\"}, ...]}\n"
+                "RULES:\n"
+                "1. NEVER pick 'Special Offers' if a specific food category is available.\n"
+                "2. If nothing fits, use 'NONE' as category.\n"
+                "3. Crucially, items that are typically sold frozen (e.g., ice cream, frozen meals, frozen pizza, popsicles, frozen waffles, frozen vegetables, frozen fruit) MUST be categorized under 'Frozen Foods' (or similar frozen category) rather than their ingredient-based category (like 'Dairy', 'Meat', or 'Produce').\n"
                 f"Available Categories: {', '.join(available_categories)}"
             )
             try:
-                import ollama
-                selector_resp = await ollama.AsyncClient().chat(
-                    model=getattr(llm, "model", "qwen2.5:9b"),
-                    messages=[
-                        {"role": "user", "content": f"{selector_system}\n\nThe user is looking for '{short_keyword}'. Which category best matches?"}
-                    ],
-                    format="json"
-                )
-                try:
-                    raw_content = selector_resp.message.content or ""
-                except AttributeError:
-                    raw_content = selector_resp.get('message', {}).get('content', '')
-                
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"PRE-FLIGHT: LLM Category Choice Raw Response: '{raw_content}'\n")
-                
-                import json
-                try:
-                    data = json.loads(raw_content)
-                    category_choice = data.get("category", "NONE").strip()
-                except Exception:
-                    category_choice = raw_content.strip().strip("'\"")
+                import httpx
+                async with httpx.AsyncClient() as client:
+                    selector_resp = await client.post(
+                        "http://localhost:11434/api/chat",
+                        json={
+                            "model": config.LLM_MODEL,
+                            "messages": [{"role": "user", "content": f"{selector_system}\n\nItems: {', '.join(items)}"}],
+                            "stream": False,
+                            "format": "json",
+                            "think": False,
+                            "options": {"temperature": 0, "num_ctx": 4096}
+                        },
+                        timeout=config.LLM_TIMEOUT
+                    )
+                    raw_content = selector_resp.json().get("message", {}).get("content", "{}")
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"PRE-FLIGHT: Categorization response: {raw_content}\n")
                     
-                if category_choice and category_choice != "NONE":
-                    if any(c.lower() == category_choice.lower() for c in available_categories):
-                        category = next(c for c in available_categories if c.lower() == category_choice.lower())
-                    else:
-                        for c in available_categories:
-                            if c.lower() in category_choice.lower() or category_choice.lower() in c.lower():
-                                category = c
-                                break
+                    import json
+                    data = json.loads(raw_content)
+                    mappings = data.get("mapping", [])
+                    
+                    logger.info(f"[safeway_run_pre_flight] Item Categorization Breakdown:")
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write("PRE-FLIGHT: Item Categorization Breakdown:\n")
+                    
+                    for m in mappings:
+                        item_name = m.get("item")
+                        category_choice = m.get("category", "NONE").strip()
+                        
+                        logger.info(f"  - Item: '{item_name}' -> Identified Category: '{category_choice}'")
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(f"  - Item: '{item_name}' -> Identified Category: '{category_choice}'\n")
+                        
+                        if category_choice and category_choice != "NONE":
+                            matched_cat = ""
+                            if any(c.lower() == category_choice.lower() for c in available_categories):
+                                matched_cat = next(c for c in available_categories if c.lower() == category_choice.lower())
+                            else:
+                                for c in available_categories:
+                                    if c.lower() in category_choice.lower() or category_choice.lower() in c.lower():
+                                        matched_cat = c
+                                        break
+                            
+                            if matched_cat:
+                                if matched_cat not in item_category_map:
+                                    item_category_map[matched_cat] = []
+                                item_category_map[matched_cat].append(item_name)
             except Exception as e:
+                logger.error(f"[safeway_run_pre_flight] Multi-Category mapping failed: {type(e).__name__}: {e}")
                 with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"PRE-FLIGHT: LLM Category call failed: {e}\n")
+                    f.write(f"PRE-FLIGHT: Multi-Category mapping failed: {type(e).__name__}: {e}\n")
 
-        if category:
-            with open(log_path, "a", encoding="utf-8") as f: 
-                f.write(f"PRE-FLIGHT: Applying category filter '{category}'...\n")
-            await safeway_filter_category(category, browser)
-            await _asyncio.sleep(3)
+        # Fallback: if mapping failed, process each item individually under empty category
+        # (Do NOT concatenate all items into one keyword — that produces unsearchable strings)
+        if not item_category_map:
+            for item in items:
+                if "" not in item_category_map:
+                    item_category_map[""] = []
+                item_category_map[""].append(item)
 
-        # 4. Scrape
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"PRE-FLIGHT: Scraping deals for '{short_keyword}'...\n")
-        scrape_result = await safeway_get_all_deals(browser, keyword=short_keyword)
-        
-        if not scrape_result.startswith("Found deals:"):
-            scrape_result = await safeway_get_all_deals(browser, keyword="")
+        # 4. Scrape deals AND clip coupons per category
+        # Build a concise per-item summary (instead of raw card dumps that get truncated)
+        item_results = []  # list of dicts: {item, category, clipped: [], already: [], no_match: bool}
+        is_first_category = True
+        for category, cat_items in item_category_map.items():
+            if category:
+                # Reset page to clean state before each new category to prevent
+                # filter stacking or stale page state from previous category's clipping
+                if not is_first_category:
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"PRE-FLIGHT: Resetting page before applying '{category}' filter...\n")
+                    await page.goto(target_url)
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=30000)
+                    except Exception:
+                        pass
+                    await _asyncio.sleep(5)
+                
+                with open(log_path, "a", encoding="utf-8") as f: 
+                    f.write(f"PRE-FLIGHT: Applying category filter '{category}' for items: {cat_items}...\n")
+                filter_result = await safeway_filter_category(category, browser)
+                
+                # If filter failed, log it and skip this category's items
+                if filter_result.startswith("Failure"):
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"PRE-FLIGHT: ⚠️ Category filter FAILED for '{category}': {filter_result}\n")
+                    for kw in cat_items:
+                        item_results.append({"item": kw, "category": category, "clipped": [], "already": [], "no_button": [], "no_match": True, "llm_error": False})
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            f.write(f"PRE-FLIGHT CLIP RESULT: Skipped '{kw}' — category filter for '{category}' failed.\n")
+                    is_first_category = False
+                    continue
+                
+                await _asyncio.sleep(3)
+                
+                # Click "Show More" / "Load More" button repeatedly to load all deals
+                for show_more_attempt in range(20):  # max 20 clicks to prevent infinite loop
+                    show_more_clicked = await page.evaluate("""
+                    () => {
+                        // Look for common "show more" / "load more" buttons
+                        const candidates = Array.from(document.querySelectorAll('button, a, [role="button"]'))
+                            .filter(el => el.offsetParent !== null);
+                        for (const el of candidates) {
+                            const text = (el.textContent || '').trim().toLowerCase();
+                            if (text === 'show more' || text === 'load more' || text === 'see more' 
+                                || text === 'view more' || text === 'show all') {
+                                el.scrollIntoView({block: 'center'});
+                                el.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                    """)
+                    if not show_more_clicked:
+                        break
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"PRE-FLIGHT: Clicked 'Show More' button (attempt {show_more_attempt + 1})\n")
+                    await _asyncio.sleep(2)
+                
+                is_first_category = False
             
-        return scrape_result
+            # Scrape for each item in this category
+            keywords_to_search = cat_items
+            for kw in keywords_to_search:
+                result_entry = {"item": kw, "category": category or "General", "clipped": [], "already": [], "no_button": [], "no_match": False, "llm_error": False}
+                
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"PRE-FLIGHT: Scraping deals for '{kw}' in '{category or 'General'}'...\n")
+                scrape_result = await safeway_get_all_deals(browser, keyword=kw)
+                
+                found_deals = False
+                if scrape_result.startswith("Found deals:"):
+                    found_deals = True
+                else:
+                    # Fallback scrape if no specific match
+                    scrape_result = await safeway_get_all_deals(browser, keyword="")
+                    if scrape_result.startswith("Found deals:"):
+                        found_deals = True
+
+                # 5. Auto-clip matching coupons using LLM-based semantic matching
+                if found_deals:
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"PRE-FLIGHT: LLM-matching coupons for '{kw}' in '{category or 'General'}'...\n")
+                    
+                    # Scrape all card texts from the page for LLM matching
+                    # Enhanced: also extract aria-labels, image alts, and title attrs for volume/size info
+                    card_texts_raw = await page.evaluate("""
+                    () => {
+                        const selectors = [
+                            '[class*="coupon-card"]', '[class*="offer-card"]',
+                            '[class*="deal-card"]', '[class*="product-card"]',
+                            'article', '[role="article"]'
+                        ];
+                        let cards = [];
+                        for (const sel of selectors) {
+                            try {
+                                const els = Array.from(document.querySelectorAll(sel))
+                                    .filter(el => el.offsetParent !== null);
+                                if (els.length > 0) { cards = els; break; }
+                            } catch(e) {}
+                        }
+                        return JSON.stringify(cards.map(c => {
+                            let text = (c.innerText || '').substring(0, 250).replace(/\\n/g, ' | ');
+                            
+                            // Extract additional product info from DOM attributes
+                            const extras = [];
+                            
+                            // Image alt text often contains product name + size/volume
+                            c.querySelectorAll('img').forEach(img => {
+                                const alt = (img.getAttribute('alt') || '').trim();
+                                if (alt.length > 5 && !text.toLowerCase().includes(alt.toLowerCase().substring(0, 20))) {
+                                    extras.push(alt);
+                                }
+                            });
+                            
+                            // Aria-labels on child elements may have full descriptions with size info
+                            c.querySelectorAll('[aria-label]').forEach(el => {
+                                const label = (el.getAttribute('aria-label') || '').trim();
+                                if (label.length > 10 && !text.toLowerCase().includes(label.toLowerCase().substring(0, 20))) {
+                                    extras.push(label);
+                                }
+                            });
+                            
+                            // Title attributes
+                            c.querySelectorAll('[title]').forEach(el => {
+                                const title = (el.getAttribute('title') || '').trim();
+                                if (title.length > 5 && !text.toLowerCase().includes(title.toLowerCase().substring(0, 20))) {
+                                    extras.push(title);
+                                }
+                            });
+                            
+                            if (extras.length > 0) {
+                                text += ' || ' + extras.join(' | ');
+                            }
+                            return text.substring(0, 400);
+                        }));
+                    }
+                    """)
+                    import json as _json
+                    card_texts = _json.loads(card_texts_raw)
+                    
+                    # Ask LLM which cards match the keyword semantically
+                    # Returns None on LLM error, [] on genuine no-matches
+                    matching_indices = await _llm_match_cards(card_texts, kw, log_path)
+                    
+                    if matching_indices is None:
+                        # LLM call failed — mark as error, not "no match"
+                        result_entry["llm_error"] = True
+                        clip_result = f"LLM ERROR: Model failed while matching '{kw}' among {len(card_texts)} cards."
+                    elif matching_indices:
+                        # Deduplicate matching indices by card text similarity
+                        seen_texts = {}
+                        unique_indices = []
+                        for idx in matching_indices:
+                            if idx < len(card_texts):
+                                dedup_key = card_texts[idx][:150].strip().lower()
+                                if dedup_key not in seen_texts:
+                                    seen_texts[dedup_key] = idx
+                                    unique_indices.append(idx)
+                        
+                        if len(unique_indices) < len(matching_indices):
+                            with open(log_path, "a", encoding="utf-8") as f:
+                                f.write(f"PRE-FLIGHT DEDUP: Reduced {len(matching_indices)} matches to {len(unique_indices)} unique cards\n")
+                            logger.info(f"[safeway_run_pre_flight] Dedup: {len(matching_indices)} -> {len(unique_indices)} unique for '{kw}'")
+                        
+                        # Clip all matched cards (including duplicates for coverage)
+                        clip_result = await safeway_clip_by_indices(browser, matching_indices, keyword=kw)
+                        
+                        # Parse clip_result, deduplicating descriptions in output
+                        seen_descs = set()
+                        for line in clip_result.splitlines():
+                            line_stripped = line.strip()
+                            if "✅ CLIPPED" in line_stripped:
+                                desc = line_stripped.split("CLIPPED - ", 1)[-1] if "CLIPPED - " in line_stripped else line_stripped
+                                desc = _clean_deal_description(desc[:250])
+                                desc_key = desc[:100].lower()
+                                if desc_key not in seen_descs:
+                                    seen_descs.add(desc_key)
+                                    result_entry["clipped"].append(desc)
+                            elif "⏭️ ALREADY" in line_stripped:
+                                desc = line_stripped.split("ALREADY - ", 1)[-1] if "ALREADY - " in line_stripped else line_stripped
+                                desc = _clean_deal_description(desc[:250])
+                                desc_key = desc[:100].lower()
+                                if desc_key not in seen_descs:
+                                    seen_descs.add(desc_key)
+                                    result_entry["already"].append(desc)
+                            elif "➖ NO BUTTON" in line_stripped:
+                                desc = line_stripped.split("NO BUTTON - ", 1)[-1] if "NO BUTTON - " in line_stripped else line_stripped
+                                desc = _clean_deal_description(desc[:250])
+                                desc_key = desc[:100].lower()
+                                if desc_key not in seen_descs:
+                                    seen_descs.add(desc_key)
+                                    result_entry["no_button"].append(desc)
+                    else:
+                        result_entry["no_match"] = True
+                        clip_result = f"LLM found no semantic matches for '{kw}' among {len(card_texts)} cards."
+                    
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"PRE-FLIGHT CLIP RESULT: {clip_result}\n")
+                    logger.info(f"[safeway_run_pre_flight] Clip result for '{kw}': {clip_result.splitlines()[0] if clip_result else 'empty'}")
+                else:
+                    result_entry["no_match"] = True
+                
+                item_results.append(result_entry)
+
+        # Build concise summary for agent hand-off
+        if not item_results:
+            return "No deals found for the requested items."
+        
+        from collections import defaultdict
+        category_groups = defaultdict(list)
+        for r in item_results:
+            cat = r["category"] or "General Deals"
+            category_groups[cat].append(r)
+            
+        summary_lines = ["# 🛒 Safeway Coupon Results"]
+        total_clipped = 0
+        total_already = 0
+        total_no_button = 0
+        not_found_items = []
+        error_items = []
+        
+        for category, results in category_groups.items():
+            category_has_results = False
+            for r in results:
+                has_results = r["clipped"] or r["already"] or r["no_button"]
+                if r.get("llm_error") and not has_results:
+                    error_items.append(r["item"])
+                elif not has_results and r["no_match"]:
+                    not_found_items.append((r["item"], r["category"]))
+                else:
+                    category_has_results = True
+            
+            if not category_has_results:
+                continue
+                
+            emoji = CATEGORY_EMOJIS.get(category, "📦")
+            summary_lines.append(f"\n### {emoji} {category}")
+            
+            for r in results:
+                has_results = r["clipped"] or r["already"] or r["no_button"]
+                if not has_results:
+                    continue
+                
+                summary_lines.append(f"\n#### **{r['item'].upper()}**")
+                
+                if r["clipped"]:
+                    total_clipped += len(r["clipped"])
+                    summary_lines.append(f"* **✅ Clipped {len(r['clipped'])} coupon(s):**")
+                    for i, desc in enumerate(r["clipped"], 1):
+                        formatted_desc = _format_deal_markdown(desc)
+                        summary_lines.append(f"  {i}. {formatted_desc}")
+                if r["already"]:
+                    total_already += len(r["already"])
+                    summary_lines.append(f"* **⏭️ Already clipped {len(r['already'])} coupon(s):**")
+                    for i, desc in enumerate(r["already"], 1):
+                        formatted_desc = _format_deal_markdown(desc)
+                        summary_lines.append(f"  {i}. {formatted_desc}")
+                if r["no_button"]:
+                    total_no_button += len(r["no_button"])
+                    summary_lines.append(f"* **➖ Auto-sale (no clip needed): {len(r['no_button'])}**")
+                    for i, desc in enumerate(r["no_button"], 1):
+                        formatted_desc = _format_deal_markdown(desc)
+                        summary_lines.append(f"  {i}. {formatted_desc}")
+        
+        if not_found_items:
+            summary_lines.append("\n### ❌ No Coupons Found")
+            for item, cat in not_found_items:
+                summary_lines.append(f"- **{item.upper()}** (searched in {cat})")
+        
+        if error_items:
+            summary_lines.append("\n### ⚠️ LLM Errors")
+            for item in error_items:
+                summary_lines.append(f"- **{item.upper()}** (Model failed, could not search)")
+        
+        summary_lines.append("\n***")
+        summary_lines.append(f"📊 **SUMMARY:** {len(item_results)} items searched | {total_clipped} clipped | {total_already} already clipped | {total_no_button} auto-sale | {len(not_found_items)} not found | {len(error_items)} errors")
+        
+        # If ALL items failed due to LLM errors and nothing was clipped, signal failure
+        if error_items and total_clipped == 0 and total_already == 0 and total_no_button == 0 and not not_found_items:
+            logger.error(f"[safeway_run_pre_flight] ALL items failed due to LLM errors. Signaling task failure.")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"PRE-FLIGHT FATAL: All {len(error_items)} items failed due to LLM errors. Task will be marked FAILED.\n")
+            return ""  # Empty string signals failure to pipeline
+        
+        return "\n".join(summary_lines)
 
     except Exception as e:
         with open(log_path, "a", encoding="utf-8") as f:

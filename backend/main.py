@@ -4,7 +4,7 @@ import sys
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-from fastapi import FastAPI, BackgroundTasks, Depends, HTTPException
+from fastapi import FastAPI, BackgroundTasks, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
@@ -12,10 +12,9 @@ from fastapi.responses import StreamingResponse
 import json
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-
 from backend.database import session as database
 from backend.database.session import SessionLocal
-from backend.database.models import Task as DBTask, Output as DBOutput, Context as DBContext
+from backend.database.models import Task as DBTask, Output as DBOutput, Context as DBContext, SavedTask as DBSavedTask
 from backend import agent
 import uvicorn
 import os
@@ -28,6 +27,22 @@ class TaskCreate(BaseModel):
     prompt: str
     frequency: str = "ONCE" # ONCE, DAILY
     hour_of_day: Optional[int] = None
+
+class SavedTaskCreate(BaseModel):
+    prompt: str
+    frequency: str = "ONCE"
+    hour_of_day: Optional[int] = None
+
+class SavedTaskSchema(BaseModel):
+    id: int
+    prompt: str
+    frequency: str
+    hour_of_day: Optional[int] = None
+    created_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
 
 class ContextCreate(BaseModel):
     name: str
@@ -100,9 +115,13 @@ active_agent_tasks = {}
 def run_agent_process(task_id: int, prompt: str):
     """Run the agent in a totally separate process to preserve logs and prevent event loop crashes."""
     import subprocess
+    import os
     
     # We execute it as a module backend.agent so python can resolve our absolute backend imports
-    proc = subprocess.Popen([sys.executable, "-m", "backend.agent", str(task_id), prompt])
+    # We also pass the environment copy with PYTHONIOENCODING=utf-8 to support Windows console output.
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    proc = subprocess.Popen([sys.executable, "-m", "backend.agent", str(task_id), prompt], env=env)
     active_agent_tasks[task_id] = {"process": proc}
     
     try:
@@ -212,12 +231,18 @@ app.add_middleware(
 )
 
 # Serve frontend
-app.mount("/static", StaticFiles(directory="frontend"), name="static")
-
-@app.get("/")
-async def read_index():
-    from fastapi.responses import FileResponse
-    return FileResponse(os.path.join("frontend", "index.html"))
+if os.path.exists("frontend/dist"):
+    app.mount("/assets", StaticFiles(directory="frontend/dist/assets"), name="assets")
+    @app.get("/")
+    async def read_index():
+        from fastapi.responses import FileResponse
+        return FileResponse(os.path.join("frontend", "dist", "index.html"))
+else:
+    app.mount("/static", StaticFiles(directory="frontend"), name="static")
+    @app.get("/")
+    async def read_index():
+        from fastapi.responses import FileResponse
+        return FileResponse(os.path.join("frontend", "index.html"))
 
 # Dependency
 def get_db():
@@ -253,9 +278,16 @@ async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
     return db_task
 
 @app.get("/tasks", response_model=List[TaskSchema])
-def list_tasks(db: Session = Depends(get_db)):
-    tasks = db.query(DBTask).order_by(DBTask.created_at.desc()).all()
-    return tasks
+def list_tasks(response: Response, page: Optional[int] = None, limit: Optional[int] = None, db: Session = Depends(get_db)):
+    query = db.query(DBTask).order_by(DBTask.created_at.desc())
+    total_count = query.count()
+    response.headers["X-Total-Count"] = str(total_count)
+    response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
+    
+    if page is not None and limit is not None:
+        offset = (page - 1) * limit
+        return query.offset(offset).limit(limit).all()
+    return query.all()
 
 async def task_event_generator():
     last_update = None
@@ -380,6 +412,56 @@ async def cancel_task(task_id: int, db: Session = Depends(get_db)):
             pass
     
     db_task.status = "CANCELLED"
+    db.commit()
+    db.refresh(db_task)
+    return db_task
+
+# Saved Task endpoints
+@app.get("/saved_tasks", response_model=List[SavedTaskSchema])
+def list_saved_tasks(db: Session = Depends(get_db)):
+    return db.query(DBSavedTask).order_by(DBSavedTask.created_at.desc()).all()
+
+@app.post("/saved_tasks", response_model=SavedTaskSchema)
+def create_saved_task(task: SavedTaskCreate, db: Session = Depends(get_db)):
+    db_saved = DBSavedTask(
+        prompt=task.prompt,
+        frequency=task.frequency,
+        hour_of_day=task.hour_of_day
+    )
+    db.add(db_saved)
+    db.commit()
+    db.refresh(db_saved)
+    return db_saved
+
+@app.delete("/saved_tasks/{task_id}")
+def delete_saved_task(task_id: int, db: Session = Depends(get_db)):
+    db_saved = db.query(DBSavedTask).filter(DBSavedTask.id == task_id).first()
+    if not db_saved:
+        raise HTTPException(status_code=404, detail="Saved task not found")
+    db.delete(db_saved)
+    db.commit()
+    return {"message": "Saved task deleted successfully"}
+
+@app.post("/saved_tasks/{task_id}/run", response_model=TaskSchema)
+async def run_saved_task(task_id: int, db: Session = Depends(get_db)):
+    db_saved = db.query(DBSavedTask).filter(DBSavedTask.id == task_id).first()
+    if not db_saved:
+        raise HTTPException(status_code=404, detail="Saved task not found")
+    
+    # Calculate next run time
+    next_run = calculate_next_run(db_saved.frequency, db_saved.hour_of_day)
+    is_once = db_saved.frequency == "ONCE"
+    if is_once:
+        next_run = None
+
+    db_task = DBTask(
+        prompt=db_saved.prompt,
+        status="PENDING",
+        frequency=db_saved.frequency,
+        hour_of_day=db_saved.hour_of_day,
+        next_run_at=next_run
+    )
+    db.add(db_task)
     db.commit()
     db.refresh(db_task)
     return db_task

@@ -1,14 +1,32 @@
 # context_manager.py
+import os
 import json
 import httpx
 from backend import config
 from backend.database.models import Context
+
+def _detect_site_from_prompt(prompt: str) -> str:
+    """Deterministic check: if prompt contains a known site skill name, return it immediately.
+    This prevents the LLM from hallucinating the wrong plugin when the site name is explicit."""
+    prompt_lower = prompt.lower()
+    skill_dir = "site_skills"
+    if os.path.isdir(skill_dir):
+        for fname in os.listdir(skill_dir):
+            if fname.endswith(".py"):
+                skill_name = fname[:-3]  # strip .py
+                if skill_name in prompt_lower:
+                    return skill_name
+    return ""
 
 async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str, str]:
     """Uses LLM to identify relevant context and the target site plugin in one step."""
     contexts = db.query(Context).all()
     if not contexts:
         return "", ""
+
+    # Deterministic guard: if the prompt explicitly names a known skill, lock it in
+    # immediately — prevents LLM from hallucinating the wrong site plugin.
+    forced_site = _detect_site_from_prompt(prompt)
 
     eval_prompt = (
         f"USER TASK: {prompt}\n\n"
@@ -34,6 +52,7 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str,
                     "messages": [{"role": "user", "content": eval_prompt}],
                     "stream": False,
                     "format": "json",
+                    "think": False,
                     "options": {"temperature": 0, "num_ctx": 4096}
                 },
                 timeout=config.LLM_TIMEOUT
@@ -45,6 +64,13 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str,
             indices = data.get("relevant_indices", [])
             site_plugin = data.get("site_plugin", "NONE").lower()
             if site_plugin == "none": site_plugin = ""
+
+            # Deterministic result always wins over LLM guess
+            if forced_site:
+                if site_plugin and site_plugin != forced_site:
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(f"Context Evaluator: Overriding LLM site_plugin '{site_plugin}' → '{forced_site}' (deterministic match)\n")
+                site_plugin = forced_site
 
             with open(log_path, "a", encoding="utf-8") as f:
                 if not indices:
@@ -58,8 +84,9 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str,
                         c = contexts[int(i)]
                         f.write(f" - Using Context: {c.name}\n")
                         full_context += f"--- {c.name} ---\n{c.content}\n\n"
-                return full_context + "USE THIS TO INFORM YOUR ACTIONS.\n\n", site_plugin
+            return full_context + "USE THIS TO INFORM YOUR ACTIONS.\n\n", site_plugin
     except Exception as e:
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"Context analysis failed: {e}\n")
-        return "", ""
+        # Fall back to deterministic detection if LLM fails entirely
+        return "", forced_site
