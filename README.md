@@ -40,6 +40,7 @@ The project utilizes a tiered execution model to ensure production-grade reliabi
 *   **[agent.py](file:///c:/LocalLLM/agent.py)**: The central orchestrator. Manages the hand-off between Pre-Flight plugins and the main Reasoning loop.
 *   **[site_skills/](file:///c:/LocalLLM/site_skills/)**: Contains specialized Python plugins for specific domains.
     *   **[safeway.py](file:///c:/LocalLLM/site_skills/safeway.py)**: Handles complex SPA navigation, filter drawers, and deduplicated coupon scraping for Safeway.
+    *   **[sofi.py](file:///c:/LocalLLM/site_skills/sofi.py)**: Monitors the SoFi careers board for Fullstack/Frontend engineering roles matching my skill set. *Context: I successfully passed their interview, but there were no longer any matching roles available after the planning stage concluded. This skill automates the monitoring of the job board so I get notified the moment a matching role shows up!*
 *   **[llm_wrapper.py](file:///c:/LocalLLM/llm_wrapper.py)**: A custom Ollama integration that enforces clean JSON output and strips reasoning artifacts.
 *   **[config.py](file:///c:/LocalLLM/config.py)**: Global settings for model selection, context window (32k), and browser behavior.
 *   **[context_manager.py](file:///c:/LocalLLM/context_manager.py)**: Semantic analyzer that pairs tasks with relevant database knowledge.
