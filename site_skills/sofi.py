@@ -31,6 +31,65 @@ def _get_metadata_value(job: Dict[str, Any], name: str) -> str:
             return str(val)
     return ""
 
+def _clean_html_to_text(html_content: str) -> str:
+    """Convert raw HTML to clean plain text."""
+    import html as html_mod
+    text = re.sub(r'</?(p|div|li|br|h1|h2|h3|h4|h5|ul|ol)[^>]*>', '\n', html_content)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = html_mod.unescape(text)
+    lines = [line.strip() for line in text.split('\n')]
+    result = []
+    for line in lines:
+        if line:
+            result.append(line)
+        elif result and result[-1] != "":
+            result.append("")
+    return '\n'.join(result).strip()
+
+def _extract_job_essentials(html_content: str) -> str:
+    """Extract only the role, duties, requirements, and nice-to-have sections.
+    
+    Strategy:
+    1. Strip Greenhouse boilerplate (content-intro and content-conclusion divs).
+    2. From remaining text, drop any trailing sections about compensation, benefits,
+       EEO, internal employees, or other non-role boilerplate.
+    """
+    body = html_content
+
+    # 1. Strip Greenhouse intro boilerplate (company description)
+    #    Matches <div class="content-intro">...</div></div> pattern
+    body = re.sub(r'<div\s+class="content-intro"[^>]*>.*?</div>\s*</div>', '', body, flags=re.DOTALL | re.IGNORECASE)
+
+    # 2. Strip Greenhouse conclusion boilerplate (compensation, EEO, etc.)
+    #    Matches <div class="content-conclusion">...</div> to end
+    body = re.sub(r'<div\s+class="content-conclusion"[^>]*>.*', '', body, flags=re.DOTALL | re.IGNORECASE)
+
+    # Convert remaining HTML to plain text
+    text = _clean_html_to_text(body)
+
+    # 3. Heuristic fallback: if Greenhouse markers weren't present,
+    #    cut at common boilerplate section headers
+    cutoff_patterns = [
+        r'^Compensation\b', r'^Benefits\b', r'^Compensation and Benefits\b',
+        r'^SoFi provides equal', r'^The Company hires',
+        r'^Internal Employees\b', r'^Due to insurance',
+        r'^Pursuant to the', r'^New York applicants',
+        r'^If you are a current employee',
+    ]
+    lines = text.split('\n')
+    cut_index = len(lines)
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        for pattern in cutoff_patterns:
+            if re.match(pattern, stripped, re.IGNORECASE):
+                cut_index = i
+                break
+        if cut_index < len(lines):
+            break
+    text = '\n'.join(lines[:cut_index]).strip()
+
+    return text if text else "(No role-specific content extracted)"
+
 def is_manager_role(title: str) -> bool:
     title_norm = re.sub(r'[-\_]', ' ', title.lower())
     # Use word boundaries to prevent matching "headless" for "head" or "mvp" for "vp"
@@ -172,12 +231,13 @@ async def sofi_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
             first_published = job.get("first_published", "")
             content = job.get("content", "")
 
-            # Required content checks — React is mandatory in the job description
+            # Required content checks — React or Fullstack is mandatory in the job description
             # Strip HTML tags first to avoid matching class names, IDs, or URLs in raw HTML content
             cleaned_content = re.sub(r'<[^>]+>', ' ', content)
             cleaned_content_lower = cleaned_content.lower()
             react_present = bool(re.search(r'\b(react|reactjs|react\.js)\b', cleaned_content_lower))
-            if not react_present:
+            fullstack_present = bool(re.search(r'\b(fullstack|full\s+stack)\b', cleaned_content_lower))
+            if not react_present and not fullstack_present:
                 continue
 
             ts_present = bool(re.search(r'\b(typescript|type\s+script)\b', cleaned_content_lower))
@@ -192,6 +252,7 @@ async def sofi_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
                 "first_published": first_published,
                 "content": content,
                 "react_present": react_present,
+                "fullstack_present": fullstack_present,
                 "ts_present": ts_present
             }
 
@@ -219,6 +280,17 @@ async def sofi_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
                 else:
                     f.write(f"  - None\n")
                 f.write("-------------------------------------------------\n\n")
+
+                # Log full job descriptions for LLM candidates so humans can review
+                if llm_candidates:
+                    f.write("=== Generic Tech Role Descriptions (sent to LLM) ===\n\n")
+                    for job in llm_candidates:
+                        f.write(f"TITLE: {job['title']}\n")
+                        f.write(f"URL: {job['url']}\n")
+                        f.write(f"LOCATION: {job['location']}\n")
+                        essentials = _extract_job_essentials(job['content'])
+                        f.write(f"DESCRIPTION:\n{essentials}\n")
+                        f.write(f"\n-------------------------------------------------\n\n")
         except Exception as log_err:
             logger.error(f"[sofi] Error writing Step 1 logging results: {log_err}")
 
@@ -240,6 +312,24 @@ async def sofi_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
                 job_item["llm_reason"] = reason
                 matched_candidates.append(job_item)
 
+        # Log matching Step 2 job descriptions (discovered openings)
+        if matched_candidates:
+            try:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"\n=================================================\n")
+                    f.write(f"--- Step 2 Discovered Openings Descriptions ---\n")
+                    f.write(f"=================================================\n")
+                    for job in matched_candidates:
+                        f.write(f"\nTITLE: {job['title']}\n")
+                        f.write(f"URL: {job['url']}\n")
+                        f.write(f"REASON: {job.get('llm_reason', '')}\n")
+                        f.write(f"DESCRIPTION:\n")
+                        essentials = _extract_job_essentials(job['content'])
+                        f.write(f"{essentials}\n")
+                        f.write(f"\n-------------------------------------------------\n")
+            except Exception as log_err:
+                logger.error(f"[sofi] Error logging job descriptions: {log_err}")
+
         # Generate structured markdown report
         summary_lines = ["# 💼 SoFi Jobs Monitoring Results\n"]
         summary_lines.append("Searched SoFi jobs using the **2-step Frontend/Fullstack search strategy**:\n")
@@ -254,7 +344,7 @@ async def sofi_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
                 for job in explicit_matches:
                     summary_lines.append(f"- **[{job['title']}]({job['url']})**")
                     summary_lines.append(f"  - **📍 Location:** {job['location']}")
-                    summary_lines.append(f"  - **🛠️ Tech Stack:** React: **Yes** (Required) | TypeScript: **{'Yes' if job['ts_present'] else 'No'}**")
+                    summary_lines.append(f"  - **🛠️ Tech Stack:** React: **{'Yes' if job['react_present'] else 'No'}** | Fullstack: **{'Yes' if job['fullstack_present'] else 'No'}** | TypeScript: **{'Yes' if job['ts_present'] else 'No'}**")
                     pub_date = job['first_published']
                     if pub_date:
                         summary_lines.append(f"  - **📅 Published:** {pub_date[:10]}")
@@ -266,7 +356,7 @@ async def sofi_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
                     summary_lines.append(f"- **[{job['title']}]({job['url']})**")
                     summary_lines.append(f"  - **💡 Reason:** *{job['llm_reason']}*")
                     summary_lines.append(f"  - **📍 Location:** {job['location']}")
-                    summary_lines.append(f"  - **🛠️ Tech Stack:** React: **Yes** (Required) | TypeScript: **{'Yes' if job['ts_present'] else 'No'}**")
+                    summary_lines.append(f"  - **🛠️ Tech Stack:** React: **{'Yes' if job['react_present'] else 'No'}** | Fullstack: **{'Yes' if job['fullstack_present'] else 'No'}** | TypeScript: **{'Yes' if job['ts_present'] else 'No'}**")
                     pub_date = job['first_published']
                     if pub_date:
                         summary_lines.append(f"  - **📅 Published:** {pub_date[:10]}")
