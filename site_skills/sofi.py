@@ -141,6 +141,18 @@ def is_unlikely_frontend(title: str) -> bool:
         return True
     return False
 
+def check_description_heuristics(title: str, content: str) -> tuple[bool, str]:
+    """Fallback / fast-path check for fullstack/frontend keywords in job description."""
+    cleaned = re.sub(r'<[^>]+>', ' ', content)
+    cleaned_lower = cleaned.lower()
+    # Match fullstack, full-stack, full stack, frontend, front-end, front end
+    pattern = r'\b(full\s*-\s*stack|full\s+stack|fullstack|front\s*-\s*end|front\s+end|frontend)\b'
+    match = re.search(pattern, cleaned_lower)
+    if match:
+        matched_word = match.group(1)
+        return True, f"Found '{matched_word}' in description (heuristic match)"
+    return False, ""
+
 async def _check_job_description_with_llm(client: httpx.AsyncClient, title: str, description: str, log_path: str) -> tuple[bool, str]:
     """Uses LLM to verify if a generic software engineering role has a frontend/fullstack focus."""
     cleaned_desc = re.sub(r'<[^>]+>', ' ', description)  # Strip HTML tags
@@ -213,6 +225,7 @@ async def sofi_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
 
         # Parse jobs and categorize
         explicit_matches = []
+        heuristic_matches = []
         llm_candidates = []
         total_count = len(jobs_data)
 
@@ -259,7 +272,13 @@ async def sofi_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
             if is_explicit_frontend_fullstack(title):
                 explicit_matches.append(job_item)
             elif is_generic_software_engineering(title) and not is_unlikely_frontend(title):
-                llm_candidates.append(job_item)
+                # Apply fast-path / fallback description heuristics locally
+                has_heur, reason = check_description_heuristics(title, content)
+                if has_heur:
+                    job_item["llm_reason"] = reason
+                    heuristic_matches.append(job_item)
+                else:
+                    llm_candidates.append(job_item)
 
         # Log Step 1 results (name matches and potential relevant developer jobs)
         try:
@@ -273,6 +292,13 @@ async def sofi_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
                 else:
                     f.write(f"  - None\n")
                 
+                f.write(f"Heuristic description matches ({len(heuristic_matches)}):\n")
+                if heuristic_matches:
+                    for job in heuristic_matches:
+                        f.write(f"  - {job['title']} | URL: {job['url']}\n")
+                else:
+                    f.write(f"  - None\n")
+
                 f.write(f"Potential relevant developer jobs (LLM Candidates) ({len(llm_candidates)}):\n")
                 if llm_candidates:
                     for job in llm_candidates:
@@ -305,8 +331,8 @@ async def sofi_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
             tasks = [_throttled_check(client, j) for j in llm_candidates]
             llm_results = await asyncio.gather(*tasks)
 
-        # Filter the matching candidate jobs
-        matched_candidates = []
+        # Filter the matching candidate jobs (starting with heuristic matches)
+        matched_candidates = list(heuristic_matches)
         for job_item, (is_match, reason) in zip(llm_candidates, llm_results):
             if is_match:
                 job_item["llm_reason"] = reason
