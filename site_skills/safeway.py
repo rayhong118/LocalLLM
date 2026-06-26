@@ -1308,7 +1308,17 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"PRE-FLIGHT: ⚠️ Category filter FAILED for '{category}': {filter_result}\n")
                     for kw in cat_items:
-                        item_results.append({"item": kw, "category": category, "clipped": [], "already": [], "no_button": [], "no_match": True, "llm_error": False})
+                        item_results.append({
+                            "item": kw,
+                            "category": category,
+                            "clipped": [],
+                            "already": [],
+                            "no_button": [],
+                            "no_match": True,
+                            "llm_error": False,
+                            "filter_error": True,
+                            "scrape_error": False
+                        })
                         with open(log_path, "a", encoding="utf-8") as f:
                             f.write(f"PRE-FLIGHT CLIP RESULT: Skipped '{kw}' — category filter for '{category}' failed.\n")
                     is_first_category = False
@@ -1346,7 +1356,17 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
             # Scrape for each item in this category
             keywords_to_search = cat_items
             for kw in keywords_to_search:
-                result_entry = {"item": kw, "category": category or "General", "clipped": [], "already": [], "no_button": [], "no_match": False, "llm_error": False}
+                result_entry = {
+                    "item": kw,
+                    "category": category or "General",
+                    "clipped": [],
+                    "already": [],
+                    "no_button": [],
+                    "no_match": False,
+                    "llm_error": False,
+                    "filter_error": False,
+                    "scrape_error": False
+                }
                 
                 with open(log_path, "a", encoding="utf-8") as f:
                     f.write(f"PRE-FLIGHT: Scraping deals for '{kw}' in '{category or 'General'}'...\n")
@@ -1355,10 +1375,18 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
                 found_deals = False
                 if scrape_result.startswith("Found deals:"):
                     found_deals = True
+                elif scrape_result.startswith("Failure:"):
+                    # First scrape failed (e.g. no cards found). Try fallback.
+                    fallback_result = await safeway_get_all_deals(browser, keyword="")
+                    if fallback_result.startswith("Found deals:"):
+                        found_deals = True
+                    elif fallback_result.startswith("Failure:"):
+                        # Both failed. This is a scraping error.
+                        result_entry["scrape_error"] = True
                 else:
-                    # Fallback scrape if no specific match
-                    scrape_result = await safeway_get_all_deals(browser, keyword="")
-                    if scrape_result.startswith("Found deals:"):
+                    # First scrape succeeded but returned no specific matches. Try fallback.
+                    fallback_result = await safeway_get_all_deals(browser, keyword="")
+                    if fallback_result.startswith("Found deals:"):
                         found_deals = True
 
                 # 5. Auto-clip matching coupons using LLM-based semantic matching
@@ -1502,15 +1530,20 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
         total_already = 0
         total_no_button = 0
         not_found_items = []
-        error_items = []
+        failed_items = []
         
         for category, results in category_groups.items():
             category_has_results = False
             for r in results:
                 has_results = r["clipped"] or r["already"] or r["no_button"]
-                if r.get("llm_error") and not has_results:
-                    error_items.append(r["item"])
-                elif not has_results and r["no_match"]:
+                is_error = r.get("filter_error") or r.get("scrape_error") or r.get("llm_error")
+                if r.get("filter_error"):
+                    failed_items.append((r["item"], "Category Filter Failure"))
+                elif r.get("scrape_error"):
+                    failed_items.append((r["item"], "Scraping Failure"))
+                elif r.get("llm_error"):
+                    failed_items.append((r["item"], "LLM Matching Failure"))
+                elif not has_results and r["no_match"] and not is_error:
                     not_found_items.append((r["item"], r["category"]))
                 else:
                     category_has_results = True
@@ -1552,20 +1585,21 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
             for item, cat in not_found_items:
                 summary_lines.append(f"- **{item.upper()}** (searched in {cat})")
         
-        if error_items:
-            summary_lines.append("\n### ⚠️ LLM Errors")
-            for item in error_items:
-                summary_lines.append(f"- **{item.upper()}** (Model failed, could not search)")
+        if failed_items:
+            summary_lines.append("\n### ⚠️ Failed Searches")
+            for item, reason in failed_items:
+                summary_lines.append(f"- **{item.upper()}** ({reason})")
         
         summary_lines.append("\n***")
-        summary_lines.append(f"📊 **SUMMARY:** {len(item_results)} items searched | {total_clipped} clipped | {total_already} already clipped | {total_no_button} auto-sale | {len(not_found_items)} not found | {len(error_items)} errors")
         
-        # If ALL items failed due to LLM errors and nothing was clipped, signal failure
-        if error_items and total_clipped == 0 and total_already == 0 and total_no_button == 0 and not not_found_items:
-            logger.error(f"[safeway_run_pre_flight] ALL items failed due to LLM errors. Signaling task failure.")
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"PRE-FLIGHT FATAL: All {len(error_items)} items failed due to LLM errors. Task will be marked FAILED.\n")
-            return ""  # Empty string signals failure to pipeline
+        has_any_errors = len(failed_items) > 0
+        if has_any_errors:
+            status_text = "FAILED (encountered errors checking some items)"
+        else:
+            status_text = "COMPLETED"
+            
+        summary_lines.append(f"📊 **SUMMARY:** {len(item_results)} items searched | {total_clipped} clipped | {total_already} already clipped | {total_no_button} auto-sale | {len(not_found_items)} not found | {len(failed_items)} failed")
+        summary_lines.append(f"\n⚠️ Task Status: {status_text}")
         
         return "\n".join(summary_lines)
 
