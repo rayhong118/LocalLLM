@@ -1105,6 +1105,32 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
             pass
         await _asyncio.sleep(5)
 
+        # 1.5 Check if signed in to Safeway (browser-use Page has no .url attr — use JS)
+        try:
+            is_signed_in = await page.evaluate("""
+            () => {
+                const url = window.location.href.toLowerCase();
+                if (url.includes('login') || url.includes('signin')) return false;
+                
+                const text = document.body.innerText;
+                if (/sign in to clip|sign in \\/ up/i.test(text)) return false;
+                
+                const hasSignIn = Array.from(document.querySelectorAll('button, a, span'))
+                    .some(el => {
+                        const t = (el.textContent || '').trim().toLowerCase();
+                        return (t === 'sign in' || t === 'sign in / register' || t === 'log in') && el.offsetParent !== null;
+                    });
+                return !hasSignIn;
+            }
+            """)
+            if not is_signed_in:
+                msg = "⚠️ WARNING: Safeway session is not signed in! Please run 'uv run backend/automation/login_helper.py' to log in and save your session info."
+                logger.warning(msg)
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"\n{msg}\n")
+        except Exception as e:
+            logger.warning(f"[safeway_run_pre_flight] Sign-in check failed (non-critical): {e}")
+
         # 2. Extract keywords using LLM
         extraction_system = (
             "You are a product extraction assistant. Your job is to extract a list of specific products or items from a user's prompt.\n"
