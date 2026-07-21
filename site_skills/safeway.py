@@ -967,14 +967,16 @@ async def safeway_get_categories(browser: BrowserSession):
     page = await browser.get_current_page()
     try:
         logger.info("[safeway_get_categories] Waiting for sidebar filters to load...")
-        # Wait for any potential filter container to appear
-        try:
-            await page.wait_for_selector('[class*="filter"], [class*="sidebar"]', timeout=10000)
-            await asyncio.sleep(3) # Wait for SPA to populate the empty container
-        except Exception:
-            await asyncio.sleep(2) # Wait anyway just in case the skeleton selector failed
-            
-        categories_raw = await page.evaluate("""
+        # Retry loop: Safeway's SPA sometimes takes several seconds after networkidle to render the sidebar
+        categories = []
+        for attempt in range(5):
+            try:
+                await page.wait_for_selector('[class*="filter"], [class*="sidebar"]', timeout=5000)
+            except Exception:
+                pass
+            await asyncio.sleep(3)
+
+            categories_raw = await page.evaluate("""
         () => {
             // Attempt to expand a "Filter" or "Categories" drawer if it exists and is closed
             const openBtns = Array.from(document.querySelectorAll('button')).filter(b => {
@@ -1027,7 +1029,11 @@ async def safeway_get_categories(browser: BrowserSession):
             return JSON.stringify(labels);
         }
         """)
-        categories = __import__('json').loads(categories_raw)
+            categories = __import__('json').loads(categories_raw)
+            logger.info(f"[safeway_get_categories] Attempt {attempt+1}: Found {len(categories)} categories")
+            if categories:
+                break  # Found categories, no need to retry
+
         logger.info(f"[safeway_get_categories] Found {len(categories)} categories: {categories}")
         return categories
     except Exception as e:
@@ -1103,7 +1109,7 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
             await page.wait_for_load_state("networkidle", timeout=30000)
         except Exception:
             pass
-        await _asyncio.sleep(5)
+        await _asyncio.sleep(8)  # Safeway SPA needs extra time after networkidle to render coupon cards
 
         # 1.5 Check if signed in to Safeway (browser-use Page has no .url attr — use JS)
         try:

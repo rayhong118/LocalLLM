@@ -3,7 +3,8 @@ import logging
 import os
 import re
 import json
-from datetime import datetime, timezone
+import glob
+from datetime import datetime, timezone, timedelta
 
 from browser_use import Agent
 from browser_use.agent.views import MessageCompactionSettings
@@ -54,9 +55,25 @@ class AgentPipeline:
         finally:
             await self.cleanup()
 
+    def _cleanup_old_logs(self, max_age_days: int = 14):
+        """Delete log files older than max_age_days from the logs/ directory."""
+        cutoff = datetime.now() - timedelta(days=max_age_days)
+        removed = 0
+        for path in glob.glob("logs/*.log"):
+            try:
+                mtime = datetime.fromtimestamp(os.path.getmtime(path))
+                if mtime < cutoff:
+                    os.remove(path)
+                    removed += 1
+            except Exception:
+                pass
+        if removed:
+            logging.info(f"[setup] Cleaned up {removed} log file(s) older than {max_age_days} days.")
+
     async def setup(self):
         if not os.path.exists("logs"):
             os.makedirs("logs")
+        self._cleanup_old_logs()
         
         run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.log_path = f"logs/{run_timestamp}_task_{self.task_id}.log"
