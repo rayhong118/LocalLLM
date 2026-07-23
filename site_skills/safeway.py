@@ -1111,31 +1111,61 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
             pass
         await _asyncio.sleep(8)  # Safeway SPA needs extra time after networkidle to render coupon cards
 
-        # 1.5 Check if signed in to Safeway (browser-use Page has no .url attr — use JS)
+        # 1.5 Check page state and sign-in status
+        # browser-use CDP wrapper returns JSON strings, not raw objects — must use JSON.stringify
+        session_signed_in = True  # default; used below to gate scraping
         try:
-            is_signed_in = await page.evaluate("""
+            page_state_raw = await page.evaluate("""
             () => {
-                const url = window.location.href.toLowerCase();
-                if (url.includes('login') || url.includes('signin')) return false;
-                
-                const text = document.body.innerText;
-                if (/sign in to clip|sign in \\/ up/i.test(text)) return false;
-                
-                const hasSignIn = Array.from(document.querySelectorAll('button, a, span'))
-                    .some(el => {
-                        const t = (el.textContent || '').trim().toLowerCase();
-                        return (t === 'sign in' || t === 'sign in / register' || t === 'log in') && el.offsetParent !== null;
-                    });
-                return !hasSignIn;
+                const url = window.location.href;
+                const bodyText = (document.body.innerText || '').trim().substring(0, 500);
+                const urlLower = url.toLowerCase();
+
+                let signedIn = true;
+                if (urlLower.includes('login') || urlLower.includes('signin')) {
+                    signedIn = false;
+                } else if (/sign in to clip|sign in \\/ up/i.test(bodyText)) {
+                    signedIn = false;
+                } else {
+                    const hasSignInBtn = Array.from(document.querySelectorAll('button, a, span'))
+                        .some(el => {
+                            const t = (el.textContent || '').trim().toLowerCase();
+                            return (t === 'sign in' || t === 'sign in / register' || t === 'log in') && el.offsetParent !== null;
+                        });
+                    if (hasSignInBtn) signedIn = false;
+                }
+                return JSON.stringify({ url, signedIn, bodySnippet: bodyText.substring(0, 300) });
             }
             """)
-            if not is_signed_in:
-                msg = "⚠️ WARNING: Safeway session is not signed in! Please run 'uv run backend/automation/login_helper.py' to log in and save your session info."
-                logger.warning(msg)
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"\n{msg}\n")
+            import json as _json
+            page_state = _json.loads(page_state_raw) if isinstance(page_state_raw, str) else page_state_raw
+            session_signed_in = page_state.get('signedIn', True)
+            diag_msg = (
+                f"PRE-FLIGHT DIAGNOSTIC: url={page_state.get('url')} | "
+                f"signed_in={session_signed_in} | "
+                f"body_snippet={repr(page_state.get('bodySnippet', '')[:200])}"
+            )
+            logger.info(diag_msg)
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"{diag_msg}\n")
         except Exception as e:
-            logger.warning(f"[safeway_run_pre_flight] Sign-in check failed (non-critical): {e}")
+            logger.warning(f"[safeway_run_pre_flight] Page state check failed (non-critical): {e}")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"PRE-FLIGHT: Page state check failed: {e}\n")
+
+        if not session_signed_in:
+            err_msg = (
+                "❌ SAFEWAY SESSION EXPIRED — Not signed in.\n"
+                "All coupons will fail to clip until you refresh the session.\n"
+                "Fix: Run  uv run backend/automation/login_helper.py  and log in manually."
+            )
+            logger.error(err_msg)
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"\n{err_msg}\n")
+            raise RuntimeError(
+                "❌ Safeway session expired — not signed in. "
+                "Run `uv run backend/automation/login_helper.py` and log in manually."
+            )
 
         # 2. Extract keywords using LLM
         extraction_system = (
