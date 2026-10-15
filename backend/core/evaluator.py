@@ -90,10 +90,9 @@ async def evaluate_result(prompt: str, final_res: str, history, log_path: str = 
                             {"role": "user", "content": f"User Prompt: {prompt}\n\nAgent Final Output:\n{final_res}"}
                         ],
                         "stream": False,
-                        "temperature": 0,
-                        "response_format": {"type": "json_object"}
+                        "temperature": 0
                     },
-                    timeout=15.0
+                    timeout=60
                 )
                 if resp.status_code == 200:
                     res_data = resp.json()
@@ -102,7 +101,8 @@ async def evaluate_result(prompt: str, final_res: str, history, log_path: str = 
                         content = res_data["choices"][0].get("message", {}).get("content", "")
                     elif "message" in res_data:
                         content = res_data.get("message", {}).get("content", "")
-                    judge_result = json.loads(content)
+                    from backend.services.llm import clean_json_text
+                    judge_result = json.loads(clean_json_text(content))
                     is_success = judge_result.get("success", True)
                     reason = judge_result.get("reason", "")
                     _log(log_path, f"LLM Judge Decision: success={is_success}, reason='{reason}'")

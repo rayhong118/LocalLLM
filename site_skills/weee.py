@@ -8,6 +8,7 @@ import logging
 import asyncio
 from typing import Any
 from backend import config
+from backend.services.llm import clean_json_text
 import re
 import json
 
@@ -89,8 +90,7 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
                         {"role": "user", "content": user_msg}
                     ],
                     "stream": False,
-                    "temperature": 0,
-                    "response_format": {"type": "json_object"}
+                    "temperature": 0
                 },
                 timeout=config.LLM_TIMEOUT
             )
@@ -119,7 +119,7 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
                 return None
             
             try:
-                data = json.loads(raw)
+                data = json.loads(clean_json_text(raw))
             except json.JSONDecodeError as je:
                 err_msg = f"Failed to parse LLM response as JSON: {je}. Raw content: {raw[:300]}"
                 logger.error(f"[_llm_match_cards] {err_msg}")
@@ -155,8 +155,7 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
                                     {"role": "user", "content": f"Search term: \"{keyword}\"\nCard: \"{card_desc}\""}
                                 ],
                                 "stream": False,
-                                "temperature": 0,
-                                "response_format": {"type": "json_object"}
+                                "temperature": 0
                             },
                             timeout=15
                         )
@@ -167,7 +166,7 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
                                 v_raw = v_json["choices"][0].get("message", {}).get("content", "{}")
                             elif "message" in v_json:
                                 v_raw = v_json.get("message", {}).get("content", "{}")
-                            v_data = json.loads(v_raw)
+                            v_data = json.loads(clean_json_text(v_raw))
                             if v_data.get("is_match", False):
                                 verified.append(idx)
                             else:
@@ -697,8 +696,7 @@ async def weee_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
                         "model": config.LLM_MODEL,
                         "messages": [{"role": "user", "content": f"{extraction_system}\n\nPrompt: {prompt}"}],
                         "stream": False,
-                        "temperature": 0,
-                        "response_format": {"type": "json_object"}
+                        "temperature": 0
                     },
                     timeout=config.LLM_TIMEOUT
                 )
@@ -708,7 +706,7 @@ async def weee_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
                     raw_content = ext_json["choices"][0].get("message", {}).get("content", "{}")
                 elif "message" in ext_json:
                     raw_content = ext_json.get("message", {}).get("content", "{}")
-                data = json.loads(raw_content)
+                data = json.loads(clean_json_text(raw_content))
                 items = data.get("items", [])
                 logger.info(f"[weee_run_pre_flight] Extracted items from prompt: {items}")
                 with open(log_path, "a", encoding="utf-8") as f:
@@ -750,8 +748,7 @@ async def weee_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
                             "model": config.LLM_MODEL,
                             "messages": [{"role": "user", "content": f"{selector_system}\n\nItems: {', '.join(items)}"}],
                             "stream": False,
-                            "temperature": 0,
-                            "response_format": {"type": "json_object"}
+                            "temperature": 0
                         },
                         timeout=config.LLM_TIMEOUT
                     )
@@ -764,7 +761,7 @@ async def weee_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"PRE-FLIGHT: Categorization response: {raw_content}\n")
                     
-                    data = json.loads(raw_content)
+                    data = json.loads(clean_json_text(raw_content))
                     mappings = data.get("mapping", [])
                     
                     logger.info(f"[weee_run_pre_flight] Item Categorization Breakdown:")

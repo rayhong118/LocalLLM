@@ -52,8 +52,7 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str,
                     "model": config.LLM_MODEL,
                     "messages": [{"role": "user", "content": eval_prompt}],
                     "stream": False,
-                    "temperature": 0,
-                    "response_format": {"type": "json_object"}
+                    "temperature": 0
                 },
                 timeout=config.LLM_TIMEOUT
             )
@@ -65,7 +64,8 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str,
                 data_raw = res_json.get("message", {}).get("content", "{}")
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"Context Evaluator: Raw LLM response: {data_raw}\n")
-            data = json.loads(data_raw)
+            from backend.services.llm import clean_json_text
+            data = json.loads(clean_json_text(data_raw))
             indices = data.get("relevant_indices", [])
             site_plugin = data.get("site_plugin", "NONE").lower()
             if site_plugin == "none": site_plugin = ""

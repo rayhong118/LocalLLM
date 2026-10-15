@@ -52,6 +52,31 @@ def serialize_messages(messages) -> list[dict]:
     return formatted
 
 
+def clean_json_text(text: str) -> str:
+    """Strip thoughts, markdown code fences, and isolate valid JSON object or array."""
+    if not text:
+        return "{}"
+    text = re.sub(r'<(thought|reasoning|thinking|think)>.*?(?:</\1>|$)', '', text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r'<\|channel\>thought.*?(?:<channel\|>|$)', '', text, flags=re.IGNORECASE | re.DOTALL)
+    text = text.replace('---<channel|>', '').replace('<channel|>', '').replace('---', '').strip()
+    if '```json' in text:
+        text = text.split('```json')[-1].split('```')[0].strip()
+    elif '```' in text:
+        text = text.split('```')[-1].split('```')[0].strip()
+    
+    first_brace = text.find('{')
+    first_bracket = text.find('[')
+    if first_brace != -1 and (first_bracket == -1 or first_brace < first_bracket):
+        last_brace = text.rfind('}')
+        if last_brace != -1:
+            text = text[first_brace:last_brace+1]
+    elif first_bracket != -1:
+        last_bracket = text.rfind(']')
+        if last_bracket != -1:
+            text = text[first_bracket:last_bracket+1]
+    return text.strip()
+
+
 class LLMMessage:
     def __init__(self, content: str):
         self.content = content
@@ -85,8 +110,8 @@ class LMStudioClientAdapter:
             "temperature": temp,
             "stream": False,
         }
-        if format == "json":
-            payload["response_format"] = {"type": "json_object"}
+        # Note: LM Studio strictly requires response_format.type to be 'json_schema' or 'text',
+        # and rejects 'json_object' with HTTP 400. System prompt instructions enforce JSON output.
         if options and "num_predict" in options:
             payload["max_tokens"] = options["num_predict"]
             
@@ -130,8 +155,8 @@ async def query_llm(
         "temperature": temperature,
         "stream": False,
     }
-    if json_mode:
-        payload["response_format"] = {"type": "json_object"}
+    # LM Studio strictly rejects type: 'json_object' with HTTP 400.
+    # Prompts explicitly instruct JSON formatting.
     if max_tokens:
         payload["max_tokens"] = max_tokens
 
@@ -179,17 +204,46 @@ class JsonStrippingChatLMStudio(_BaseChatModel):
     MAX_ACTION_REPEATS: int = 3  # After this many identical actions, force failure
 
     def __init__(self, **data):
-        super().__init__(**data)
-        if "base_url" not in data and not getattr(self, "base_url", None):
+        self.context_window = int(data.pop("context_window", getattr(self, "context_window", config.CONTEXT_WINDOW)))
+        self.log_path = data.pop("log_path", getattr(self, "log_path", None))
+        
+        # Prepare kwargs for _BaseChatModel dataclass / init
+        try:
+            import inspect
+            sig = inspect.signature(_BaseChatModel.__init__)
+            has_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+            if not has_kwargs:
+                base_data = {k: v for k, v in data.items() if k in sig.parameters}
+            else:
+                base_data = data
+            if "model" in sig.parameters and "model" not in base_data:
+                base_data["model"] = getattr(self, "model", config.LLM_MODEL)
+            super().__init__(**base_data)
+        except Exception:
+            try:
+                super().__init__()
+            except Exception:
+                pass
+
+        if "base_url" in data:
+            self.base_url = data["base_url"]
+        elif not getattr(self, "base_url", None):
             self.base_url = config.LLM_BASE_URL
-        if "api_key" not in data and not getattr(self, "api_key", None):
+
+        if "api_key" in data:
+            self.api_key = data["api_key"]
+        elif not getattr(self, "api_key", None):
             self.api_key = config.LLM_API_KEY
-        if "timeout" not in data and not getattr(self, "timeout", None):
+
+        if "timeout" in data:
+            self.timeout = float(data["timeout"])
+        elif not getattr(self, "timeout", None):
             self.timeout = float(config.LLM_TIMEOUT)
-        if "temperature" not in data and not getattr(self, "temperature", None):
+
+        if "temperature" in data:
+            self.temperature = float(data["temperature"])
+        elif not getattr(self, "temperature", None):
             self.temperature = float(config.TEMPERATURE)
-        if "context_window" not in data and not getattr(self, "context_window", None):
-            self.context_window = config.CONTEXT_WINDOW
 
     def get_client(self):
         return LMStudioClientAdapter(self.base_url, self.api_key, self.timeout)
@@ -240,10 +294,8 @@ class JsonStrippingChatLMStudio(_BaseChatModel):
                     "temperature": self.temperature,
                     "stream": False,
                 }
-                if fmt == "json":
-                    payload["response_format"] = {"type": "json_object"}
-                elif isinstance(fmt, dict):
-                    payload["response_format"] = {"type": "json_object"}
+                # LM Studio strictly rejects type: 'json_object' with HTTP 400.
+                # Prompts enforce JSON schema/structure.
                 
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     resp = await client.post(endpoint, headers=headers, json=payload)

@@ -21,6 +21,10 @@ import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta
 import contextlib
+import atexit
+from backend.automation.browser_utils import cleanup_browser_processes
+
+atexit.register(cleanup_browser_processes)
 
 # Pydantic models
 class TaskCreate(BaseModel):
@@ -219,6 +223,10 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     scheduler.shutdown()
+    try:
+        cleanup_browser_processes()
+    except Exception:
+        pass
 
 app = FastAPI(title="LocalLLM Agent API", lifespan=lifespan)
 
@@ -410,6 +418,12 @@ async def cancel_task(task_id: int, db: Session = Depends(get_db)):
             agent_info["process"].terminate()
         except:
             pass
+    
+    # Immediately close any browser window associated with this task
+    try:
+        cleanup_browser_processes()
+    except Exception:
+        pass
     
     db_task.status = "CANCELLED"
     db.commit()

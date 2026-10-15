@@ -183,8 +183,7 @@ async def _check_job_description_with_llm(client: httpx.AsyncClient, title: str,
                     {"role": "user", "content": user_msg}
                 ],
                 "stream": False,
-                "temperature": 0,
-                "response_format": {"type": "json_object"}
+                "temperature": 0
             },
             timeout=config.LLM_TIMEOUT
         )
@@ -195,7 +194,8 @@ async def _check_job_description_with_llm(client: httpx.AsyncClient, title: str,
                 raw = res_json["choices"][0].get("message", {}).get("content", "{}")
             elif "message" in res_json:
                 raw = res_json.get("message", {}).get("content", "{}")
-            data = json.loads(raw)
+            from backend.services.llm import clean_json_text
+            data = json.loads(clean_json_text(raw))
             return data.get("is_match", False), data.get("reason", "")
     except Exception as e:
         logger.error(f"[sofi] Error checking description for {title}: {e}")

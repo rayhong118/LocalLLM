@@ -169,8 +169,7 @@ async def smart_click(text: str, browser: BrowserSession, index: int = 0):
                         "model": config.LLM_MODEL,
                         "messages": [{"role": "user", "content": prompt}],
                         "stream": False,
-                        "temperature": 0,
-                        "response_format": {"type": "json_object"}
+                        "temperature": 0
                     },
                     timeout=30
                 )
@@ -180,7 +179,8 @@ async def smart_click(text: str, browser: BrowserSession, index: int = 0):
                     content = resp_data["choices"][0].get("message", {}).get("content", "{}")
                 elif "message" in resp_data:
                     content = resp_data.get("message", {}).get("content", "{}")
-                result_data = _json.loads(content)
+                from backend.services.llm import clean_json_text
+                result_data = _json.loads(clean_json_text(content))
                 selected_index = result_data.get("selected_index")
         except Exception as e:
             logger.error(f"LLM semantic selection failed: {e}")

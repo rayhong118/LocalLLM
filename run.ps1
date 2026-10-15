@@ -14,26 +14,40 @@ if (Test-Path "C:\Program Files\nodejs") {
     }
 }
 
+# Load .env file if present
+$envPath = Join-Path $PSScriptRoot ".env"
+if (Test-Path $envPath) {
+    Get-Content $envPath | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -and -not $line.StartsWith("#") -and $line.Contains("=")) {
+            $key, $val = $line.Split("=", 2)
+            $key = $key.Trim()
+            $val = $val.Trim()
+            [System.Environment]::SetEnvironmentVariable($key, $val, "Process")
+        }
+    }
+}
+
 Write-Host "=== LocalLLM Launcher (LM Studio) ===" -ForegroundColor Cyan
 
-# ── 1. Clean up orphaned headless browser processes ──────────────────────────────
-Write-Host "`n[1/4] Cleaning up orphaned headless Chrome processes..." -ForegroundColor Yellow
-$headlessChrome = Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe' AND CommandLine LIKE '%--headless%'"
-if ($headlessChrome) {
-    Write-Host "  Found $($headlessChrome.Count) headless Chrome process(es). Stopping..." -ForegroundColor Red
-    $headlessChrome | Invoke-CimMethod -MethodName Terminate | Out-Null
-    Write-Host "  Headless Chrome processes terminated." -ForegroundColor Green
+# ── 1. Clean up orphaned task browser processes ─────────────────────────────────
+Write-Host "`n[1/4] Cleaning up orphaned task Chrome processes..." -ForegroundColor Yellow
+$taskChrome = Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" | Where-Object { $_.CommandLine -like "*browser_session_web*" -or $_.CommandLine -like "*--headless*" }
+if ($taskChrome) {
+    Write-Host "  Found $($taskChrome.Count) task Chrome process(es). Stopping..." -ForegroundColor Red
+    $taskChrome | Invoke-CimMethod -MethodName Terminate | Out-Null
+    Write-Host "  Task Chrome processes terminated." -ForegroundColor Green
 }
 else {
-    Write-Host "  No orphaned headless Chrome processes found." -ForegroundColor Green
+    Write-Host "  No orphaned task Chrome processes found." -ForegroundColor Green
 }
 
-# ── 2. Ensure LM Studio (Bionic) is running & check connectivity ──────────────────
-Write-Host "`n[2/4] Checking LM Studio (Bionic)..." -ForegroundColor Yellow
+# ── 2. Ensure LM Studio is running in normal mode & check connectivity ────────────
+Write-Host "`n[2/4] Checking LM Studio (normal mode)..." -ForegroundColor Yellow
 
-$bionicProc = Get-Process -Name "Bionic", "LM Studio" -ErrorAction SilentlyContinue
-if (-not $bionicProc) {
-    $bionicExe = @(
+$lmProc = Get-Process -Name "Bionic", "LM Studio" -ErrorAction SilentlyContinue
+if (-not $lmProc) {
+    $lmExe = @(
         "$env:LOCALAPPDATA\Programs\Bionic\Bionic.exe",
         "$HOME\AppData\Local\Programs\Bionic\Bionic.exe",
         "C:\Program Files\Bionic\Bionic.exe",
@@ -41,21 +55,22 @@ if (-not $bionicProc) {
         "C:\Program Files\LM Studio\LM Studio.exe"
     ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-    if ($bionicExe) {
-        Write-Host "  LM Studio Bionic is not running. Starting ($bionicExe)..." -ForegroundColor Cyan
-        Start-Process -FilePath $bionicExe
-        Write-Host "  Waiting for LM Studio Bionic to initialize..." -ForegroundColor Yellow
+    if ($lmExe) {
+        Write-Host "  LM Studio is not running. Starting in normal mode (GUI, not headless): $lmExe..." -ForegroundColor Cyan
+        Start-Process -FilePath $lmExe -WindowStyle Normal
+        Write-Host "  Waiting for LM Studio to initialize in normal mode..." -ForegroundColor Yellow
         Start-Sleep -Seconds 5
     }
     else {
-        Write-Host "  [WARNING] LM Studio Bionic executable not found in default paths." -ForegroundColor Yellow
+        Write-Host "  [WARNING] LM Studio executable not found in default paths." -ForegroundColor Yellow
     }
 }
 else {
-    Write-Host "  [OK] LM Studio Bionic is already running." -ForegroundColor Green
+    Write-Host "  [OK] LM Studio is running in normal mode (GUI)." -ForegroundColor Green
 }
 
 $llmUrl = if ($env:LLM_BASE_URL) { $env:LLM_BASE_URL } else { "http://localhost:1234/v1" }
+$serverRoot = $llmUrl.TrimEnd('/') -replace '/v1$', ''
 $modelsUrl = "$($llmUrl.TrimEnd('/'))/models"
 $connected = $false
 
@@ -63,15 +78,11 @@ for ($attempt = 1; $attempt -le 3; $attempt++) {
     try {
         $response = Invoke-RestMethod -Uri $modelsUrl -Method Get -TimeoutSec 3 -ErrorAction Stop
         Write-Host "  [OK] Connected to LM Studio at $llmUrl" -ForegroundColor Green
-        if ($response.data) {
-            $loadedModels = ($response.data | ForEach-Object { $_.id }) -join ", "
-            Write-Host "  Available/Loaded model(s): $loadedModels" -ForegroundColor Cyan
-        }
         $connected = $true
         break
     }
     catch {
-        if ($attempt -lt 3 -and -not $bionicProc) {
+        if ($attempt -lt 3 -and -not $lmProc) {
             Start-Sleep -Seconds 2
         }
     }
@@ -79,8 +90,68 @@ for ($attempt = 1; $attempt -le 3; $attempt++) {
 
 if (-not $connected) {
     Write-Host "  [WARNING] Could not connect to LM Studio at $llmUrl" -ForegroundColor Yellow
-    Write-Host "  Please ensure LM Studio is running with its local server started on port 1234." -ForegroundColor Yellow
-    Write-Host "  (In LM Studio: Local Server / Developer tab -> Start Server)" -ForegroundColor Yellow
+    Write-Host "  Please ensure LM Studio GUI is running in normal mode with its local server started." -ForegroundColor Yellow
+    Write-Host "  (In LM Studio: Developer / Local Server tab -> Start Server)" -ForegroundColor Yellow
+}
+else {
+    # ── Automatic Model Detection & Loading ─────────────────────────────────────────
+    $targetModel = if ($env:LLM_MODEL) { $env:LLM_MODEL } else { "google/gemma-4-12b-qat" }
+    $ctxLength = if ($env:CONTEXT_WINDOW) { [int]$env:CONTEXT_WINDOW } else { 32768 }
+
+    try {
+        # Query LM Studio v0 API for detailed model states
+        $v0ModelsUrl = "$serverRoot/api/v0/models"
+        $v0Res = Invoke-RestMethod -Uri $v0ModelsUrl -Method Get -TimeoutSec 5 -ErrorAction Stop
+        $allModels = $v0Res.data
+        $loadedModel = $allModels | Where-Object { $_.state -eq "loaded" } | Select-Object -First 1
+
+        $needsLoad = $true
+        if ($loadedModel) {
+            # Check if currently loaded model matches requested targetModel
+            if ($loadedModel.id -eq $targetModel -or $loadedModel.id -like "*$targetModel*" -or $targetModel -like "*$($loadedModel.id)*") {
+                Write-Host "  [OK] Desired model already loaded in memory: $($loadedModel.id) (context: $($loadedModel.loaded_context_length))" -ForegroundColor Green
+                $needsLoad = $false
+            }
+            else {
+                Write-Host "  Currently loaded model '$($loadedModel.id)' does not match target '$targetModel'. Switching model..." -ForegroundColor Cyan
+                try {
+                    Invoke-RestMethod -Uri "$serverRoot/api/v1/models/unload" -Method Post -ContentType "application/json" -Body (@{ instance_id = $loadedModel.id } | ConvertTo-Json) -TimeoutSec 15 | Out-Null
+                } catch {}
+                $needsLoad = $true
+            }
+        }
+
+        if ($needsLoad) {
+            # Find best match for requested targetModel
+            $matchedModel = $allModels | Where-Object { $_.id -eq $targetModel } | Select-Object -First 1
+            if (-not $matchedModel) {
+                $matchedModel = $allModels | Where-Object { $_.id -like "*$targetModel*" } | Select-Object -First 1
+            }
+            if (-not $matchedModel) {
+                # Fallback to the first available LLM/VLM model
+                $matchedModel = $allModels | Where-Object { $_.type -in @("llm", "vlm") } | Select-Object -First 1
+            }
+
+            if ($matchedModel) {
+                $modelToLoad = $matchedModel.id
+                Write-Host "  Auto-loading '$modelToLoad' into memory (context: $ctxLength)..." -ForegroundColor Cyan
+                $loadUrl = "$serverRoot/api/v1/models/load"
+                $loadBody = @{
+                    model = $modelToLoad
+                    context_length = $ctxLength
+                } | ConvertTo-Json
+
+                $loadRes = Invoke-RestMethod -Uri $loadUrl -Method Post -ContentType "application/json" -Body $loadBody -TimeoutSec 120
+                Write-Host "  [OK] Successfully loaded model '$modelToLoad' into LM Studio!" -ForegroundColor Green
+            }
+            else {
+                Write-Host "  [WARNING] No available model matching '$targetModel' found in LM Studio." -ForegroundColor Yellow
+            }
+        }
+    }
+    catch {
+        Write-Host "  [NOTE] Could not auto-query or auto-load via LM Studio native API: $_" -ForegroundColor DarkGray
+    }
 }
 
 # ── 3. Ensure dependencies are installed ───────────────────────────────────────
@@ -125,11 +196,11 @@ finally {
         Write-Host "  [OK] Killed Vite dev server." -ForegroundColor Green
     }
     
-    # 2. Kill orphaned headless Chrome
-    $headlessChrome = Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe' AND CommandLine LIKE '%--headless%'"
-    if ($headlessChrome) {
-        $headlessChrome | Invoke-CimMethod -MethodName Terminate | Out-Null
-        Write-Host "  [OK] Killed headless Chrome processes." -ForegroundColor Green
+    # 2. Close task Chrome browser window(s)
+    $taskChrome = Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" | Where-Object { $_.CommandLine -like "*browser_session_web*" -or $_.CommandLine -like "*--headless*" }
+    if ($taskChrome) {
+        $taskChrome | Invoke-CimMethod -MethodName Terminate | Out-Null
+        Write-Host "  [OK] Closed task browser window(s)." -ForegroundColor Green
     }
 
     if ($agentExit -eq 0) {

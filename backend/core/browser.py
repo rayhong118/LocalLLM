@@ -38,7 +38,18 @@ class ManagedBrowser:
 
     async def stop(self):
         if self.session:
-            await self.session.stop()
+            try:
+                await self.session.kill()
+            except Exception:
+                try:
+                    await self.session.stop()
+                except Exception:
+                    pass
+        try:
+            from backend.automation.browser_utils import cleanup_browser_processes
+            cleanup_browser_processes()
+        except Exception:
+            pass
 
     async def prepare_step(self):
         """Standard preparations before every agent step."""
