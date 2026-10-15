@@ -69,180 +69,117 @@ def _clean_deal_description(desc: str) -> str:
     
     return desc
 
+def _extract_query_tokens(keyword: str) -> list[str]:
+    """Generic token extraction for any search term (no hardcoded items)."""
+    kw_clean = keyword.lower().strip()
+    stop_words = {"and", "or", "the", "in", "with", "for", "of", "a", "an", "to"}
+    words = [w for w in re.findall(r'[a-zA-Z0-9]+', kw_clean) if len(w) >= 3 and w not in stop_words]
+    tokens = [kw_clean] if kw_clean else []
+    for w in words:
+        if w not in tokens:
+            tokens.append(w)
+    return tokens
+
+
 async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = "") -> list[int]:
-    """Use the local LLM to semantically match card texts against a user keyword.
+    """Use the local LLM to semantically match card product titles against a user keyword.
+    Evaluates ALL cards in chunks of clean product titles, avoiding token-filtering blindspots
+    (e.g., ensures 'Häagen-Dazs Novelties' matches 'ice cream', 'Coca-Cola' matches 'coke').
     Returns a list of card indices (from card_texts) that match.
-    Returns None if the LLM call fails (error), vs [] for genuine no-matches.
-    E.g. keyword='coke' would match a card containing 'Coca-Cola'.
+    Returns None if all LLM calls fail (error), vs [] for genuine no-matches.
     """
     if not card_texts or not keyword:
         return []
 
-    # Build a numbered list of card summaries (truncated to save tokens)
-    # Keep short — the LLM only needs enough to identify the product, not full details
-    card_list = "\n".join(f"{i}: {text[:120]}" for i, text in enumerate(card_texts))
+    # Chunk clean product titles into batches of 50 to prevent prompt bloat and keep latency low
+    chunk_size = 50
+    total_cards = len(card_texts)
+    chunks = [
+        list(range(i, min(i + chunk_size, total_cards)))
+        for i in range(0, total_cards, chunk_size)
+    ]
+
+    _log_to_file(
+        log_path,
+        f"PRE-FLIGHT CHUNKED MATCHING: Evaluating {total_cards} cards in {len(chunks)} chunk(s) for '{keyword}'"
+    )
+    logger.info(f"[_llm_match_cards] Evaluating {total_cards} cards across {len(chunks)} chunks for '{keyword}'")
 
     system_prompt = (
-        "You are a strict product matching assistant. Given a search term and a numbered list of coupon descriptions, "
+        "You are a strict product matching assistant. Given a search term and a numbered list of product titles, "
         "return ONLY the indices of cards whose product is the SAME SPECIFIC ITEM as the search term.\n\n"
         "STRICT RULES:\n"
-        "1. The product on the card must BE the search term or a specific brand of it.\n"
-        "2. If a card mentions a DIFFERENT brand or a DIFFERENT product type, do NOT match it even if it is in the same category.\n"
-        "3. Being in the same store aisle or category is NOT enough. The product itself must match.\n"
-        "4. If the search term specifies a brand name, ONLY match that exact brand — not competing brands of the same product type.\n"
-        "5. Evaluate EACH card individually. Do NOT output ranges.\n"
-        "6. Output ONLY: {\"matches\": [0, 3, 7]}  or  {\"matches\": []}\n"
+        "1. Match the search term or a specific brand/variety of it (e.g. 'ice cream' matches 'Häagen-Dazs Novelties', 'gelato', 'ice cream bars'; 'coke' matches 'Coca-Cola'; 'paper tissues' matches 'Kleenex Facial Tissues').\n"
+        "2. If a card is a DIFFERENT product type, do NOT match it even if in the same category (e.g. pizza rolls or waffles are NOT ice cream; plain spring water is NOT sparkling water).\n"
+        "3. Output ONLY a JSON object: {\"matches\": [indices]} or {\"matches\": []}. Be direct and do NOT write lengthy reasoning.\n"
     )
 
-    user_msg = f"Search term: \"{keyword}\"\n\nCards:\n{card_list}"
+    all_matches = []
+    had_successful_call = False
 
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
-                json={
-                    "model": config.LLM_MODEL,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_msg}
-                    ],
-                    "stream": False,
-                    "temperature": 0
-                },
-                timeout=config.LLM_TIMEOUT
-            )
-            
-            # Detailed response diagnostics
-            if resp.status_code != 200:
-                err_msg = f"LM Studio returned HTTP {resp.status_code}: {resp.text[:200]}"
-                logger.error(f"[_llm_match_cards] {err_msg}")
-                if log_path:
-                    with open(log_path, "a", encoding="utf-8") as f:
-                        f.write(f"PRE-FLIGHT LLM MATCH FAILED: {err_msg}\n")
-                return None
-            
-            resp_json = resp.json()
-            raw = ""
-            if "choices" in resp_json and len(resp_json["choices"]) > 0:
-                raw = resp_json["choices"][0].get("message", {}).get("content", "")
-            elif "message" in resp_json:
-                raw = resp_json.get("message", {}).get("content", "")
-            
-            if not raw or not raw.strip():
-                err_msg = f"LM Studio returned empty content."
-                logger.error(f"[_llm_match_cards] {err_msg}")
-                if log_path:
-                    with open(log_path, "a", encoding="utf-8") as f:
-                        f.write(f"PRE-FLIGHT LLM MATCH FAILED: {err_msg}\n")
-                return None
-            
+    async with httpx.AsyncClient() as client:
+        for chunk_idx, indices in enumerate(chunks):
+            card_list = "\n".join(f"{i}: {card_texts[i][:100]}" for i in indices)
+            user_msg = f"Search term: \"{keyword}\"\n\nCards:\n{card_list}"
+
             try:
-                data = json.loads(clean_json_text(raw))
-            except json.JSONDecodeError as je:
-                err_msg = f"Failed to parse LLM response as JSON: {je}. Raw content: {raw[:300]}"
-                logger.error(f"[_llm_match_cards] {err_msg}")
-                if log_path:
-                    with open(log_path, "a", encoding="utf-8") as f:
-                        f.write(f"PRE-FLIGHT LLM MATCH FAILED: {err_msg}\n")
-                return None
-            
-            matches = data.get("matches", [])
-
-            # Validate indices are in range
-            valid = [i for i in matches if isinstance(i, int) and 0 <= i < len(card_texts)]
-
-            # --- POST-LLM VALIDATION ---
-            # Verify each match with a quick yes/no LLM call to catch hallucinations.
-            # Only do this if there are a manageable number of matches.
-            if valid and len(valid) <= 30:
-                verified = []
-                verify_prompt = (
-                    "You are a strict product verification assistant. "
-                    "Answer ONLY with {\"is_match\": true} or {\"is_match\": false}.\n\n"
-                    "Is the following coupon card for the SAME SPECIFIC product as the search term?\n"
-                    "The product must BE the search term or a well-known brand of it.\n"
-                    "A different product from the same store aisle is NOT a match.\n\n"
-                    "Examples:\n"
-                    "- Search 'coke', card 'Coca-Cola $5 off' → true\n"
-                    "- Search 'coke', card 'Powerade $2 off' → false (different product)\n"
-                    "- Search 'ice cream', card 'Tillamook Ice Cream' → true\n"
-                    "- Search 'ice cream', card 'Totino\\'s Pizza Rolls' → false (different product)\n"
-                    "- Search 'Arizona tea', card 'Gold Peak Tea' → false (different brand)\n"
+                resp = await client.post(
+                    f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
+                    headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
+                    json={
+                        "model": config.LLM_MODEL,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_msg}
+                        ],
+                        "stream": False,
+                        "temperature": 0,
+                        "max_tokens": 150
+                    },
+                    timeout=min(config.LLM_TIMEOUT, 90)
                 )
-                
-                for idx in valid:
-                    card_desc = card_texts[idx][:200]
-                    try:
-                        verify_resp = await client.post(
-                            f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
-                            headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
-                            json={
-                                "model": config.LLM_MODEL,
-                                "messages": [
-                                    {"role": "system", "content": verify_prompt},
-                                    {"role": "user", "content": f"Search term: \"{keyword}\"\nCard: \"{card_desc}\""}
-                                ],
-                                "stream": False,
-                                "temperature": 0
-                            },
-                            timeout=60
-                        )
-                        if verify_resp.status_code == 200:
-                            v_json = verify_resp.json()
-                            v_raw = ""
-                            if "choices" in v_json and len(v_json["choices"]) > 0:
-                                v_raw = v_json["choices"][0].get("message", {}).get("content", "{}")
-                            elif "message" in v_json:
-                                v_raw = v_json.get("message", {}).get("content", "{}")
-                            v_data = json.loads(clean_json_text(v_raw))
-                            if v_data.get("is_match", False):
-                                verified.append(idx)
-                            else:
-                                logger.info(f"[_llm_match_cards] REJECTED card {idx} for '{keyword}': {card_desc[:80]}")
-                                if log_path:
-                                    with open(log_path, "a", encoding="utf-8") as f:
-                                        f.write(f"PRE-FLIGHT LLM VERIFY REJECTED: card {idx} for '{keyword}': {card_desc[:80]}\n")
-                        else:
-                            verified.append(idx)  # On verify failure, keep the match
-                    except Exception as ve:
-                        logger.warning(f"[_llm_match_cards] Verify failed for card {idx}: {ve}, keeping match")
-                        verified.append(idx)  # On error, keep the match
-                
-                if len(verified) < len(valid):
-                    logger.info(f"[_llm_match_cards] Post-verification: {len(valid)} -> {len(verified)} for '{keyword}'")
-                    if log_path:
-                        with open(log_path, "a", encoding="utf-8") as f:
-                            f.write(f"PRE-FLIGHT LLM VERIFY: Reduced {len(valid)} -> {len(verified)} matches for '{keyword}'\n")
-                valid = verified
 
-            if log_path:
-                with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"PRE-FLIGHT LLM MATCH: keyword='{keyword}' -> {len(valid)} matches out of {len(card_texts)} cards: {valid}\n")
-            logger.info(f"[_llm_match_cards] keyword='{keyword}' -> {len(valid)} matches: {valid}")
-            return valid
+                if resp.status_code != 200:
+                    err_msg = f"LM Studio returned HTTP {resp.status_code} on chunk {chunk_idx + 1}/{len(chunks)}: {resp.text[:200]}"
+                    logger.error(f"[_llm_match_cards] {err_msg}")
+                    continue
 
-    except httpx.TimeoutException:
-        err_msg = f"LM Studio request timed out after {config.LLM_TIMEOUT}s for keyword '{keyword}' ({len(card_texts)} cards)"
-        logger.error(f"[_llm_match_cards] {err_msg}")
-        if log_path:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"PRE-FLIGHT LLM MATCH FAILED (TIMEOUT): {err_msg}\n")
+                resp_json = resp.json()
+                raw = ""
+                if "choices" in resp_json and len(resp_json["choices"]) > 0:
+                    raw = resp_json["choices"][0].get("message", {}).get("content", "")
+                elif "message" in resp_json:
+                    raw = resp_json.get("message", {}).get("content", "")
+
+                if not raw or not raw.strip():
+                    continue
+
+                try:
+                    data = json.loads(clean_json_text(raw))
+                    had_successful_call = True
+                    matches = data.get("matches", [])
+                    valid = [i for i in matches if isinstance(i, int) and i in indices]
+                    all_matches.extend(valid)
+                except json.JSONDecodeError as je:
+                    logger.warning(f"[_llm_match_cards] Failed to parse JSON on chunk {chunk_idx + 1}: {je}. Content: {raw[:200]}")
+                    continue
+
+            except httpx.TimeoutException:
+                logger.error(f"[_llm_match_cards] Chunk {chunk_idx + 1}/{len(chunks)} timed out for '{keyword}'")
+                continue
+            except Exception as e:
+                logger.error(f"[_llm_match_cards] Error on chunk {chunk_idx + 1} for '{keyword}': {e}")
+                continue
+
+    if not had_successful_call and chunks:
+        _log_to_file(log_path, f"PRE-FLIGHT LLM MATCH FAILED: All {len(chunks)} chunk calls failed for '{keyword}'")
         return None
-    except httpx.ConnectError as ce:
-        err_msg = f"Cannot connect to LM Studio at {config.LLM_BASE_URL}: {ce}"
-        logger.error(f"[_llm_match_cards] {err_msg}")
-        if log_path:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"PRE-FLIGHT LLM MATCH FAILED (CONNECTION): {err_msg}\n")
-        return None
-    except Exception as e:
-        err_msg = f"LLM matching failed for '{keyword}': {type(e).__name__}: {e}"
-        logger.error(f"[_llm_match_cards] {err_msg}. Falling back to empty.")
-        if log_path:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"PRE-FLIGHT LLM MATCH FAILED: {err_msg}\n")
-        return None
+
+    # Deduplicate matching indices while preserving order
+    unique_matches = list(dict.fromkeys(all_matches))
+    _log_to_file(log_path, f"PRE-FLIGHT LLM MATCH: keyword='{keyword}' -> {len(unique_matches)} matches across {len(card_texts)} cards: {unique_matches}")
+    logger.info(f"[_llm_match_cards] keyword='{keyword}' -> {len(unique_matches)} matches: {unique_matches}")
+    return unique_matches
 
 
 async def safeway_click_details(browser: BrowserSession, index: int):
@@ -394,9 +331,11 @@ async def safeway_get_all_deals(browser: BrowserSession, keyword: str = ""):
         logger.info(f"[safeway_get_all_deals] Scraping all deals. Keyword filter: '{keyword}'")
         await asyncio.sleep(1.5)  # Let any skeleton loaders resolve
 
+        terms = _extract_query_tokens(keyword) if keyword else []
+
         # Scrape all card-like elements using JS
         js_code = """
-        (kw) => {
+        (terms) => {
             INSERT_SELECTORS_HERE
             
             let cards = [];
@@ -415,14 +354,17 @@ async def safeway_get_all_deals(browser: BrowserSession, keyword: str = ""):
                 return JSON.stringify({error: 'No coupon cards found on the page.'});
             }
             
-            const kwLower = (kw || '').toLowerCase();
             const deals = [];
             const seen = new Set();
             
             for (let i = 0; i < cards.length; i++) {
                 try {
                     let text = cards[i].innerText.trim().replace(/\\n/g, ' | ').substring(0, 300);
-                    if (kwLower && text.toLowerCase().indexOf(kwLower) === -1) continue;
+                    const tLower = text.toLowerCase();
+                    if (terms && terms.length > 0) {
+                        const matched = terms.some(t => tLower.indexOf(t) !== -1);
+                        if (!matched) continue;
+                    }
                     
                     if (!seen.has(text)) {
                         seen.add(text);
@@ -436,7 +378,7 @@ async def safeway_get_all_deals(browser: BrowserSession, keyword: str = ""):
         }
         """.replace("INSERT_SELECTORS_HERE", CARD_SELECTORS_JS)
 
-        raw = await page.evaluate(js_code, keyword)
+        raw = await page.evaluate(js_code, terms)
         data = json.loads(raw)
         
         if 'error' in data:
@@ -941,15 +883,8 @@ async def safeway_filter_category(category_name: str, browser: BrowserSession):
                 
                 targetLabel.scrollIntoView({block: 'center', behavior: 'instant'});
                 
-                // Try clicking it
+                // Click once cleanly without double event dispatching
                 targetLabel.click();
-                
-                // Sometimes clicking the input inside the label is required
-                const input = targetLabel.querySelector('input');
-                if (input) {
-                    // input.click(); // Don't double click, but dispatch event if needed
-                    input.dispatchEvent(new Event('change', { bubbles: true }));
-                }
                 
                 return JSON.stringify({success: true, text: targetLabel.textContent.trim()});
             }
@@ -1347,17 +1282,18 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
                 
                 await _asyncio.sleep(3)
                 
-                # Click "Show More" / "Load More" button repeatedly to load all deals
-                for show_more_attempt in range(20):  # max 20 clicks to prevent infinite loop
+                # Click "Show More" / "Load More" button in the deals container to load cards
+                for show_more_attempt in range(5):  # max 5 clicks
                     show_more_clicked = await page.evaluate("""
                     () => {
-                        // Look for common "show more" / "load more" buttons
-                        const candidates = Array.from(document.querySelectorAll('button, a, [role="button"]'))
-                            .filter(el => el.offsetParent !== null);
+                        // Look for deals pagination button in main content area (ignore sidebar filter accordions)
+                        const mainArea = document.querySelector('main, [role="main"], #main-content') || document.body;
+                        const candidates = Array.from(mainArea.querySelectorAll('button, a, [role="button"]'))
+                            .filter(el => el.offsetParent !== null && !el.closest('[class*="sidebar"], [class*="filter"], nav'));
                         for (const el of candidates) {
                             const text = (el.textContent || '').trim().toLowerCase();
-                            if (text === 'show more' || text === 'load more' || text === 'see more' 
-                                || text === 'view more' || text === 'show all') {
+                            if (text === 'show more' || text === 'load more' || text === 'load more deals' 
+                                || text === 'view more' || text === 'see more deals') {
                                 el.scrollIntoView({block: 'center'});
                                 el.click();
                                 return true;
@@ -1415,8 +1351,7 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"PRE-FLIGHT: LLM-matching coupons for '{kw}' in '{category or 'General'}'...\n")
                     
-                    # Scrape all card texts from the page for LLM matching
-                    # Enhanced: also extract aria-labels, image alts, and title attrs for volume/size info
+                    # Scrape clean product titles from each card for LLM matching (stripping price/button/date noise)
                     js_code = """
                     () => {
                         INSERT_SELECTORS_HERE
@@ -1428,41 +1363,58 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
                                 if (els.length > 0) { cards = els; break; }
                             } catch(e) {}
                         }
-                        return JSON.stringify(cards.map(c => {
-                            let text = (c.innerText || '').substring(0, 250).replace(/\\n/g, ' | ');
-                            
-                            // Extract additional product info from DOM attributes
-                            const extras = [];
-                            
-                            // Image alt text often contains product name + size/volume
-                            c.querySelectorAll('img').forEach(img => {
-                                const alt = (img.getAttribute('alt') || '').trim();
-                                if (alt.length > 5 && !text.toLowerCase().includes(alt.toLowerCase().substring(0, 20))) {
-                                    extras.push(alt);
-                                }
-                            });
-                            
-                            // Aria-labels on child elements may have full descriptions with size info
-                            c.querySelectorAll('[aria-label]').forEach(el => {
-                                const label = (el.getAttribute('aria-label') || '').trim();
-                                if (label.length > 10 && !text.toLowerCase().includes(label.toLowerCase().substring(0, 20))) {
-                                    extras.push(label);
-                                }
-                            });
-                            
-                            // Title attributes
-                            c.querySelectorAll('[title]').forEach(el => {
-                                const title = (el.getAttribute('title') || '').trim();
-                                if (title.length > 5 && !text.toLowerCase().includes(title.toLowerCase().substring(0, 20))) {
-                                    extras.push(title);
-                                }
-                            });
-                            
-                            if (extras.length > 0) {
-                                text += ' || ' + extras.join(' | ');
+
+                        function cleanProductTitle(card) {
+                            // 1. Try dedicated product title/name elements
+                            const titleSelectors = [
+                                '[class*="product-title"]', '[class*="deal-title"]', '[class*="offer-title"]',
+                                '[class*="coupon-title"]', '[class*="item-title"]', '[class*="product-name"]',
+                                'h3', 'h4', '[data-qa*="title"]', '[data-qa*="name"]',
+                                '[class*="description"]'
+                            ];
+                            for (const sel of titleSelectors) {
+                                try {
+                                    const el = card.querySelector(sel);
+                                    if (el) {
+                                        const t = (el.innerText || el.textContent || '').trim();
+                                        if (t.length >= 3 && !t.startsWith('$') && !t.toLowerCase().includes('expires') && !t.toLowerCase().includes('clip')) {
+                                            return t.replace(/\\n/g, ' ').substring(0, 120);
+                                        }
+                                    }
+                                } catch(e) {}
                             }
-                            return text.substring(0, 400);
-                        }));
+                            
+                            // 2. Try product image alt text (Safeway deal images usually have alt="Brand Product Name")
+                            try {
+                                const img = card.querySelector('img[alt]');
+                                if (img) {
+                                    const alt = (img.getAttribute('alt') || '').trim();
+                                    const altLow = alt.toLowerCase();
+                                    if (alt.length >= 4 && !altLow.includes('safeway') && !altLow.includes('coupon') && !altLow.includes('logo') && !altLow.includes('icon')) {
+                                        return alt.substring(0, 120);
+                                    }
+                                }
+                            } catch(e) {}
+                            
+                            // 3. Fallback: Parse card innerText lines, stripping prices, dates, button text
+                            const lines = (card.innerText || '').split('\\n').map(l => l.trim()).filter(Boolean);
+                            const candidateLines = lines.filter(l => {
+                                const low = l.toLowerCase();
+                                if (low.startsWith('$') || /^\\d+(\\.\\d+)?\\s*(off|each|for)/i.test(low)) return false;
+                                if (low.includes('expires') || low.includes('valid through') || low.includes('good through')) return false;
+                                if (low.includes('offer details') || low.includes('clip') || low.includes('clipped') || low.includes('add to card') || low.includes('load to card')) return false;
+                                if (low.includes('one time use') || low.includes('unlimited use') || low.includes('when you buy') || low.includes('terms apply')) return false;
+                                return l.length >= 3;
+                            });
+                            
+                            if (candidateLines.length > 0) {
+                                return candidateLines.slice(0, 2).join(' | ').substring(0, 120);
+                            }
+                            
+                            return (card.innerText || '').replace(/\\n/g, ' | ').substring(0, 100);
+                        }
+                        
+                        return JSON.stringify(cards.map(c => cleanProductTitle(c)));
                     }
                     """.replace("INSERT_SELECTORS_HERE", CARD_SELECTORS_JS)
 
