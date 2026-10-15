@@ -23,7 +23,8 @@ if ($headlessChrome) {
     Write-Host "  Found $($headlessChrome.Count) headless Chrome process(es). Stopping..." -ForegroundColor Red
     $headlessChrome | Invoke-CimMethod -MethodName Terminate | Out-Null
     Write-Host "  Headless Chrome processes terminated." -ForegroundColor Green
-} else {
+}
+else {
     Write-Host "  No orphaned headless Chrome processes found." -ForegroundColor Green
 }
 
@@ -45,10 +46,12 @@ if (-not $bionicProc) {
         Start-Process -FilePath $bionicExe
         Write-Host "  Waiting for LM Studio Bionic to initialize..." -ForegroundColor Yellow
         Start-Sleep -Seconds 5
-    } else {
+    }
+    else {
         Write-Host "  [WARNING] LM Studio Bionic executable not found in default paths." -ForegroundColor Yellow
     }
-} else {
+}
+else {
     Write-Host "  [OK] LM Studio Bionic is already running." -ForegroundColor Green
 }
 
@@ -66,7 +69,8 @@ for ($attempt = 1; $attempt -le 3; $attempt++) {
         }
         $connected = $true
         break
-    } catch {
+    }
+    catch {
         if ($attempt -lt 3 -and -not $bionicProc) {
             Start-Sleep -Seconds 2
         }
@@ -107,7 +111,8 @@ Write-Host ("-" * 50) -ForegroundColor DarkGray
 Start-Process "http://localhost:5173"
 try {
     uv run python -m backend.main
-} finally {
+}
+finally {
     $agentExit = $LASTEXITCODE
     Pop-Location
     
@@ -129,7 +134,8 @@ try {
 
     if ($agentExit -eq 0) {
         Write-Host "`nLocalLLM Server finished successfully." -ForegroundColor Green
-    } else {
+    }
+    else {
         Write-Host "`nLocalLLM Server exited with code $agentExit." -ForegroundColor Red
     }
 }
