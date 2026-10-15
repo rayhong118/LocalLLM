@@ -1,10 +1,10 @@
 # LocalLLM Agent: Plugin-Oriented Automation
 
-A local AI agent system that performs complex web automation tasks using `browser-use` and `Ollama`. It features a hybrid architecture combining general-purpose agent reasoning with high-stability, site-specific automation plugins.
+A local AI agent system that performs complex web automation tasks using `browser-use` and `LM Studio` (or any OpenAI-compatible local LLM server). It features a hybrid architecture combining general-purpose agent reasoning with high-stability, site-specific automation plugins.
 
 ## Key Features
 
-- **Local-First**: Runs entirely on your hardware via Ollama.
+- **Local-First**: Runs entirely on your hardware via LM Studio (OpenAI-compatible REST API).
 - **Pre-Flight Hand-off**: High-performance "site-skills" handle the heavy lifting (navigation, filtering, scraping) before the main agent loop begins.
 - **Skill-Based Stability**: Uses CDP-compatible `page.evaluate()` JS execution for ultra-reliable DOM interaction, bypassing the fragility of traditional CSS selectors.
 - **Semantic Context Injection**: Automatically retrieves domain knowledge and site-specific instructions based on task analysis.
@@ -13,8 +13,10 @@ A local AI agent system that performs complex web automation tasks using `browse
 
 ### Prerequisites
 
-1.  **Ollama**: Download and install from [ollama.com](https://ollama.com/download).
-    *   Pull the required model: `ollama pull qwen3.5:9b` (or the model specified in `config.py`).
+1.  **LM Studio**: Download and install from [lmstudio.ai](https://lmstudio.ai).
+    *   Load your preferred model.
+    *   Start the local server (default: `http://localhost:1234/v1`).
+    *   (Optional) If LM Studio is running on another machine or port, set `LLM_BASE_URL` in `.env` (e.g. `LLM_BASE_URL=http://<host>:1234/v1`).
 2.  **uv**: A fast Python package installer and resolver. Install it from [astral.sh/uv](https://astral.sh/uv).
 
 ### Installation & Running
@@ -37,20 +39,21 @@ The project utilizes a tiered execution model to ensure production-grade reliabi
 
 ### Components
 
-*   **[agent.py](file:///c:/LocalLLM/agent.py)**: The central orchestrator. Manages the hand-off between Pre-Flight plugins and the main Reasoning loop.
+*   **[backend/agent.py](file:///c:/LocalLLM/backend/agent.py)**: The central orchestrator entry point.
 *   **[site_skills/](file:///c:/LocalLLM/site_skills/)**: Contains specialized Python plugins for specific domains.
     *   **[safeway.py](file:///c:/LocalLLM/site_skills/safeway.py)**: Handles complex SPA navigation, filter drawers, and deduplicated coupon scraping for Safeway.
-    *   **[sofi.py](file:///c:/LocalLLM/site_skills/sofi.py)**: Monitors the SoFi careers board for Fullstack/Frontend engineering roles matching my skill set. *Context: I successfully passed their interview, but there were no longer any matching roles available after the planning stage concluded. This skill automates the monitoring of the job board so I get notified the moment a matching role shows up!*
-*   **[llm_wrapper.py](file:///c:/LocalLLM/llm_wrapper.py)**: A custom Ollama integration that enforces clean JSON output and strips reasoning artifacts.
-*   **[config.py](file:///c:/LocalLLM/config.py)**: Global settings for model selection, context window (32k), and browser behavior.
-*   **[context_manager.py](file:///c:/LocalLLM/context_manager.py)**: Semantic analyzer that pairs tasks with relevant database knowledge.
-*   **[skills.py](file:///c:/LocalLLM/skills.py)**: A library of deterministic UI skills (smart_click, smart_type, etc.) available to the agent.
-*   **[database.py](file:///c:/LocalLLM/database.py)**: SQLite persistence layer for task tracking and knowledge retrieval.
-*   **[run.ps1](file:///c:/LocalLLM/run.ps1)**: Orchestrates the background Ollama server, dependency sync, and environment initialization.
+    *   **[weee.py](file:///c:/LocalLLM/site_skills/weee.py)**: Fast coupon scraping and card matching for SayWeee.
+    *   **[sofi.py](file:///c:/LocalLLM/site_skills/sofi.py)**: Monitors the SoFi careers board for Fullstack/Frontend engineering roles matching user skillset.
+*   **[backend/services/llm.py](file:///c:/LocalLLM/backend/services/llm.py)**: A custom LM Studio / OpenAI-compatible integration (`JsonStrippingChatLMStudio`) that enforces clean JSON output and strips reasoning artifacts.
+*   **[backend/config.py](file:///c:/LocalLLM/backend/config.py)**: Global settings for model selection, context window, LM Studio endpoint, and browser behavior.
+*   **[backend/core/pipeline.py](file:///c:/LocalLLM/backend/core/pipeline.py)**: Modular task orchestration pipeline coordinating planner, pre-flight plugins, browser-use execution, and evaluator.
+*   **[run.ps1](file:///c:/LocalLLM/run.ps1)**: Launcher verifying LM Studio connectivity, dependency sync, Vite frontend dev server, and FastAPI backend initialization.
 
 ### Technology Stack
 
-- **Reasoning/Planning**: `qwen3.5:9b` via `Ollama`
+- **Reasoning/Planning**: Local LLM via `LM Studio` (`http://localhost:1234/v1`)
 - **Browser Automation**: `browser-use` (Playwright / CDP)
 - **Backend Framework**: `FastAPI`
+- **Frontend Dashboard**: `React` + `Vite`
 - **Dependency Management**: `uv`
+

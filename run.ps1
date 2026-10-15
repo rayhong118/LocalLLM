@@ -1,23 +1,23 @@
-# run.ps1 — Kill any existing Ollama, start a fresh server, then run agent.py
+# run.ps1 — Verify LM Studio connection, sync dependencies, then run LocalLLM
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "=== LocalLLM Launcher ===" -ForegroundColor Cyan
-
-# ── 1. Kill any existing Ollama processes ──────────────────────────────────────
-Write-Host "`n[1/4] Checking for existing Ollama processes..." -ForegroundColor Yellow
-$ollamaProcs = Get-Process -Name "ollama*" -ErrorAction SilentlyContinue
-if ($ollamaProcs) {
-    Write-Host "  Found $($ollamaProcs.Count) Ollama process(es). Stopping..." -ForegroundColor Red
-    $ollamaProcs | Stop-Process -Force
-    Start-Sleep -Seconds 2  # Give the OS time to release the port
-    Write-Host "  Ollama processes terminated." -ForegroundColor Green
-} else {
-    Write-Host "  No existing Ollama processes found." -ForegroundColor Green
+# Ensure local tool paths are available in PATH for current process
+if (Test-Path "$HOME\.local\bin") {
+    if ($env:Path -notlike "*$HOME\.local\bin*") {
+        $env:Path = "$HOME\.local\bin;$env:Path"
+    }
+}
+if (Test-Path "C:\Program Files\nodejs") {
+    if ($env:Path -notlike "*C:\Program Files\nodejs*") {
+        $env:Path = "C:\Program Files\nodejs;$env:Path"
+    }
 }
 
-# ── 1.5. Kill orphaned headless browser processes ──────────────────────────────
-Write-Host "`n[1.5/4] Cleaning up orphaned headless Chrome processes..." -ForegroundColor Yellow
+Write-Host "=== LocalLLM Launcher (LM Studio) ===" -ForegroundColor Cyan
+
+# ── 1. Clean up orphaned headless browser processes ──────────────────────────────
+Write-Host "`n[1/4] Cleaning up orphaned headless Chrome processes..." -ForegroundColor Yellow
 $headlessChrome = Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe' AND CommandLine LIKE '%--headless%'"
 if ($headlessChrome) {
     Write-Host "  Found $($headlessChrome.Count) headless Chrome process(es). Stopping..." -ForegroundColor Red
@@ -27,30 +27,57 @@ if ($headlessChrome) {
     Write-Host "  No orphaned headless Chrome processes found." -ForegroundColor Green
 }
 
-# ── 2. Start Ollama server in the background ───────────────────────────────────
-Write-Host "`n[2/4] Starting Ollama server..." -ForegroundColor Yellow
+# ── 2. Ensure LM Studio (Bionic) is running & check connectivity ──────────────────
+Write-Host "`n[2/4] Checking LM Studio (Bionic)..." -ForegroundColor Yellow
 
-# VRAM optimization: quantize KV cache to q8_0 (~50% KV VRAM savings) and enable flash attention
-# Must set at process level so Start-Process inherits them
-[System.Environment]::SetEnvironmentVariable("OLLAMA_FLASH_ATTENTION", "1", "Process")
-[System.Environment]::SetEnvironmentVariable("OLLAMA_KV_CACHE_TYPE", "q8_0", "Process")
-$env:OLLAMA_FLASH_ATTENTION = "1"
-$env:OLLAMA_KV_CACHE_TYPE = "q8_0"
-Write-Host "  KV cache: q8_0 | Flash Attention: ON" -ForegroundColor Magenta
+$bionicProc = Get-Process -Name "Bionic", "LM Studio" -ErrorAction SilentlyContinue
+if (-not $bionicProc) {
+    $bionicExe = @(
+        "$env:LOCALAPPDATA\Programs\Bionic\Bionic.exe",
+        "$HOME\AppData\Local\Programs\Bionic\Bionic.exe",
+        "C:\Program Files\Bionic\Bionic.exe",
+        "$env:LOCALAPPDATA\Programs\LM Studio\LM Studio.exe",
+        "C:\Program Files\LM Studio\LM Studio.exe"
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-$ollamaJob = Start-Process -FilePath "ollama" -ArgumentList "serve" `
-    -PassThru -WindowStyle Hidden -UseNewEnvironment:$false
-
-# Wait a moment for the server to initialize
-Start-Sleep -Seconds 3
-
-# Verify it's actually running
-$running = Get-Process -Id $ollamaJob.Id -ErrorAction SilentlyContinue
-if (-not $running) {
-    Write-Host "  ERROR: Ollama server failed to start!" -ForegroundColor Red
-    exit 1
+    if ($bionicExe) {
+        Write-Host "  LM Studio Bionic is not running. Starting ($bionicExe)..." -ForegroundColor Cyan
+        Start-Process -FilePath $bionicExe
+        Write-Host "  Waiting for LM Studio Bionic to initialize..." -ForegroundColor Yellow
+        Start-Sleep -Seconds 5
+    } else {
+        Write-Host "  [WARNING] LM Studio Bionic executable not found in default paths." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  [OK] LM Studio Bionic is already running." -ForegroundColor Green
 }
-Write-Host "  Ollama server started (PID: $($ollamaJob.Id))" -ForegroundColor Green
+
+$llmUrl = if ($env:LLM_BASE_URL) { $env:LLM_BASE_URL } else { "http://localhost:1234/v1" }
+$modelsUrl = "$($llmUrl.TrimEnd('/'))/models"
+$connected = $false
+
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    try {
+        $response = Invoke-RestMethod -Uri $modelsUrl -Method Get -TimeoutSec 3 -ErrorAction Stop
+        Write-Host "  [OK] Connected to LM Studio at $llmUrl" -ForegroundColor Green
+        if ($response.data) {
+            $loadedModels = ($response.data | ForEach-Object { $_.id }) -join ", "
+            Write-Host "  Available/Loaded model(s): $loadedModels" -ForegroundColor Cyan
+        }
+        $connected = $true
+        break
+    } catch {
+        if ($attempt -lt 3 -and -not $bionicProc) {
+            Start-Sleep -Seconds 2
+        }
+    }
+}
+
+if (-not $connected) {
+    Write-Host "  [WARNING] Could not connect to LM Studio at $llmUrl" -ForegroundColor Yellow
+    Write-Host "  Please ensure LM Studio is running with its local server started on port 1234." -ForegroundColor Yellow
+    Write-Host "  (In LM Studio: Local Server / Developer tab -> Start Server)" -ForegroundColor Yellow
+}
 
 # ── 3. Ensure dependencies are installed ───────────────────────────────────────
 Write-Host "`n[3/4] Syncing dependencies with uv..." -ForegroundColor Yellow
@@ -63,13 +90,17 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "  Dependencies synced." -ForegroundColor Green
 
 # ── 4. Start Frontend Dev Server (Vite) ───────────────────────────────────────
-Write-Host "`n[4/5] Starting Frontend dev server..." -ForegroundColor Yellow
+Write-Host "`n[4/4] Starting Frontend dev server..." -ForegroundColor Yellow
+if (-not (Test-Path "$PSScriptRoot\frontend\node_modules")) {
+    Write-Host "  Installing frontend dependencies..." -ForegroundColor Yellow
+    npm.cmd --prefix "$PSScriptRoot\frontend" install
+}
 $viteJob = Start-Process -FilePath "npm.cmd" -ArgumentList "run", "dev" `
     -WorkingDirectory "$PSScriptRoot\frontend" -PassThru -WindowStyle Hidden
 Write-Host "  Vite dev server started (PID: $($viteJob.Id))" -ForegroundColor Green
 
 # ── 5. Run main.py (Starts the FastAPI server) ──────────────────────────────
-Write-Host "`n[5/5] Starting LocalLLM Server..." -ForegroundColor Yellow
+Write-Host "`nStarting LocalLLM Server..." -ForegroundColor Yellow
 Write-Host "  Backend API: http://localhost:8000" -ForegroundColor Cyan
 Write-Host "  Dashboard (Vite): http://localhost:5173" -ForegroundColor Cyan
 Write-Host ("-" * 50) -ForegroundColor DarkGray
@@ -83,20 +114,13 @@ try {
     Write-Host ("-" * 50) -ForegroundColor DarkGray
     Write-Host "`nPerforming cleanup..." -ForegroundColor Yellow
     
-    # 1. Kill Ollama
-    $ollamaProcs = Get-Process -Name "ollama*" -ErrorAction SilentlyContinue
-    if ($ollamaProcs) {
-        $ollamaProcs | Stop-Process -Force
-        Write-Host "  [OK] Killed Ollama processes." -ForegroundColor Green
-    }
-    
-    # 2. Kill Vite
+    # 1. Kill Vite
     if ($viteJob -and (Get-Process -Id $viteJob.Id -ErrorAction SilentlyContinue)) {
         Stop-Process -Id $viteJob.Id -Force
         Write-Host "  [OK] Killed Vite dev server." -ForegroundColor Green
     }
     
-    # 3. Kill orphaned headless Chrome
+    # 2. Kill orphaned headless Chrome
     $headlessChrome = Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe' AND CommandLine LIKE '%--headless%'"
     if ($headlessChrome) {
         $headlessChrome | Invoke-CimMethod -MethodName Terminate | Out-Null
@@ -111,3 +135,4 @@ try {
 }
 
 exit $agentExit
+

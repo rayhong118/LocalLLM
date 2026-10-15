@@ -163,18 +163,23 @@ async def smart_click(text: str, browser: BrowserSession, index: int = 0):
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
-                    "http://localhost:11434/api/chat",
+                    f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
+                    headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
                     json={
                         "model": config.LLM_MODEL,
                         "messages": [{"role": "user", "content": prompt}],
                         "stream": False,
-                        "format": "json",
-                        "options": {"temperature": 0, "num_ctx": 16384}
+                        "temperature": 0,
+                        "response_format": {"type": "json_object"}
                     },
                     timeout=30
                 )
                 resp_data = resp.json()
-                content = resp_data.get("message", {}).get("content", "{}")
+                content = "{}"
+                if "choices" in resp_data and len(resp_data["choices"]) > 0:
+                    content = resp_data["choices"][0].get("message", {}).get("content", "{}")
+                elif "message" in resp_data:
+                    content = resp_data.get("message", {}).get("content", "{}")
                 result_data = _json.loads(content)
                 selected_index = result_data.get("selected_index")
         except Exception as e:

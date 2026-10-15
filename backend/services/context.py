@@ -46,18 +46,23 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str,
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                "http://localhost:11434/api/chat",
+                f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
                 json={
                     "model": config.LLM_MODEL,
                     "messages": [{"role": "user", "content": eval_prompt}],
                     "stream": False,
-                    "format": "json",
-                    "think": False,
-                    "options": {"temperature": 0, "num_ctx": 4096}
+                    "temperature": 0,
+                    "response_format": {"type": "json_object"}
                 },
                 timeout=config.LLM_TIMEOUT
             )
-            data_raw = resp.json().get("message", {}).get("content", "{}")
+            res_json = resp.json()
+            data_raw = "{}"
+            if "choices" in res_json and len(res_json["choices"]) > 0:
+                data_raw = res_json["choices"][0].get("message", {}).get("content", "{}")
+            elif "message" in res_json:
+                data_raw = res_json.get("message", {}).get("content", "{}")
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"Context Evaluator: Raw LLM response: {data_raw}\n")
             data = json.loads(data_raw)

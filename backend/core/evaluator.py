@@ -81,7 +81,8 @@ async def evaluate_result(prompt: str, final_res: str, history, log_path: str = 
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
-                    "http://localhost:11434/api/chat",
+                    f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
+                    headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
                     json={
                         "model": config.LLM_MODEL,
                         "messages": [
@@ -89,14 +90,18 @@ async def evaluate_result(prompt: str, final_res: str, history, log_path: str = 
                             {"role": "user", "content": f"User Prompt: {prompt}\n\nAgent Final Output:\n{final_res}"}
                         ],
                         "stream": False,
-                        "format": "json",
-                        "options": {"temperature": 0, "num_ctx": 8192}
+                        "temperature": 0,
+                        "response_format": {"type": "json_object"}
                     },
                     timeout=15.0
                 )
                 if resp.status_code == 200:
                     res_data = resp.json()
-                    content = res_data.get("message", {}).get("content", "")
+                    content = ""
+                    if "choices" in res_data and len(res_data["choices"]) > 0:
+                        content = res_data["choices"][0].get("message", {}).get("content", "")
+                    elif "message" in res_data:
+                        content = res_data.get("message", {}).get("content", "")
                     judge_result = json.loads(content)
                     is_success = judge_result.get("success", True)
                     reason = judge_result.get("reason", "")

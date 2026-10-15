@@ -1,6 +1,11 @@
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 import httpx
 import json
 import asyncio
+from backend import config
 
 async def main():
     available_categories = [
@@ -25,23 +30,28 @@ async def main():
     )
 
     try:
-        print("Sending request to local Ollama...")
+        print("Sending request to local LM Studio...")
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                "http://localhost:11434/api/chat",
+                "http://localhost:1234/v1/chat/completions",
+                headers={"Authorization": "Bearer lm-studio"},
                 json={
-                    "model": "qwen3.5:9b",
+                    "model": config.LLM_MODEL,
                     "messages": [{"role": "user", "content": f"{selector_system}\n\nItems: {', '.join(items)}"}],
                     "stream": False,
-                    "format": "json",
-                    "think": False,
-                    "options": {"temperature": 0, "num_ctx": 4096}
+                    "temperature": 0,
+                    "response_format": {"type": "json_object"}
                 },
                 timeout=300
             )
             print("Full response:")
-            print(resp.json())
-            raw_content = resp.json().get("message", {}).get("content", "{}")
+            res_json = resp.json()
+            print(res_json)
+            raw_content = ""
+            if "choices" in res_json and len(res_json["choices"]) > 0:
+                raw_content = res_json["choices"][0].get("message", {}).get("content", "{}")
+            elif "message" in res_json:
+                raw_content = res_json.get("message", {}).get("content", "{}")
             print("Response raw content:")
             print(raw_content)
             data = json.loads(raw_content)
@@ -50,7 +60,7 @@ async def main():
                 print(f"  - Item: '{m.get('item')}' -> Identified Category: '{m.get('category')}'")
     except Exception as e:
         import traceback
-        print(f"Error calling Ollama: {e}")
+        print(f"Error calling LM Studio: {e}")
         traceback.print_exc()
 
 if __name__ == "__main__":

@@ -3,25 +3,200 @@ import json
 import re
 import logging
 from datetime import datetime
-from typing import Optional, Any
+from typing import Optional, Any, List, Dict
+import httpx
 
-# browser-use imports
-from browser_use.llm.ollama.serializer import OllamaMessageSerializer
-from browser_use import ChatOllama
+from backend import config
 from browser_use.llm.views import ChatInvokeCompletion
 from browser_use.llm.exceptions import ModelProviderError
 
-class JsonStrippingChatOllama(ChatOllama):
-    """Refined ChatOllama wrapper with multi-stage JSON repair and Qwen/Gemma residency."""
+# Attempt imports for base chat model
+try:
+    from browser_use import ChatOpenAI
+    _BaseChatModel = ChatOpenAI
+except Exception:
+    try:
+        from browser_use import ChatOllama
+        _BaseChatModel = ChatOllama
+    except Exception:
+        from browser_use.llm.base import BaseChatModel
+        _BaseChatModel = BaseChatModel
+
+def serialize_messages(messages) -> list[dict]:
+    """Serialize browser-use / LangChain messages into standard OpenAI chat format."""
+    try:
+        from browser_use.llm.openai.serializer import OpenAIMessageSerializer
+        return OpenAIMessageSerializer.serialize_messages(messages)
+    except Exception:
+        pass
+    try:
+        from browser_use.llm.ollama.serializer import OllamaMessageSerializer
+        return OllamaMessageSerializer.serialize_messages(messages)
+    except Exception:
+        pass
+
+    formatted = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            formatted.append(msg)
+            continue
+        role = getattr(msg, 'role', None) or getattr(msg, 'type', 'user')
+        if role in ('human', 'user'):
+            role = 'user'
+        elif role in ('ai', 'assistant'):
+            role = 'assistant'
+        elif role in ('system',):
+            role = 'system'
+        content = getattr(msg, 'content', str(msg))
+        formatted.append({"role": role, "content": content})
+    return formatted
+
+
+class LLMMessage:
+    def __init__(self, content: str):
+        self.content = content
+
+
+class LLMChatResponse:
+    def __init__(self, content: str):
+        self.message = LLMMessage(content)
+
+
+class LMStudioClientAdapter:
+    """Adapter mimicking client.chat(...) for LM Studio / OpenAI endpoints."""
+    def __init__(self, base_url: str, api_key: str, timeout: float):
+        self.base_url = base_url
+        self.api_key = api_key
+        self.timeout = timeout
+
+    async def chat(self, model: str, messages: list, options: dict = None, format: Any = None, **kwargs) -> LLMChatResponse:
+        endpoint = f"{self.base_url.rstrip('/')}/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+        temp = 0.0
+        if options and "temperature" in options:
+            temp = float(options["temperature"])
+        
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temp,
+            "stream": False,
+        }
+        if format == "json":
+            payload["response_format"] = {"type": "json_object"}
+        if options and "num_predict" in options:
+            payload["max_tokens"] = options["num_predict"]
+            
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(endpoint, headers=headers, json=payload)
+            if resp.status_code != 200:
+                raise RuntimeError(f"LM Studio returned HTTP {resp.status_code}: {resp.text[:200]}")
+            data = resp.json()
+            content = ""
+            choices = data.get("choices", [])
+            if choices and len(choices) > 0:
+                content = choices[0].get("message", {}).get("content", "") or ""
+            elif "message" in data:
+                content = data.get("message", {}).get("content", "") or ""
+            return LLMChatResponse(content=content)
+
+
+async def query_llm(
+    messages: list[dict],
+    model: Optional[str] = None,
+    temperature: float = 0.0,
+    json_mode: bool = True,
+    timeout: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+    log_path: Optional[str] = None,
+) -> str:
+    """Direct helper to call LM Studio chat completions and return clean text response."""
+    base_url = config.LLM_BASE_URL
+    api_key = config.LLM_API_KEY
+    model = model or config.LLM_MODEL
+    timeout = timeout or config.LLM_TIMEOUT
+    endpoint = f"{base_url.rstrip('/')}/chat/completions"
     
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": False,
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    if max_tokens:
+        payload["max_tokens"] = max_tokens
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(endpoint, headers=headers, json=payload)
+        if resp.status_code != 200:
+            err = f"LM Studio HTTP {resp.status_code}: {resp.text[:200]}"
+            if log_path:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"LLM Error: {err}\n")
+            raise RuntimeError(err)
+        
+        data = resp.json()
+        raw = ""
+        choices = data.get("choices", [])
+        if choices and len(choices) > 0:
+            raw = choices[0].get("message", {}).get("content", "") or ""
+        elif "message" in data:
+            raw = data.get("message", {}).get("content", "") or ""
+            
+        raw = re.sub(r'<(thought|reasoning|thinking|think)>.*?(?:</\1>|$)', '', raw, flags=re.IGNORECASE | re.DOTALL).strip()
+        raw = re.sub(r'<\|channel\>thought.*?(?:<channel\|>|$)', '', raw, flags=re.IGNORECASE | re.DOTALL).strip()
+        raw = raw.replace('---<channel|>', '').replace('<channel|>', '').replace('---', '').strip()
+        return raw
+
+
+class JsonStrippingChatLMStudio(_BaseChatModel):
+    """Refined LM Studio (OpenAI-compatible) wrapper with multi-stage JSON repair and reasoning stripping."""
+    
+    model: str = config.LLM_MODEL
+    base_url: str = config.LLM_BASE_URL
+    api_key: str = config.LLM_API_KEY
+    timeout: float = float(config.LLM_TIMEOUT)
+    temperature: float = float(config.TEMPERATURE)
+    context_window: int = config.CONTEXT_WINDOW
+    log_path: Optional[str] = None
+
     # Circuit breaker: abort if LLM fails to produce valid JSON N times in a row
-    MAX_CONSECUTIVE_FAILURES = 5
+    MAX_CONSECUTIVE_FAILURES: int = 5
     _consecutive_failures: int = 0
     
     # Action-level deduplication: track last N actions to detect semantic loops
     _recent_actions: list = []
     _action_repeat_count: int = 0
-    MAX_ACTION_REPEATS = 3  # After this many identical actions, force failure
+    MAX_ACTION_REPEATS: int = 3  # After this many identical actions, force failure
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        if "base_url" not in data and not getattr(self, "base_url", None):
+            self.base_url = config.LLM_BASE_URL
+        if "api_key" not in data and not getattr(self, "api_key", None):
+            self.api_key = config.LLM_API_KEY
+        if "timeout" not in data and not getattr(self, "timeout", None):
+            self.timeout = float(config.LLM_TIMEOUT)
+        if "temperature" not in data and not getattr(self, "temperature", None):
+            self.temperature = float(config.TEMPERATURE)
+        if "context_window" not in data and not getattr(self, "context_window", None):
+            self.context_window = config.CONTEXT_WINDOW
+
+    def get_client(self):
+        return LMStudioClientAdapter(self.base_url, self.api_key, self.timeout)
+
+    @property
+    def name(self) -> str:
+        return f"lm-studio-{self.model}"
 
     async def ainvoke(self, messages, output_format=None, **kwargs) -> ChatInvokeCompletion:
         # 0. Early intercept for Bot Detection in the page DOM
@@ -49,18 +224,37 @@ class JsonStrippingChatOllama(ChatOllama):
                 except Exception as e:
                     print(f"DEBUG - Fast fail validation error: {e}")
 
-        ollama_messages = OllamaMessageSerializer.serialize_messages(messages)
+        lm_messages = serialize_messages(messages)
         format_param = output_format.model_json_schema() if output_format else None
         
         async def call_llm(fmt):
             try:
-                resp = await self.get_client().chat(
-                    model=self.model,
-                    messages=ollama_messages,
-                    format=fmt,
-                    options=self.ollama_options,
-                )
-                return resp.message.content or ''
+                endpoint = f"{self.base_url.rstrip('/')}/chat/completions"
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}"
+                }
+                payload = {
+                    "model": self.model,
+                    "messages": lm_messages,
+                    "temperature": self.temperature,
+                    "stream": False,
+                }
+                if fmt == "json":
+                    payload["response_format"] = {"type": "json_object"}
+                elif isinstance(fmt, dict):
+                    payload["response_format"] = {"type": "json_object"}
+                
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(endpoint, headers=headers, json=payload)
+                    if resp.status_code != 200:
+                        print(f"DEBUG - LLM Call Error HTTP {resp.status_code}: {resp.text[:200]}")
+                        return None
+                    data = resp.json()
+                    choices = data.get("choices", [])
+                    if choices and len(choices) > 0:
+                        return choices[0].get("message", {}).get("content", "") or ""
+                    return data.get("message", {}).get("content", "") or ""
             except Exception as e:
                 print(f"DEBUG - LLM Call Error: {e}")
                 return None
@@ -71,22 +265,22 @@ class JsonStrippingChatOllama(ChatOllama):
             content = await call_llm("json")
         
         # If still empty, likely context overflow — retry with truncated messages
-        if not content and len(ollama_messages) > 2:
+        if not content and len(lm_messages) > 2:
             print("DEBUG - LLM returned empty. Likely context overflow. Retrying with truncated messages...")
             # Keep only system message + last message (current page state)
-            truncated = [ollama_messages[0], ollama_messages[-1]]
+            truncated = [lm_messages[0], lm_messages[-1]]
             
             # Truncate the last message content if it's extremely long
             if isinstance(truncated[-1].get('content', ''), str) and len(truncated[-1]['content']) > 8000:
                 truncated[-1] = dict(truncated[-1])
                 truncated[-1]['content'] = truncated[-1]['content'][:8000] + "\n\n[DOM TRUNCATED - page too large. Focus on visible elements and complete your current goal.]"
             
-            orig_messages = ollama_messages
-            ollama_messages = truncated
+            orig_messages = lm_messages
+            lm_messages = truncated
             content = await call_llm(format_param)
             if not content:
                 content = await call_llm("json")
-            ollama_messages = orig_messages  # restore
+            lm_messages = orig_messages  # restore
         
         if not content:
             raise ModelProviderError(message="LLM returned no content.", model=self.name)
@@ -180,13 +374,17 @@ class JsonStrippingChatOllama(ChatOllama):
         # 1. Extract thought content if present to preserve it before stripping
         thought_match = re.search(r'<(thought|reasoning|thinking|think)>(.*?)</\1>', text, flags=re.IGNORECASE | re.DOTALL)
         thought_content = thought_match.group(2).strip() if thought_match else ""
+        if not thought_content:
+            channel_match = re.search(r'<\|channel\>thought(.*?)<channel\|>', text, flags=re.IGNORECASE | re.DOTALL)
+            thought_content = channel_match.group(1).strip() if channel_match else ""
 
         # 2. Strip tags
         text = re.sub(r'<(thought|reasoning|thinking|think)>.*?(?:</\1>|$)', '', text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r'<\|channel\>thought.*?(?:<channel\|>|$)', '', text, flags=re.IGNORECASE | re.DOTALL)
         
         # 3. Strip other wrappers
         text = re.sub(r'<action>\s*([\[{].*?[\]}])\s*</action>', r'\1', text, flags=re.IGNORECASE | re.DOTALL)
-        text = text.replace('---<channel|>', '').replace('---', '')
+        text = text.replace('---<channel|>', '').replace('<channel|>', '').replace('---', '')
 
         if '```json' in text:
             text = text.split('```json')[-1].split('```')[0]
@@ -453,3 +651,7 @@ class JsonStrippingChatOllama(ChatOllama):
         log_path = getattr(self, "log_path", "format_error_trace.txt")
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"\n--- FAILED LLM OUTPUT {datetime.now()} ---\n{content}\n--- END ---\n")
+
+# Backwards compatibility alias
+JsonStrippingChatOllama = JsonStrippingChatLMStudio
+
