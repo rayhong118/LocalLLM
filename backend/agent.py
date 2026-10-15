@@ -19,4 +19,5 @@ if __name__ == "__main__":
         asyncio.run(run_agent_task(int(sys.argv[1]), sys.argv[2]))
     else:
         # Default for local testing
-        asyncio.run(run_agent_task(1, "Search for latest news on Ollama"))
+        asyncio.run(run_agent_task(1, "Search for latest news on LM Studio"))
+

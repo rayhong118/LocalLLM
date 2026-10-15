@@ -98,7 +98,8 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                "http://localhost:11434/api/chat",
+                f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
                 json={
                     "model": config.LLM_MODEL,
                     "messages": [
@@ -106,16 +107,15 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
                         {"role": "user", "content": user_msg}
                     ],
                     "stream": False,
-                    "format": "json",
-                    "think": False,
-                    "options": {"temperature": 0, "num_ctx": 8192}
+                    "temperature": 0,
+                    "response_format": {"type": "json_object"}
                 },
                 timeout=config.LLM_TIMEOUT
             )
             
             # Detailed response diagnostics
             if resp.status_code != 200:
-                err_msg = f"Ollama returned HTTP {resp.status_code}: {resp.text[:200]}"
+                err_msg = f"LM Studio returned HTTP {resp.status_code}: {resp.text[:200]}"
                 logger.error(f"[_llm_match_cards] {err_msg}")
                 if log_path:
                     with open(log_path, "a", encoding="utf-8") as f:
@@ -123,10 +123,14 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
                 return None
             
             resp_json = resp.json()
-            raw = resp_json.get("message", {}).get("content", "")
+            raw = ""
+            if "choices" in resp_json and len(resp_json["choices"]) > 0:
+                raw = resp_json["choices"][0].get("message", {}).get("content", "")
+            elif "message" in resp_json:
+                raw = resp_json.get("message", {}).get("content", "")
             
             if not raw or not raw.strip():
-                err_msg = f"Ollama returned empty content. Full response keys: {list(resp_json.keys())}, done: {resp_json.get('done')}, done_reason: {resp_json.get('done_reason')}"
+                err_msg = f"LM Studio returned empty content."
                 logger.error(f"[_llm_match_cards] {err_msg}")
                 if log_path:
                     with open(log_path, "a", encoding="utf-8") as f:
@@ -171,7 +175,8 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
                     card_desc = card_texts[idx][:200]
                     try:
                         verify_resp = await client.post(
-                            "http://localhost:11434/api/chat",
+                            f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
+                            headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
                             json={
                                 "model": config.LLM_MODEL,
                                 "messages": [
@@ -179,14 +184,18 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
                                     {"role": "user", "content": f"Search term: \"{keyword}\"\nCard: \"{card_desc}\""}
                                 ],
                                 "stream": False,
-                                "format": "json",
-                                "think": False,
-                                "options": {"temperature": 0, "num_ctx": 4096}
+                                "temperature": 0,
+                                "response_format": {"type": "json_object"}
                             },
                             timeout=15
                         )
                         if verify_resp.status_code == 200:
-                            v_raw = verify_resp.json().get("message", {}).get("content", "{}")
+                            v_json = verify_resp.json()
+                            v_raw = ""
+                            if "choices" in v_json and len(v_json["choices"]) > 0:
+                                v_raw = v_json["choices"][0].get("message", {}).get("content", "{}")
+                            elif "message" in v_json:
+                                v_raw = v_json.get("message", {}).get("content", "{}")
                             v_data = json.loads(v_raw)
                             if v_data.get("is_match", False):
                                 verified.append(idx)
@@ -215,14 +224,14 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
             return valid
 
     except httpx.TimeoutException:
-        err_msg = f"Ollama request timed out after {config.LLM_TIMEOUT}s for keyword '{keyword}' ({len(card_texts)} cards)"
+        err_msg = f"LM Studio request timed out after {config.LLM_TIMEOUT}s for keyword '{keyword}' ({len(card_texts)} cards)"
         logger.error(f"[_llm_match_cards] {err_msg}")
         if log_path:
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"PRE-FLIGHT LLM MATCH FAILED (TIMEOUT): {err_msg}\n")
         return None
     except httpx.ConnectError as ce:
-        err_msg = f"Cannot connect to Ollama at localhost:11434: {ce}"
+        err_msg = f"Cannot connect to LM Studio at {config.LLM_BASE_URL}: {ce}"
         logger.error(f"[_llm_match_cards] {err_msg}")
         if log_path:
             with open(log_path, "a", encoding="utf-8") as f:
@@ -1180,18 +1189,23 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
             import httpx
             async with httpx.AsyncClient() as client:
                 extraction_resp = await client.post(
-                    "http://localhost:11434/api/chat",
+                    f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
+                    headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
                     json={
                         "model": config.LLM_MODEL,
                         "messages": [{"role": "user", "content": f"{extraction_system}\n\nPrompt: {prompt}"}],
                         "stream": False,
-                        "format": "json",
-                        "think": False,
-                        "options": {"temperature": 0, "num_ctx": 4096}
+                        "temperature": 0,
+                        "response_format": {"type": "json_object"}
                     },
                     timeout=config.LLM_TIMEOUT
                 )
-                raw_content = extraction_resp.json().get("message", {}).get("content", "{}")
+                ext_json = extraction_resp.json()
+                raw_content = ""
+                if "choices" in ext_json and len(ext_json["choices"]) > 0:
+                    raw_content = ext_json["choices"][0].get("message", {}).get("content", "{}")
+                elif "message" in ext_json:
+                    raw_content = ext_json.get("message", {}).get("content", "{}")
                 import json
                 data = json.loads(raw_content)
                 items = data.get("items", [])
@@ -1230,18 +1244,23 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
                 import httpx
                 async with httpx.AsyncClient() as client:
                     selector_resp = await client.post(
-                        "http://localhost:11434/api/chat",
+                        f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
+                        headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
                         json={
                             "model": config.LLM_MODEL,
                             "messages": [{"role": "user", "content": f"{selector_system}\n\nItems: {', '.join(items)}"}],
                             "stream": False,
-                            "format": "json",
-                            "think": False,
-                            "options": {"temperature": 0, "num_ctx": 4096}
+                            "temperature": 0,
+                            "response_format": {"type": "json_object"}
                         },
                         timeout=config.LLM_TIMEOUT
                     )
-                    raw_content = selector_resp.json().get("message", {}).get("content", "{}")
+                    sel_json = selector_resp.json()
+                    raw_content = ""
+                    if "choices" in sel_json and len(sel_json["choices"]) > 0:
+                        raw_content = sel_json["choices"][0].get("message", {}).get("content", "{}")
+                    elif "message" in sel_json:
+                        raw_content = sel_json.get("message", {}).get("content", "{}")
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"PRE-FLIGHT: Categorization response: {raw_content}\n")
                     

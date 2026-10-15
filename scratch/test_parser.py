@@ -2,7 +2,7 @@
 import asyncio
 from pydantic import BaseModel
 from typing import List, Any
-from llm_wrapper import JsonStrippingChatOllama
+from backend.services.llm import JsonStrippingChatLMStudio as JsonStrippingChatOllama
 
 class MockSchema(BaseModel):
     thinking: str

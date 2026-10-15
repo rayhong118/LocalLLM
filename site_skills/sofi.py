@@ -174,7 +174,8 @@ async def _check_job_description_with_llm(client: httpx.AsyncClient, title: str,
 
     try:
         resp = await client.post(
-            "http://127.0.0.1:11434/api/chat",
+            f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
             json={
                 "model": config.LLM_MODEL,
                 "messages": [
@@ -182,13 +183,19 @@ async def _check_job_description_with_llm(client: httpx.AsyncClient, title: str,
                     {"role": "user", "content": user_msg}
                 ],
                 "stream": False,
-                "format": "json",
-                "options": {"temperature": 0, "num_ctx": 4096}
+                "temperature": 0,
+                "response_format": {"type": "json_object"}
             },
             timeout=config.LLM_TIMEOUT
         )
         if resp.status_code == 200:
-            data = json.loads(resp.json().get("message", {}).get("content", "{}"))
+            res_json = resp.json()
+            raw = ""
+            if "choices" in res_json and len(res_json["choices"]) > 0:
+                raw = res_json["choices"][0].get("message", {}).get("content", "{}")
+            elif "message" in res_json:
+                raw = res_json.get("message", {}).get("content", "{}")
+            data = json.loads(raw)
             return data.get("is_match", False), data.get("reason", "")
     except Exception as e:
         logger.error(f"[sofi] Error checking description for {title}: {e}")

@@ -12,7 +12,7 @@ from browser_use.agent.views import MessageCompactionSettings
 from backend import config
 from backend.database.session import SessionLocal
 from backend.database.models import Task as DBTask, Output
-from backend.services.llm import JsonStrippingChatOllama
+from backend.services.llm import JsonStrippingChatLMStudio
 from backend.services.context import get_relevant_context_str
 from backend.automation.skills import controller, get_skill_descriptions
 from backend.automation.browser_utils import cleanup_headless_chrome
@@ -47,7 +47,7 @@ class AgentPipeline:
             await self.plan()
             self.pre_flight_data = await self.pre_flight()
             if self.pre_flight_data == "PREFLIGHT_FATAL":
-                raise RuntimeError("Pre-flight failed: LLM model errors prevented coupon matching. Check Ollama server status and resource availability.")
+                raise RuntimeError("Pre-flight failed: LLM model errors prevented coupon matching. Check LM Studio server status and resource availability.")
             history = await self.execute(self.pre_flight_data)
             await self.evaluate(history)
         except Exception as e:
@@ -97,18 +97,13 @@ class AgentPipeline:
 
         cleanup_headless_chrome()
 
-        self.llm = JsonStrippingChatOllama(
+        self.llm = JsonStrippingChatLMStudio(
             model=config.LLM_MODEL,
+            base_url=config.LLM_BASE_URL,
+            api_key=config.LLM_API_KEY,
             timeout=config.LLM_TIMEOUT,
-            ollama_options={
-                "temperature": config.TEMPERATURE,
-                "num_ctx": config.CONTEXT_WINDOW, 
-                "num_predict": 2048,
-                "num_thread": 8,
-                "repeat_penalty": 1.5,
-                "top_k": 40,
-                "top_p": 0.9
-            }
+            temperature=config.TEMPERATURE,
+            context_window=config.CONTEXT_WINDOW,
         )
         self.llm.log_path = self.log_path
 
