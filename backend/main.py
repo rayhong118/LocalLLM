@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from backend.database import session as database
 from backend.database.session import SessionLocal
-from backend.database.models import Task as DBTask, Output as DBOutput, Context as DBContext, SavedTask as DBSavedTask
+from backend.database.models import Task as DBTask, Output as DBOutput, Context as DBContext
 from backend import agent
 import uvicorn
 import os
@@ -33,26 +33,6 @@ class TaskCreate(BaseModel):
     hour_of_day: Optional[int] = None
     day_of_week: Optional[int] = None # 0-6 (0=Mon, 6=Sun)
     day_of_month: Optional[int] = None # 1-31
-
-class SavedTaskCreate(BaseModel):
-    prompt: str
-    frequency: str = "ONCE"
-    hour_of_day: Optional[int] = None
-    day_of_week: Optional[int] = None
-    day_of_month: Optional[int] = None
-
-class SavedTaskSchema(BaseModel):
-    id: int
-    prompt: str
-    frequency: str
-    hour_of_day: Optional[int] = None
-    day_of_week: Optional[int] = None
-    day_of_month: Optional[int] = None
-    created_at: datetime
-
-    model_config = {
-        "from_attributes": True
-    }
 
 class ContextCreate(BaseModel):
     name: str
@@ -474,59 +454,7 @@ async def cancel_task(task_id: int, db: Session = Depends(get_db)):
     db.refresh(db_task)
     return db_task
 
-# Saved Task endpoints
-@app.get("/saved_tasks", response_model=List[SavedTaskSchema])
-def list_saved_tasks(db: Session = Depends(get_db)):
-    return db.query(DBSavedTask).order_by(DBSavedTask.created_at.desc()).all()
 
-@app.post("/saved_tasks", response_model=SavedTaskSchema)
-def create_saved_task(task: SavedTaskCreate, db: Session = Depends(get_db)):
-    db_saved = DBSavedTask(
-        prompt=task.prompt,
-        frequency=task.frequency,
-        hour_of_day=task.hour_of_day,
-        day_of_week=task.day_of_week,
-        day_of_month=task.day_of_month
-    )
-    db.add(db_saved)
-    db.commit()
-    db.refresh(db_saved)
-    return db_saved
-
-@app.delete("/saved_tasks/{task_id}")
-def delete_saved_task(task_id: int, db: Session = Depends(get_db)):
-    db_saved = db.query(DBSavedTask).filter(DBSavedTask.id == task_id).first()
-    if not db_saved:
-        raise HTTPException(status_code=404, detail="Saved task not found")
-    db.delete(db_saved)
-    db.commit()
-    return {"message": "Saved task deleted successfully"}
-
-@app.post("/saved_tasks/{task_id}/run", response_model=TaskSchema)
-async def run_saved_task(task_id: int, db: Session = Depends(get_db)):
-    db_saved = db.query(DBSavedTask).filter(DBSavedTask.id == task_id).first()
-    if not db_saved:
-        raise HTTPException(status_code=404, detail="Saved task not found")
-    
-    # Calculate next run time
-    next_run = calculate_next_run(db_saved.frequency, db_saved.hour_of_day, db_saved.day_of_week, db_saved.day_of_month)
-    is_once = db_saved.frequency == "ONCE"
-    if is_once:
-        next_run = None
-
-    db_task = DBTask(
-        prompt=db_saved.prompt,
-        status="PENDING",
-        frequency=db_saved.frequency,
-        hour_of_day=db_saved.hour_of_day,
-        day_of_week=db_saved.day_of_week,
-        day_of_month=db_saved.day_of_month,
-        next_run_at=next_run
-    )
-    db.add(db_task)
-    db.commit()
-    db.refresh(db_task)
-    return db_task
 
 if __name__ == "__main__":
     uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=True)

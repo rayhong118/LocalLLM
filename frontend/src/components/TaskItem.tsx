@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { marked } from 'marked';
-import { Trash2, Play, RotateCcw, XCircle, Copy, Check, ChevronDown, ChevronUp, Clock, CalendarDays, Sparkles } from 'lucide-react';
+import { Trash2, Play, RotateCcw, XCircle, Copy, Check, ChevronDown, ChevronUp, Clock, CalendarDays } from 'lucide-react';
 import { Task } from '../store';
 
 interface TaskItemProps {
@@ -20,8 +20,6 @@ export const TaskItem: React.FC<TaskItemProps> = ({
 }) => {
     const [isExpanded, setIsExpanded] = useState(false);
     const [copied, setCopied] = useState(false);
-    const [saved, setSaved] = useState(false);
-    const [saving, setSaving] = useState(false);
     const [tzAbbreviation, setTzAbbreviation] = useState('');
 
     useEffect(() => {
@@ -54,32 +52,6 @@ export const TaskItem: React.FC<TaskItemProps> = ({
             document.body.removeChild(ta);
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
-        }
-    };
-
-    const handleSaveToCommon = async (e: React.MouseEvent) => {
-        e.stopPropagation();
-        setSaving(true);
-        try {
-            const res = await fetch('http://localhost:8000/saved_tasks', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    prompt: task.prompt,
-                    frequency: task.frequency,
-                    hour_of_day: task.hour_of_day,
-                    day_of_week: task.day_of_week,
-                    day_of_month: task.day_of_month
-                })
-            });
-            if (res.ok) {
-                setSaved(true);
-                setTimeout(() => setSaved(false), 2000);
-            }
-        } catch (err) {
-            console.error('Failed to save to commonly used tasks:', err);
-        } finally {
-            setSaving(false);
         }
     };
 
@@ -214,39 +186,21 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                         </button>
                     )}
                     {(task.status === 'COMPLETED' || task.status === 'SUCCESS' || task.status === 'PARTIAL_SUCCESS' || task.status === 'NO_RESULT') && (
-                        <div style={{ display: 'flex', gap: '0.5rem' }}>
-                            <button 
-                                className="secondary" 
-                                style={{ 
-                                    fontSize: '0.75rem', 
-                                    padding: '0.35rem 0.75rem', 
-                                    borderRadius: '6px',
-                                    borderColor: copied ? 'var(--color-success)' : undefined,
-                                    color: copied ? 'var(--color-success)' : undefined,
-                                    background: copied ? 'var(--color-success-bg)' : undefined
-                                }}
-                                onClick={handleCopy}
-                            >
-                                {copied ? <Check size={12} /> : <Copy size={12} />}
-                                {copied ? 'Copied!' : 'Copy'}
-                            </button>
-                            <button 
-                                className="secondary" 
-                                style={{ 
-                                    fontSize: '0.75rem', 
-                                    padding: '0.35rem 0.75rem', 
-                                    borderRadius: '6px',
-                                    borderColor: saved ? 'var(--color-success)' : undefined,
-                                    color: saved ? 'var(--color-success)' : undefined,
-                                    background: saved ? 'var(--color-success-bg)' : undefined
-                                }}
-                                onClick={handleSaveToCommon}
-                                disabled={saving}
-                            >
-                                {saved ? <Check size={12} /> : <Sparkles size={12} />}
-                                {saved ? 'Saved!' : 'Save to Common'}
-                            </button>
-                        </div>
+                        <button 
+                            className="secondary" 
+                            style={{ 
+                                fontSize: '0.75rem', 
+                                padding: '0.35rem 0.75rem', 
+                                borderRadius: '6px',
+                                borderColor: copied ? 'var(--color-success)' : undefined,
+                                color: copied ? 'var(--color-success)' : undefined,
+                                background: copied ? 'var(--color-success-bg)' : undefined
+                            }}
+                            onClick={handleCopy}
+                        >
+                            {copied ? <Check size={12} /> : <Copy size={12} />}
+                            {copied ? 'Copied!' : 'Copy'}
+                        </button>
                     )}
                     {task.status === 'RUNNING' && (
                         <button 
