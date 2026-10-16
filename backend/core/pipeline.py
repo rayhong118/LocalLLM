@@ -304,11 +304,11 @@ class AgentPipeline:
         if self.pre_flight_data and self.pre_flight_data not in ("PREFLIGHT_FATAL", ""):
             final_res = self.pre_flight_data
 
-        is_success = await evaluate_result(self.prompt, final_res, history, self.log_path)
+        status = await evaluate_result(self.prompt, final_res, history, self.log_path)
         
-        self.task.status = "COMPLETED" if is_success else "FAILED"
+        self.task.status = status
         self.db.add(Output(task_id=self.task_id, content=final_res))
-        self.log(f"Final Success State: {is_success}\nFinal Result: {final_res}")
+        self.log(f"Final Task Outcome: {status}\nFinal Result: {final_res}")
         self.db.commit()
 
         # Trigger Telegram notification if criteria met

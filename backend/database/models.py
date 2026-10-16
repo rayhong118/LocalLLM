@@ -10,7 +10,7 @@ class Task(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     prompt = Column(Text, nullable=False)
-    status = Column(String, default="PENDING") # PENDING, RUNNING, COMPLETED, FAILED
+    status = Column(String, default="PENDING") # PENDING, RUNNING, SUCCESS, PARTIAL_SUCCESS, NO_RESULT, FAILED, CANCELLED (legacy COMPLETED)
     
     # Scheduling fields
     frequency = Column(String, default="ONCE") # ONCE, DAILY, WEEKLY, MONTHLY

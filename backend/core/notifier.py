@@ -32,7 +32,15 @@ async def send_telegram_notification(task_id: int, prompt: str, status: str, res
         logger.info("[Telegram] Notification skipped: Credentials not configured.")
         return
 
-    status_emoji = "✅" if status == "COMPLETED" else "❌"
+    status_emojis = {
+        "SUCCESS": "✅",
+        "COMPLETED": "✅",
+        "PARTIAL_SUCCESS": "🟡",
+        "NO_RESULT": "⚪",
+        "FAILED": "❌",
+        "CANCELLED": "⏹️",
+    }
+    status_emoji = status_emojis.get(status, "📋")
     escaped_prompt = html.escape(prompt)
     formatted_result = markdown_to_telegram_html(result_content)
     

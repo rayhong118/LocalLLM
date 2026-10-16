@@ -164,7 +164,9 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                                 task.frequency === 'DAILY' ? 'var(--color-info-bg)' :
                                 task.frequency === 'WEEKLY' ? 'rgba(168, 85, 247, 0.15)' :
                                 task.frequency === 'MONTHLY' ? 'rgba(16, 185, 129, 0.15)' :
-                                task.status === 'COMPLETED' ? 'var(--color-success-bg)' :
+                                (task.status === 'SUCCESS' || task.status === 'COMPLETED') ? 'var(--color-success-bg)' :
+                                task.status === 'PARTIAL_SUCCESS' ? 'rgba(245, 158, 11, 0.15)' :
+                                task.status === 'NO_RESULT' ? 'rgba(148, 163, 184, 0.15)' :
                                 task.status === 'RUNNING' ? 'var(--color-warning-bg)' :
                                 task.status === 'FAILED' ? 'var(--color-error-bg)' :
                                 'var(--color-neutral-bg)',
@@ -172,13 +174,19 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                                 task.frequency === 'DAILY' ? 'var(--color-info)' :
                                 task.frequency === 'WEEKLY' ? '#a855f7' :
                                 task.frequency === 'MONTHLY' ? '#10b981' :
-                                task.status === 'COMPLETED' ? 'var(--color-success)' :
+                                (task.status === 'SUCCESS' || task.status === 'COMPLETED') ? 'var(--color-success)' :
+                                task.status === 'PARTIAL_SUCCESS' ? '#f59e0b' :
+                                task.status === 'NO_RESULT' ? '#94a3b8' :
                                 task.status === 'RUNNING' ? 'var(--color-warning)' :
                                 task.status === 'FAILED' ? 'var(--color-error)' :
                                 'var(--color-neutral)'
                         }}
                     >
-                        {task.frequency !== 'ONCE' ? task.frequency : task.status}
+                        {task.frequency !== 'ONCE' ? task.frequency : (
+                            task.status === 'PARTIAL_SUCCESS' ? 'PARTIAL SUCCESS' :
+                            task.status === 'NO_RESULT' ? 'NO RESULT' :
+                            task.status
+                        )}
                     </span>
                     <span style={{ fontWeight: 600, color: 'var(--color-text-body)', lineHeight: 1.4, fontSize: '0.95rem', wordBreak: 'break-word' }}>
                         {task.prompt}
@@ -196,7 +204,7 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                             <Play size={12} /> Run Now
                         </button>
                     )}
-                    {(task.status === 'FAILED' || task.status === 'CANCELLED') && task.frequency === 'ONCE' && (
+                    {(task.status === 'FAILED' || task.status === 'CANCELLED' || task.status === 'NO_RESULT') && task.frequency === 'ONCE' && (
                         <button 
                             className="primary" 
                             style={{ fontSize: '0.75rem', padding: '0.35rem 0.75rem', borderRadius: '6px' }}
@@ -205,7 +213,7 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                             <RotateCcw size={12} /> Retry
                         </button>
                     )}
-                    {task.status === 'COMPLETED' && (
+                    {(task.status === 'COMPLETED' || task.status === 'SUCCESS' || task.status === 'PARTIAL_SUCCESS' || task.status === 'NO_RESULT') && (
                         <div style={{ display: 'flex', gap: '0.5rem' }}>
                             <button 
                                 className="secondary" 

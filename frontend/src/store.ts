@@ -11,7 +11,7 @@ export type TaskFrequency = 'ONCE' | 'DAILY' | 'WEEKLY' | 'MONTHLY';
 export interface Task {
     id: number;
     prompt: string;
-    status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'DAILY' | 'CANCELLED';
+    status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'SUCCESS' | 'PARTIAL_SUCCESS' | 'NO_RESULT' | 'FAILED' | 'DAILY' | 'CANCELLED';
     frequency: TaskFrequency;
     hour_of_day: number | null;
     day_of_week?: number | null;
