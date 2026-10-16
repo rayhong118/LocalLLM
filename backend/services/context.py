@@ -5,10 +5,24 @@ import httpx
 from backend import config
 from backend.database.models import Context
 
+SITE_ALIASES = {
+    "wsdot": ["wsdot", "highway alert", "highway alerts", "traffic alert", "traffic alerts", "wa traffic", "washington traffic", "wsdot.wa.gov", "king county alerts", "king county traffic"],
+    "safeway": ["safeway"],
+    "weee": ["weee", "sayweee"],
+    "sofi": ["sofi"]
+}
+
 def _detect_site_from_prompt(prompt: str) -> str:
-    """Deterministic check: if prompt contains a known site skill name, return it immediately.
-    This prevents the LLM from hallucinating the wrong plugin when the site name is explicit."""
+    """Deterministic check: if prompt contains a known site skill name or alias, return it immediately.
+    This prevents the LLM from hallucinating the wrong plugin when the site name or intent is explicit."""
     prompt_lower = prompt.lower()
+    
+    # 1. Check aliases first
+    for site, aliases in SITE_ALIASES.items():
+        if any(alias in prompt_lower for alias in aliases):
+            return site
+
+    # 2. Check site_skills filenames
     skill_dir = "site_skills"
     if os.path.isdir(skill_dir):
         for fname in os.listdir(skill_dir):

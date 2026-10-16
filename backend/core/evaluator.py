@@ -79,6 +79,12 @@ def _evaluate_structured_summary(lower_res: str) -> str | None:
         if not has_clipped_section and not re.search(r'clipped \d+', lower_res):
             return "NO_RESULT"
 
+    # 4. WSDOT Traffic / Alerts style summary: "X alerts found in King County ... out of N statewide alerts"
+    wsdot_match = re.search(r'(\d+)\s*alerts?\s*(?:found\s*in|in)\s*([a-z\s]+?)\s*.*?out\s*of\s*(\d+)\s*statewide', lower_res)
+    if wsdot_match:
+        alerts_found = int(wsdot_match.group(1))
+        return "SUCCESS" if alerts_found > 0 else "NO_RESULT"
+
     return None
 
 async def evaluate_result(prompt: str, final_res: str, history=None, log_path: str = None) -> str:
