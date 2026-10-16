@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Calendar, Clock, Sparkles } from 'lucide-react';
-import { TaskFrequency } from '../store';
+import { Calendar, Clock, Sparkles, BookOpen, Plus, X } from 'lucide-react';
+import { TaskFrequency, Context } from '../store';
+import { ContextSelectModal } from './ContextSelectModal';
 
 interface TaskFormProps {
     onTaskCreated: () => void;
@@ -13,6 +14,8 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
     const [hourOfDay, setHourOfDay] = useState<number>(new Date().getHours());
     const [dayOfWeek, setDayOfWeek] = useState<number>(new Date().getDay() === 0 ? 6 : new Date().getDay() - 1); // 0=Mon..6=Sun
     const [dayOfMonth, setDayOfMonth] = useState<number>(new Date().getDate()); // 1..31
+    const [selectedContexts, setSelectedContexts] = useState<Context[]>([]);
+    const [showContextModal, setShowContextModal] = useState(false);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -28,11 +31,13 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
                     frequency,
                     hour_of_day: frequency !== 'ONCE' ? Number(hourOfDay) : null,
                     day_of_week: frequency === 'WEEKLY' ? Number(dayOfWeek) : null,
-                    day_of_month: frequency === 'MONTHLY' ? Number(dayOfMonth) : null
+                    day_of_month: frequency === 'MONTHLY' ? Number(dayOfMonth) : null,
+                    context_ids: selectedContexts.map(c => c.id)
                 })
             });
             if (res.ok) {
                 setPrompt('');
+                setSelectedContexts([]);
                 onTaskCreated();
             }
         } catch (err) {
@@ -40,6 +45,10 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
         } finally {
             setLoading(false);
         }
+    };
+
+    const removeContext = (contextId: number) => {
+        setSelectedContexts(selectedContexts.filter(c => c.id !== contextId));
     };
 
     return (
@@ -53,9 +62,79 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 placeholder="e.g., Search for Häagen-Dazs deals on Safeway and list flavors..."
-                style={{ minHeight: '110px', marginBottom: '1.25rem', width: '100%', resize: 'vertical' }}
+                style={{ minHeight: '110px', marginBottom: '0.85rem', width: '100%', resize: 'vertical' }}
                 disabled={loading}
                 required
+            />
+
+            {/* Context Attachment Section */}
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '1.25rem' }}>
+                <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: '0.35rem', fontWeight: 600 }}>
+                    <BookOpen size={14} color="var(--color-primary)" /> Attached Contexts:
+                </span>
+
+                {selectedContexts.map(ctx => (
+                    <span 
+                        key={ctx.id}
+                        style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.35rem',
+                            padding: '0.25rem 0.65rem',
+                            borderRadius: '999px',
+                            fontSize: '0.75rem',
+                            fontWeight: 600,
+                            backgroundColor: 'rgba(99, 102, 241, 0.15)',
+                            color: 'var(--color-primary)',
+                            border: '1px solid rgba(99, 102, 241, 0.3)'
+                        }}
+                    >
+                        {ctx.name}
+                        <button
+                            type="button"
+                            onClick={() => removeContext(ctx.id)}
+                            style={{
+                                background: 'none',
+                                border: 'none',
+                                color: 'var(--color-primary)',
+                                cursor: 'pointer',
+                                padding: '1px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                borderRadius: '50%'
+                            }}
+                            title="Remove context"
+                        >
+                            <X size={12} />
+                        </button>
+                    </span>
+                ))}
+
+                <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => setShowContextModal(true)}
+                    style={{
+                        padding: '0.25rem 0.65rem',
+                        fontSize: '0.75rem',
+                        borderRadius: '999px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.25rem'
+                    }}
+                >
+                    <Plus size={12} /> Add Context
+                </button>
+            </div>
+
+            <ContextSelectModal 
+                isOpen={showContextModal}
+                onClose={() => setShowContextModal(false)}
+                alreadySelectedIds={selectedContexts.map(c => c.id)}
+                onAdd={(newCtxs) => {
+                    setSelectedContexts([...selectedContexts, ...newCtxs]);
+                }}
+                title="Add Context to New Task"
             />
             
             <div style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap', marginBottom: '1.5rem', alignItems: 'flex-end' }}>

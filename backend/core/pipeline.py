@@ -13,7 +13,7 @@ from backend import config
 from backend.database.session import SessionLocal
 from backend.database.models import Task as DBTask, Output
 from backend.services.llm import JsonStrippingChatLMStudio
-from backend.services.context import get_relevant_context_str
+from backend.services.context import get_relevant_context_str, format_bound_context_str
 from backend.automation.skills import controller, get_skill_descriptions
 from backend.automation.browser_utils import cleanup_headless_chrome
 
@@ -115,7 +115,12 @@ class AgentPipeline:
 
     async def plan(self):
         self.log("\n--- ORCHESTRATOR STEP ---")
-        self.context_str, self.site_key = await get_relevant_context_str(self.db, self.prompt, self.log_path)
+        bound_contexts = getattr(self.task, "contexts", []) if self.task else []
+        if bound_contexts:
+            self.context_str, self.site_key = format_bound_context_str(bound_contexts, self.prompt, self.log_path)
+            self.log(f"Context Evaluator: Applied {len(bound_contexts)} bound context(s). Site Plugin: '{self.site_key or 'NONE'}'")
+        else:
+            self.context_str, self.site_key = await get_relevant_context_str(self.db, self.prompt, self.log_path)
         
         # Fallback for site plugin detection
         if not self.site_key:

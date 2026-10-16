@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { marked } from 'marked';
-import { Trash2, Play, RotateCcw, XCircle, Copy, Check, ChevronDown, ChevronUp, Clock, CalendarDays } from 'lucide-react';
-import { Task } from '../store';
+import { Trash2, Play, RotateCcw, XCircle, Copy, Check, ChevronDown, ChevronUp, Clock, CalendarDays, BookOpen, Plus, X } from 'lucide-react';
+import { Task, Context } from '../store';
+import { ContextSelectModal } from './ContextSelectModal';
 
 interface TaskItemProps {
     task: Task;
@@ -9,6 +10,7 @@ interface TaskItemProps {
     onRetry: (id: number) => void;
     onRunNow: (id: number) => void;
     onCancel: (id: number) => void;
+    onTaskUpdated?: (updatedTask: Task) => void;
 }
 
 export const TaskItem: React.FC<TaskItemProps> = ({
@@ -16,11 +18,13 @@ export const TaskItem: React.FC<TaskItemProps> = ({
     onDelete,
     onRetry,
     onRunNow,
-    onCancel
+    onCancel,
+    onTaskUpdated
 }) => {
     const [isExpanded, setIsExpanded] = useState(false);
     const [copied, setCopied] = useState(false);
     const [tzAbbreviation, setTzAbbreviation] = useState('');
+    const [showContextModal, setShowContextModal] = useState(false);
 
     useEffect(() => {
         const tz = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' })
@@ -55,6 +59,38 @@ export const TaskItem: React.FC<TaskItemProps> = ({
         }
     };
 
+    const handleRemoveContext = async (contextId: number) => {
+        try {
+            const res = await fetch(`http://localhost:8000/tasks/${task.id}/contexts/${contextId}`, {
+                method: 'DELETE'
+            });
+            if (res.ok) {
+                const updated = await res.json();
+                if (onTaskUpdated) onTaskUpdated(updated);
+            }
+        } catch (err) {
+            console.error('Failed to remove context:', err);
+        }
+    };
+
+    const handleAddContexts = async (newContexts: Context[]) => {
+        try {
+            const currentIds = (task.contexts || []).map(c => c.id);
+            const combinedIds = Array.from(new Set([...currentIds, ...newContexts.map(c => c.id)]));
+            const res = await fetch(`http://localhost:8000/tasks/${task.id}/contexts`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ context_ids: combinedIds })
+            });
+            if (res.ok) {
+                const updated = await res.json();
+                if (onTaskUpdated) onTaskUpdated(updated);
+            }
+        } catch (err) {
+            console.error('Failed to add contexts to task:', err);
+        }
+    };
+
     const formatSchedule = (t: Task) => {
         const hh = String(t.hour_of_day ?? 0).padStart(2, '0') + ':00';
         if (t.frequency === 'DAILY') return `Every day at ${hh}`;
@@ -74,8 +110,6 @@ export const TaskItem: React.FC<TaskItemProps> = ({
     const hasOutput = task.outputs && task.outputs.length > 0 && task.status !== 'RUNNING';
     const latestOutput = hasOutput ? task.outputs[task.outputs.length - 1].content : '';
     const parsedHtml = hasOutput ? (marked.parse(latestOutput, { async: false, gfm: true, breaks: true }) as string) : '';
-
-
 
     return (
         <div 
@@ -212,6 +246,80 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                         </button>
                     )}
                 </div>
+            </div>
+
+            {/* Context Badges & Add Context Button */}
+            <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '0.4rem', marginBottom: '0.75rem' }}>
+                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', display: 'inline-flex', alignItems: 'center', gap: '0.3rem', fontWeight: 600 }}>
+                    <BookOpen size={12} color="var(--color-primary)" /> Context:
+                </span>
+                {task.contexts && task.contexts.length > 0 ? (
+                    task.contexts.map(ctx => (
+                        <span
+                            key={ctx.id}
+                            style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '0.3rem',
+                                padding: '0.15rem 0.55rem',
+                                borderRadius: '999px',
+                                fontSize: '0.72rem',
+                                fontWeight: 600,
+                                backgroundColor: 'rgba(99, 102, 241, 0.12)',
+                                color: 'var(--color-primary)',
+                                border: '1px solid rgba(99, 102, 241, 0.25)'
+                            }}
+                        >
+                            {ctx.name}
+                            <button
+                                onClick={(e) => { e.stopPropagation(); handleRemoveContext(ctx.id); }}
+                                style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    color: 'var(--color-primary)',
+                                    cursor: 'pointer',
+                                    padding: '1px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    borderRadius: '50%'
+                                }}
+                                title="Remove context from task"
+                            >
+                                <X size={11} />
+                            </button>
+                        </span>
+                    ))
+                ) : (
+                    <span style={{ fontSize: '0.72rem', color: 'var(--color-text-light)', fontStyle: 'italic' }}>
+                        None
+                    </span>
+                )}
+
+                <button
+                    className="secondary"
+                    onClick={(e) => { e.stopPropagation(); setShowContextModal(true); }}
+                    style={{
+                        padding: '0.15rem 0.55rem',
+                        fontSize: '0.72rem',
+                        borderRadius: '999px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.2rem',
+                        cursor: 'pointer',
+                        marginLeft: '0.2rem'
+                    }}
+                    title="Add context to this task"
+                >
+                    <Plus size={11} /> Add Context
+                </button>
+
+                <ContextSelectModal 
+                    isOpen={showContextModal}
+                    onClose={() => setShowContextModal(false)}
+                    alreadySelectedIds={(task.contexts || []).map(c => c.id)}
+                    onAdd={handleAddContexts}
+                    title={`Add Context to Task #${task.id}`}
+                />
             </div>
 
             {/* Time Stamp and Expandable Toggle */}

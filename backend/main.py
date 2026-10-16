@@ -33,6 +33,10 @@ class TaskCreate(BaseModel):
     hour_of_day: Optional[int] = None
     day_of_week: Optional[int] = None # 0-6 (0=Mon, 6=Sun)
     day_of_month: Optional[int] = None # 1-31
+    context_ids: Optional[List[int]] = []
+
+class TaskContextsUpdate(BaseModel):
+    context_ids: List[int]
 
 class ContextCreate(BaseModel):
     name: str
@@ -71,6 +75,7 @@ class TaskSchema(BaseModel):
     updated_at: datetime
     parent_id: Optional[int] = None
     outputs: List[OutputSchema] = []
+    contexts: List[ContextSchema] = []
 
     model_config = {
         "from_attributes": True
@@ -201,8 +206,14 @@ async def check_scheduled_tasks():
         for task in tasks:
             print(f"Triggering scheduled {task.frequency.lower()} task {task.id}: {task.prompt}")
             
-            # Spawn ONCE task
-            run_task = DBTask(prompt=task.prompt, status="PENDING", frequency="ONCE", parent_id=task.id)
+            # Spawn ONCE task inheriting parent's contexts
+            run_task = DBTask(
+                prompt=task.prompt, 
+                status="PENDING", 
+                frequency="ONCE", 
+                parent_id=task.id,
+                contexts=list(task.contexts)
+            )
             db.add(run_task)
             
             # Update next_run_at
@@ -301,6 +312,10 @@ async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
         day_of_month=task.day_of_month,
         next_run_at=next_run
     )
+    if task.context_ids:
+        db_contexts = db.query(DBContext).filter(DBContext.id.in_(task.context_ids)).all()
+        db_task.contexts = db_contexts
+
     db.add(db_task)
     db.commit()
     db.refresh(db_task)
@@ -422,11 +437,53 @@ async def run_task_now(task_id: int, db: Session = Depends(get_db)):
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    # Spawn a ONCE task for it
-    run_task = DBTask(prompt=db_task.prompt, status="PENDING", frequency="ONCE", parent_id=db_task.id)
+    # Spawn a ONCE task for it inheriting contexts
+    run_task = DBTask(
+        prompt=db_task.prompt, 
+        status="PENDING", 
+        frequency="ONCE", 
+        parent_id=db_task.id,
+        contexts=list(db_task.contexts)
+    )
     db.add(run_task)
     db.commit()
     
+    return db_task
+
+# Task context management endpoints
+@app.put("/tasks/{task_id}/contexts", response_model=TaskSchema)
+def set_task_contexts(task_id: int, payload: TaskContextsUpdate, db: Session = Depends(get_db)):
+    db_task = db.query(DBTask).filter(DBTask.id == task_id).first()
+    if not db_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    contexts = db.query(DBContext).filter(DBContext.id.in_(payload.context_ids)).all() if payload.context_ids else []
+    db_task.contexts = contexts
+    db.commit()
+    db.refresh(db_task)
+    return db_task
+
+@app.post("/tasks/{task_id}/contexts/{context_id}", response_model=TaskSchema)
+def add_context_to_task(task_id: int, context_id: int, db: Session = Depends(get_db)):
+    db_task = db.query(DBTask).filter(DBTask.id == task_id).first()
+    if not db_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    db_context = db.query(DBContext).filter(DBContext.id == context_id).first()
+    if not db_context:
+        raise HTTPException(status_code=404, detail="Context not found")
+    if db_context not in db_task.contexts:
+        db_task.contexts.append(db_context)
+        db.commit()
+        db.refresh(db_task)
+    return db_task
+
+@app.delete("/tasks/{task_id}/contexts/{context_id}", response_model=TaskSchema)
+def remove_context_from_task(task_id: int, context_id: int, db: Session = Depends(get_db)):
+    db_task = db.query(DBTask).filter(DBTask.id == task_id).first()
+    if not db_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    db_task.contexts = [c for c in db_task.contexts if c.id != context_id]
+    db.commit()
+    db.refresh(db_task)
     return db_task
 
 @app.post("/tasks/{task_id}/cancel", response_model=TaskSchema)

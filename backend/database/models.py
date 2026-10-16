@@ -1,9 +1,17 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Table, Column, Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 
 Base = declarative_base()
+
+# Many-to-many association between Tasks and Contexts
+task_contexts = Table(
+    'task_contexts',
+    Base.metadata,
+    Column('task_id', Integer, ForeignKey('tasks.id', ondelete='CASCADE'), primary_key=True),
+    Column('context_id', Integer, ForeignKey('contexts.id', ondelete='CASCADE'), primary_key=True)
+)
 
 class Task(Base):
     __tablename__ = "tasks"
@@ -26,6 +34,7 @@ class Task(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     outputs = relationship("Output", back_populates="task", cascade="all, delete-orphan")
+    contexts = relationship("Context", secondary=task_contexts, backref="tasks", lazy="joined")
 
 class Output(Base):
     __tablename__ = "outputs"

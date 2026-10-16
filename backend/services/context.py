@@ -33,6 +33,32 @@ def _detect_site_from_prompt(prompt: str) -> str:
                     return skill_name
     return ""
 
+def format_bound_context_str(bound_contexts: list, prompt: str, log_path: str = "") -> tuple[str, str]:
+    """Builds context string and resolves site plugin deterministically from explicitly bound task contexts.
+    Completely bypasses LLM inference for 0 latency and 100% deterministic binding."""
+    if not bound_contexts:
+        return "", ""
+
+    full_context = "PRIOR KNOWLEDGE / CUSTOM DATA:\n"
+    combined_context_text = prompt + " "
+    
+    if log_path:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"Context Evaluator: Using {len(bound_contexts)} explicitly bound context(s):\n")
+            for c in bound_contexts:
+                f.write(f" - Bound Context: {c.name}\n")
+
+    for c in bound_contexts:
+        full_context += f"--- {c.name} ---\n{c.content}\n\n"
+        combined_context_text += f"{c.name} {c.content} "
+
+    # Deterministic site detection: prompt first, then bound context content
+    site_plugin = _detect_site_from_prompt(prompt)
+    if not site_plugin:
+        site_plugin = _detect_site_from_prompt(combined_context_text)
+
+    return full_context + "USE THIS TO INFORM YOUR ACTIONS.\n\n", site_plugin
+
 async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str, str]:
     """Uses LLM to identify relevant context and the target site plugin in one step."""
     contexts = db.query(Context).all()

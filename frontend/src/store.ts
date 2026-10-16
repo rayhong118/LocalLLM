@@ -21,6 +21,7 @@ export interface Task {
     created_at: string;
     updated_at: string;
     outputs: TaskOutput[];
+    contexts?: Context[];
 }
 
 export interface Context {

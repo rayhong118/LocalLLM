@@ -61,6 +61,10 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, onTasksUpdated }) => 
         }
     };
 
+    const handleTaskUpdated = (updatedTask: Task) => {
+        onTasksUpdated(tasks.map(t => t.id === updatedTask.id ? updatedTask : t));
+    };
+
     const toLocalDate = (dateStr: string | null) => {
         if (!dateStr) return new Date();
         if (!dateStr.endsWith('Z') && !/[+-]\d{2}(?::?\d{2})?$/.test(dateStr)) {
@@ -178,6 +182,7 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, onTasksUpdated }) => 
                                 onRetry={retryTask}
                                 onRunNow={runNowTask}
                                 onCancel={cancelTask}
+                                onTaskUpdated={handleTaskUpdated}
                             />
                         ))}
                     </div>
@@ -200,6 +205,7 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, onTasksUpdated }) => 
                                 onRetry={retryTask}
                                 onRunNow={runNowTask}
                                 onCancel={cancelTask}
+                                onTaskUpdated={handleTaskUpdated}
                             />
                         ))}
                     </div>
@@ -236,6 +242,7 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, onTasksUpdated }) => 
                                 onRetry={retryTask}
                                 onRunNow={runNowTask}
                                 onCancel={cancelTask}
+                                onTaskUpdated={handleTaskUpdated}
                             />
                         ))
                     )}
