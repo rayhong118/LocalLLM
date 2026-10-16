@@ -8,6 +8,7 @@ import asyncio
 from site_skills.safeway import safeway_click_details, safeway_filter_category, safeway_get_all_deals, safeway_clip_coupon, safeway_clip_all_matching
 from site_skills.weee import weee_filter_category, weee_get_all_deals, weee_add_to_favorites_by_indices
 from site_skills.wsdot import wsdot_get_highway_alerts
+from site_skills.premarket import premarket_get_news
 
 logger = logging.getLogger(__name__)
 controller = Controller()
@@ -396,3 +397,6 @@ controller.action('weee_add_to_favorites_by_indices')(weee_add_to_favorites_by_i
 
 # Register WSDOT Site-Specific Skills
 controller.action('wsdot_get_highway_alerts')(wsdot_get_highway_alerts)
+
+# Register Pre-Market News Site-Specific Skills
+controller.action('premarket_get_news')(premarket_get_news)

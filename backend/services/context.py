@@ -7,6 +7,7 @@ from backend.database.models import Context
 
 SITE_ALIASES = {
     "wsdot": ["wsdot", "highway alert", "highway alerts", "traffic alert", "traffic alerts", "wa traffic", "washington traffic", "wsdot.wa.gov", "king county alerts", "king county traffic"],
+    "premarket": ["premarket", "pre-market", "pre market", "market news", "market related news", "morning market", "stock news", "financial news", "overnight news", "finnhub"],
     "safeway": ["safeway"],
     "weee": ["weee", "sayweee"],
     "sofi": ["sofi"]

@@ -85,6 +85,12 @@ def _evaluate_structured_summary(lower_res: str) -> str | None:
         alerts_found = int(wsdot_match.group(1))
         return "SUCCESS" if alerts_found > 0 else "NO_RESULT"
 
+    # 5. Pre-Market News style summary: "X market/macro news items collected"
+    news_match = re.search(r'(\d+)\s*(?:market\s+|macro\s+)?news\s+items?\s*(?:collected|found|retrieved)', lower_res)
+    if news_match:
+        news_found = int(news_match.group(1))
+        return "SUCCESS" if news_found > 0 else "NO_RESULT"
+
     return None
 
 async def evaluate_result(prompt: str, final_res: str, history=None, log_path: str = None) -> str:
