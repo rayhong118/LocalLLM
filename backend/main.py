@@ -29,19 +29,25 @@ atexit.register(cleanup_browser_processes)
 # Pydantic models
 class TaskCreate(BaseModel):
     prompt: str
-    frequency: str = "ONCE" # ONCE, DAILY
+    frequency: str = "ONCE" # ONCE, DAILY, WEEKLY, MONTHLY
     hour_of_day: Optional[int] = None
+    day_of_week: Optional[int] = None # 0-6 (0=Mon, 6=Sun)
+    day_of_month: Optional[int] = None # 1-31
 
 class SavedTaskCreate(BaseModel):
     prompt: str
     frequency: str = "ONCE"
     hour_of_day: Optional[int] = None
+    day_of_week: Optional[int] = None
+    day_of_month: Optional[int] = None
 
 class SavedTaskSchema(BaseModel):
     id: int
     prompt: str
     frequency: str
     hour_of_day: Optional[int] = None
+    day_of_week: Optional[int] = None
+    day_of_month: Optional[int] = None
     created_at: datetime
 
     model_config = {
@@ -77,6 +83,8 @@ class TaskSchema(BaseModel):
     status: str
     frequency: str
     hour_of_day: Optional[int]
+    day_of_week: Optional[int] = None
+    day_of_month: Optional[int] = None
     next_run_at: Optional[datetime]
     started_at: Optional[datetime]
     created_at: datetime
@@ -88,27 +96,61 @@ class TaskSchema(BaseModel):
         "from_attributes": True
     }
 
+import calendar
 from datetime import datetime, timedelta, timezone
 
-def calculate_next_run(frequency: str, hour: Optional[int]) -> Optional[datetime]:
+def calculate_next_run(
+    frequency: str, 
+    hour: Optional[int], 
+    day_of_week: Optional[int] = None, 
+    day_of_month: Optional[int] = None
+) -> Optional[datetime]:
     now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     
     if frequency == "ONCE":
         return now_utc
-    if frequency == "DAILY" and hour is not None:
-        # Get current local time
-        now_local = datetime.now().astimezone()
-        
-        # Determine the target hour today in local time
+
+    if hour is None:
+        return None
+
+    # Get current local time
+    now_local = datetime.now().astimezone()
+
+    if frequency == "DAILY":
         target_local = now_local.replace(hour=hour, minute=0, second=0, microsecond=0)
-        
-        # If the target hour has already passed today, schedule for tomorrow
         if target_local <= now_local:
             target_local += timedelta(days=1)
-            
-        # Convert the calculated local target time back to naive UTC for storage/scheduler
-        target_utc = target_local.astimezone(timezone.utc).replace(tzinfo=None)
-        return target_utc
+        return target_local.astimezone(timezone.utc).replace(tzinfo=None)
+
+    elif frequency == "WEEKLY":
+        # day_of_week: 0 = Monday, 6 = Sunday (matching now_local.weekday())
+        target_dow = day_of_week if day_of_week is not None else 0
+        days_ahead = (target_dow - now_local.weekday()) % 7
+        target_local = (now_local + timedelta(days=days_ahead)).replace(hour=hour, minute=0, second=0, microsecond=0)
+        if days_ahead == 0 and target_local <= now_local:
+            target_local += timedelta(days=7)
+        return target_local.astimezone(timezone.utc).replace(tzinfo=None)
+
+    elif frequency == "MONTHLY":
+        # day_of_month: 1-31
+        target_dom = day_of_month if day_of_month is not None else 1
+        year = now_local.year
+        month = now_local.month
+        max_days = calendar.monthrange(year, month)[1]
+        clamped_day = min(target_dom, max_days)
+        target_local = now_local.replace(year=year, month=month, day=clamped_day, hour=hour, minute=0, second=0, microsecond=0)
+        
+        if target_local <= now_local:
+            # Advance to next month
+            month += 1
+            if month > 12:
+                month = 1
+                year += 1
+            max_days = calendar.monthrange(year, month)[1]
+            clamped_day = min(target_dom, max_days)
+            target_local = target_local.replace(year=year, month=month, day=clamped_day)
+
+        return target_local.astimezone(timezone.utc).replace(tzinfo=None)
         
     return None
 
@@ -170,21 +212,21 @@ async def check_scheduled_tasks():
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
-        # Find DAILY tasks that are due
+        # Find recurring tasks that are due
         tasks = db.query(DBTask).filter(
-            DBTask.frequency == "DAILY",
+            DBTask.frequency.in_(["DAILY", "WEEKLY", "MONTHLY"]),
             DBTask.next_run_at <= now
         ).all()
         
         for task in tasks:
-            print(f"Triggering scheduled daily task {task.id}: {task.prompt}")
+            print(f"Triggering scheduled {task.frequency.lower()} task {task.id}: {task.prompt}")
             
             # Spawn ONCE task
             run_task = DBTask(prompt=task.prompt, status="PENDING", frequency="ONCE", parent_id=task.id)
             db.add(run_task)
             
-            # Update next_run_at for DAILY
-            task.next_run_at = calculate_next_run(task.frequency, task.hour_of_day)
+            # Update next_run_at
+            task.next_run_at = calculate_next_run(task.frequency, task.hour_of_day, task.day_of_week, task.day_of_month)
             
         db.commit()
             
@@ -262,7 +304,7 @@ def get_db():
 
 @app.post("/tasks", response_model=TaskSchema)
 async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
-    next_run = calculate_next_run(task.frequency, task.hour_of_day)
+    next_run = calculate_next_run(task.frequency, task.hour_of_day, task.day_of_week, task.day_of_month)
     
     # If it's a "ONCE" task, we trigger it manually in a moment,
     # so we set next_run_at to None to prevent the scheduler from picking it up.
@@ -275,6 +317,8 @@ async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
         status="PENDING",
         frequency=task.frequency,
         hour_of_day=task.hour_of_day,
+        day_of_week=task.day_of_week,
+        day_of_month=task.day_of_month,
         next_run_at=next_run
     )
     db.add(db_task)
@@ -440,7 +484,9 @@ def create_saved_task(task: SavedTaskCreate, db: Session = Depends(get_db)):
     db_saved = DBSavedTask(
         prompt=task.prompt,
         frequency=task.frequency,
-        hour_of_day=task.hour_of_day
+        hour_of_day=task.hour_of_day,
+        day_of_week=task.day_of_week,
+        day_of_month=task.day_of_month
     )
     db.add(db_saved)
     db.commit()
@@ -463,7 +509,7 @@ async def run_saved_task(task_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Saved task not found")
     
     # Calculate next run time
-    next_run = calculate_next_run(db_saved.frequency, db_saved.hour_of_day)
+    next_run = calculate_next_run(db_saved.frequency, db_saved.hour_of_day, db_saved.day_of_week, db_saved.day_of_month)
     is_once = db_saved.frequency == "ONCE"
     if is_once:
         next_run = None
@@ -473,6 +519,8 @@ async def run_saved_task(task_id: int, db: Session = Depends(get_db)):
         status="PENDING",
         frequency=db_saved.frequency,
         hour_of_day=db_saved.hour_of_day,
+        day_of_week=db_saved.day_of_week,
+        day_of_month=db_saved.day_of_month,
         next_run_at=next_run
     )
     db.add(db_task)

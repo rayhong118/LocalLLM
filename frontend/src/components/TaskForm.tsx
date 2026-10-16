@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Calendar, Clock, Sparkles } from 'lucide-react';
+import { TaskFrequency } from '../store';
 
 interface TaskFormProps {
     onTaskCreated: () => void;
@@ -8,8 +9,10 @@ interface TaskFormProps {
 export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
     const [loading, setLoading] = useState(false);
     const [prompt, setPrompt] = useState('');
-    const [frequency, setFrequency] = useState<'ONCE' | 'DAILY'>('ONCE');
+    const [frequency, setFrequency] = useState<TaskFrequency>('ONCE');
     const [hourOfDay, setHourOfDay] = useState<number>(new Date().getHours());
+    const [dayOfWeek, setDayOfWeek] = useState<number>(new Date().getDay() === 0 ? 6 : new Date().getDay() - 1); // 0=Mon..6=Sun
+    const [dayOfMonth, setDayOfMonth] = useState<number>(new Date().getDate()); // 1..31
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -23,7 +26,9 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
                 body: JSON.stringify({
                     prompt,
                     frequency,
-                    hour_of_day: frequency === 'DAILY' ? Number(hourOfDay) : null
+                    hour_of_day: frequency !== 'ONCE' ? Number(hourOfDay) : null,
+                    day_of_week: frequency === 'WEEKLY' ? Number(dayOfWeek) : null,
+                    day_of_month: frequency === 'MONTHLY' ? Number(dayOfMonth) : null
                 })
             });
             if (res.ok) {
@@ -53,24 +58,66 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
                 required
             />
             
-            <div style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap', marginBottom: '1.5rem' }}>
-                <div style={{ flex: 1, minWidth: '200px' }}>
+            <div style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap', marginBottom: '1.5rem', alignItems: 'flex-end' }}>
+                <div style={{ flex: 1, minWidth: '180px' }}>
                     <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.5rem', color: 'var(--color-text-muted)' }}>
                         <Calendar size={14} /> Frequency
                     </label>
                     <select 
                         value={frequency}
-                        onChange={(e) => setFrequency(e.target.value as 'ONCE' | 'DAILY')}
+                        onChange={(e) => setFrequency(e.target.value as TaskFrequency)}
                         disabled={loading}
                         style={{ width: '100%' }}
                     >
                         <option value="ONCE">One-time (Run Now)</option>
                         <option value="DAILY">Daily Recurring</option>
+                        <option value="WEEKLY">Weekly Recurring</option>
+                        <option value="MONTHLY">Monthly Recurring</option>
                     </select>
                 </div>
 
-                {frequency === 'DAILY' && (
-                    <div style={{ width: '150px' }}>
+                {frequency === 'WEEKLY' && (
+                    <div style={{ flex: 1, minWidth: '150px' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.5rem', color: 'var(--color-text-muted)' }}>
+                            <Calendar size={14} /> Day of Week
+                        </label>
+                        <select
+                            value={dayOfWeek}
+                            onChange={(e) => setDayOfWeek(Number(e.target.value))}
+                            disabled={loading}
+                            style={{ width: '100%' }}
+                        >
+                            <option value={0}>Every Monday</option>
+                            <option value={1}>Every Tuesday</option>
+                            <option value={2}>Every Wednesday</option>
+                            <option value={3}>Every Thursday</option>
+                            <option value={4}>Every Friday</option>
+                            <option value={5}>Every Saturday</option>
+                            <option value={6}>Every Sunday</option>
+                        </select>
+                    </div>
+                )}
+
+                {frequency === 'MONTHLY' && (
+                    <div style={{ width: '130px' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.5rem', color: 'var(--color-text-muted)' }}>
+                            <Calendar size={14} /> Day of Month (1-31)
+                        </label>
+                        <input 
+                            type="number" 
+                            min="1" 
+                            max="31" 
+                            value={dayOfMonth}
+                            onChange={(e) => setDayOfMonth(Number(e.target.value))}
+                            disabled={loading}
+                            style={{ width: '100%' }}
+                            required
+                        />
+                    </div>
+                )}
+
+                {frequency !== 'ONCE' && (
+                    <div style={{ width: '130px' }}>
                         <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.5rem', color: 'var(--color-text-muted)' }}>
                             <Clock size={14} /> Hour (0-23)
                         </label>

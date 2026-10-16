@@ -91,8 +91,8 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
     if not card_texts or not keyword:
         return []
 
-    # Chunk clean product titles into batches of 50 to prevent prompt bloat and keep latency low
-    chunk_size = 50
+    # Chunk clean product titles into smaller batches of 25 to prevent GPU timeouts/TDR resets
+    chunk_size = 25
     total_cards = len(card_texts)
     chunks = [
         list(range(i, min(i + chunk_size, total_cards)))
@@ -101,7 +101,7 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
 
     _log_to_file(
         log_path,
-        f"PRE-FLIGHT CHUNKED MATCHING: Evaluating {total_cards} cards in {len(chunks)} chunk(s) for '{keyword}'"
+        f"PRE-FLIGHT CHUNKED MATCHING: Evaluating {total_cards} cards in {len(chunks)} chunk(s) (batch size {chunk_size}) for '{keyword}'"
     )
     logger.info(f"[_llm_match_cards] Evaluating {total_cards} cards across {len(chunks)} chunks for '{keyword}'")
 
@@ -134,7 +134,7 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
                         ],
                         "stream": False,
                         "temperature": 0,
-                        "max_tokens": 150
+                        "max_tokens": 300
                     },
                     timeout=min(config.LLM_TIMEOUT, 90)
                 )
@@ -142,6 +142,7 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
                 if resp.status_code != 200:
                     err_msg = f"LM Studio returned HTTP {resp.status_code} on chunk {chunk_idx + 1}/{len(chunks)}: {resp.text[:200]}"
                     logger.error(f"[_llm_match_cards] {err_msg}")
+                    _log_to_file(log_path, f"PRE-FLIGHT LLM CHUNK ERROR: {err_msg}")
                     continue
 
                 resp_json = resp.json()
@@ -152,6 +153,9 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
                     raw = resp_json.get("message", {}).get("content", "")
 
                 if not raw or not raw.strip():
+                    empty_msg = f"LM Studio returned empty content on chunk {chunk_idx + 1}/{len(chunks)}"
+                    logger.warning(f"[_llm_match_cards] {empty_msg}")
+                    _log_to_file(log_path, f"PRE-FLIGHT LLM CHUNK WARNING: {empty_msg}")
                     continue
 
                 try:
@@ -161,14 +165,20 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
                     valid = [i for i in matches if isinstance(i, int) and i in indices]
                     all_matches.extend(valid)
                 except json.JSONDecodeError as je:
-                    logger.warning(f"[_llm_match_cards] Failed to parse JSON on chunk {chunk_idx + 1}: {je}. Content: {raw[:200]}")
+                    parse_msg = f"Failed to parse JSON on chunk {chunk_idx + 1}/{len(chunks)}: {je}. Raw snippet: {raw[:150]}"
+                    logger.warning(f"[_llm_match_cards] {parse_msg}")
+                    _log_to_file(log_path, f"PRE-FLIGHT LLM CHUNK WARNING: {parse_msg}")
                     continue
 
             except httpx.TimeoutException:
-                logger.error(f"[_llm_match_cards] Chunk {chunk_idx + 1}/{len(chunks)} timed out for '{keyword}'")
+                timeout_msg = f"Chunk {chunk_idx + 1}/{len(chunks)} timed out after {min(config.LLM_TIMEOUT, 90)}s for '{keyword}'"
+                logger.error(f"[_llm_match_cards] {timeout_msg}")
+                _log_to_file(log_path, f"PRE-FLIGHT LLM CHUNK TIMEOUT: {timeout_msg}")
                 continue
             except Exception as e:
-                logger.error(f"[_llm_match_cards] Error on chunk {chunk_idx + 1} for '{keyword}': {e}")
+                ex_msg = f"Error on chunk {chunk_idx + 1}/{len(chunks)} for '{keyword}': {type(e).__name__}: {e}"
+                logger.error(f"[_llm_match_cards] {ex_msg}")
+                _log_to_file(log_path, f"PRE-FLIGHT LLM CHUNK ERROR: {ex_msg}")
                 continue
 
     if not had_successful_call and chunks:

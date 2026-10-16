@@ -74,7 +74,7 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, onTasksUpdated }) => 
 
     if (!tasks) return null;
 
-    const recurring = tasks.filter(t => t.frequency === 'DAILY');
+    const recurring = tasks.filter(t => t.frequency !== 'ONCE');
     const pending = [...tasks]
         .filter(t => t.frequency === 'ONCE' && (t.status === 'PENDING' || t.status === 'RUNNING' || t.status === 'CANCELLED'))
         .sort((a, b) => toLocalDate(a.created_at).getTime() - toLocalDate(b.created_at).getTime());

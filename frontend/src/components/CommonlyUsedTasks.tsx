@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAtom } from 'jotai';
-import { savedTasksAtom, currentPageAtom } from '../store';
+import { savedTasksAtom, currentPageAtom, TaskFrequency } from '../store';
 import { Sparkles, Calendar, Clock, Trash2, Play, Plus, BookOpen } from 'lucide-react';
 
 export const CommonlyUsedTasks: React.FC = () => {
@@ -11,8 +11,10 @@ export const CommonlyUsedTasks: React.FC = () => {
 
     // Form states
     const [prompt, setPrompt] = useState('');
-    const [frequency, setFrequency] = useState<'ONCE' | 'DAILY'>('ONCE');
+    const [frequency, setFrequency] = useState<TaskFrequency>('ONCE');
     const [hourOfDay, setHourOfDay] = useState<number>(new Date().getHours());
+    const [dayOfWeek, setDayOfWeek] = useState<number>(new Date().getDay() === 0 ? 6 : new Date().getDay() - 1); // 0=Mon..6=Sun
+    const [dayOfMonth, setDayOfMonth] = useState<number>(new Date().getDate()); // 1..31
 
     const fetchSavedTasks = async () => {
         setFetching(true);
@@ -45,7 +47,9 @@ export const CommonlyUsedTasks: React.FC = () => {
                 body: JSON.stringify({
                     prompt,
                     frequency,
-                    hour_of_day: frequency === 'DAILY' ? Number(hourOfDay) : null
+                    hour_of_day: frequency !== 'ONCE' ? Number(hourOfDay) : null,
+                    day_of_week: frequency === 'WEEKLY' ? Number(dayOfWeek) : null,
+                    day_of_month: frequency === 'MONTHLY' ? Number(dayOfMonth) : null
                 })
             });
             if (res.ok) {
@@ -88,6 +92,22 @@ export const CommonlyUsedTasks: React.FC = () => {
         }
     };
 
+    const formatSchedule = (t: { frequency: string; hour_of_day?: number | null; day_of_week?: number | null; day_of_month?: number | null }) => {
+        const hh = String(t.hour_of_day ?? 0).padStart(2, '0') + ':00';
+        if (t.frequency === 'DAILY') return `Every day at ${hh}`;
+        if (t.frequency === 'WEEKLY') {
+            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+            const dayName = days[t.day_of_week ?? 0] || 'Monday';
+            return `Every week on ${dayName} at ${hh}`;
+        }
+        if (t.frequency === 'MONTHLY') {
+            const d = t.day_of_month ?? 1;
+            const suffix = (d % 10 === 1 && d !== 11) ? 'st' : (d % 10 === 2 && d !== 12) ? 'nd' : (d % 10 === 3 && d !== 13) ? 'rd' : 'th';
+            return `Day ${d}${suffix} of every month at ${hh}`;
+        }
+        return 'One-time run template';
+    };
+
     return (
         <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
             
@@ -108,23 +128,65 @@ export const CommonlyUsedTasks: React.FC = () => {
                 />
                 
                 <div style={{ display: 'flex', gap: '1.25rem', flexWrap: 'wrap', marginBottom: '1.5rem', alignItems: 'flex-end' }}>
-                    <div style={{ flex: 1, minWidth: '200px' }}>
+                    <div style={{ flex: 1, minWidth: '180px' }}>
                         <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.5rem', color: 'var(--color-text-muted)' }}>
                             <Calendar size={14} /> Frequency
                         </label>
                         <select 
                             value={frequency}
-                            onChange={(e) => setFrequency(e.target.value as 'ONCE' | 'DAILY')}
+                            onChange={(e) => setFrequency(e.target.value as TaskFrequency)}
                             disabled={loading}
                             style={{ width: '100%' }}
                         >
                             <option value="ONCE">One-time (Run Now)</option>
                             <option value="DAILY">Daily Recurring</option>
+                            <option value="WEEKLY">Weekly Recurring</option>
+                            <option value="MONTHLY">Monthly Recurring</option>
                         </select>
                     </div>
 
-                    {frequency === 'DAILY' && (
-                        <div style={{ width: '150px' }}>
+                    {frequency === 'WEEKLY' && (
+                        <div style={{ flex: 1, minWidth: '150px' }}>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.5rem', color: 'var(--color-text-muted)' }}>
+                                <Calendar size={14} /> Day of Week
+                            </label>
+                            <select
+                                value={dayOfWeek}
+                                onChange={(e) => setDayOfWeek(Number(e.target.value))}
+                                disabled={loading}
+                                style={{ width: '100%' }}
+                            >
+                                <option value={0}>Every Monday</option>
+                                <option value={1}>Every Tuesday</option>
+                                <option value={2}>Every Wednesday</option>
+                                <option value={3}>Every Thursday</option>
+                                <option value={4}>Every Friday</option>
+                                <option value={5}>Every Saturday</option>
+                                <option value={6}>Every Sunday</option>
+                            </select>
+                        </div>
+                    )}
+
+                    {frequency === 'MONTHLY' && (
+                        <div style={{ width: '130px' }}>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.5rem', color: 'var(--color-text-muted)' }}>
+                                <Calendar size={14} /> Day of Month (1-31)
+                            </label>
+                            <input 
+                                type="number" 
+                                min="1" 
+                                max="31" 
+                                value={dayOfMonth}
+                                onChange={(e) => setDayOfMonth(Number(e.target.value))}
+                                disabled={loading}
+                                style={{ width: '100%' }}
+                                required
+                            />
+                        </div>
+                    )}
+
+                    {frequency !== 'ONCE' && (
+                        <div style={{ width: '130px' }}>
                             <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.5rem', color: 'var(--color-text-muted)' }}>
                                 <Clock size={14} /> Hour (0-23)
                             </label>
@@ -229,15 +291,23 @@ export const CommonlyUsedTasks: React.FC = () => {
                                                 fontWeight: 700,
                                                 textTransform: 'uppercase',
                                                 whiteSpace: 'nowrap',
-                                                backgroundColor: task.frequency === 'DAILY' ? 'var(--color-info-bg)' : 'var(--color-neutral-bg)',
-                                                color: task.frequency === 'DAILY' ? 'var(--color-info)' : 'var(--color-neutral)'
+                                                backgroundColor: 
+                                                    task.frequency === 'DAILY' ? 'var(--color-info-bg)' : 
+                                                    task.frequency === 'WEEKLY' ? 'rgba(168, 85, 247, 0.15)' : 
+                                                    task.frequency === 'MONTHLY' ? 'rgba(16, 185, 129, 0.15)' : 
+                                                    'var(--color-neutral-bg)',
+                                                color: 
+                                                    task.frequency === 'DAILY' ? 'var(--color-info)' : 
+                                                    task.frequency === 'WEEKLY' ? '#a855f7' : 
+                                                    task.frequency === 'MONTHLY' ? '#10b981' : 
+                                                    'var(--color-neutral)'
                                             }}
                                         >
                                             {task.frequency}
                                         </span>
                                         <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
                                             <Clock size={12} />
-                                            {task.frequency === 'DAILY' ? `Every day at ${String(task.hour_of_day).padStart(2, '0')}:00` : 'One-time run template'}
+                                            {formatSchedule(task)}
                                         </span>
                                     </div>
                                     <span style={{ fontWeight: 600, color: 'var(--color-text-body)', fontSize: '0.95rem', wordBreak: 'break-word' }}>

@@ -13,8 +13,10 @@ class Task(Base):
     status = Column(String, default="PENDING") # PENDING, RUNNING, COMPLETED, FAILED
     
     # Scheduling fields
-    frequency = Column(String, default="ONCE") # ONCE, DAILY
+    frequency = Column(String, default="ONCE") # ONCE, DAILY, WEEKLY, MONTHLY
     hour_of_day = Column(Integer, nullable=True) # 0-23
+    day_of_week = Column(Integer, nullable=True) # 0-6 (0=Mon, 6=Sun)
+    day_of_month = Column(Integer, nullable=True) # 1-31
     next_run_at = Column(DateTime, nullable=True)
     started_at = Column(DateTime, nullable=True)
     
@@ -48,6 +50,8 @@ class SavedTask(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     prompt = Column(Text, nullable=False)
-    frequency = Column(String, default="ONCE") # ONCE, DAILY
+    frequency = Column(String, default="ONCE") # ONCE, DAILY, WEEKLY, MONTHLY
     hour_of_day = Column(Integer, nullable=True) # 0-23
+    day_of_week = Column(Integer, nullable=True) # 0-6 (0=Mon, 6=Sun)
+    day_of_month = Column(Integer, nullable=True) # 1-31
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))

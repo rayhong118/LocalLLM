@@ -6,12 +6,16 @@ export interface TaskOutput {
     created_at: string;
 }
 
+export type TaskFrequency = 'ONCE' | 'DAILY' | 'WEEKLY' | 'MONTHLY';
+
 export interface Task {
     id: number;
     prompt: string;
     status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'DAILY' | 'CANCELLED';
-    frequency: 'ONCE' | 'DAILY';
+    frequency: TaskFrequency;
     hour_of_day: number | null;
+    day_of_week?: number | null;
+    day_of_month?: number | null;
     next_run_at: string | null;
     started_at: string | null;
     created_at: string;
@@ -29,8 +33,10 @@ export interface Context {
 export interface SavedTask {
     id: number;
     prompt: string;
-    frequency: 'ONCE' | 'DAILY';
+    frequency: TaskFrequency;
     hour_of_day: number | null;
+    day_of_week?: number | null;
+    day_of_month?: number | null;
     created_at: string;
 }
 

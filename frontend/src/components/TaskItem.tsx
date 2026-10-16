@@ -67,7 +67,9 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                 body: JSON.stringify({
                     prompt: task.prompt,
                     frequency: task.frequency,
-                    hour_of_day: task.hour_of_day
+                    hour_of_day: task.hour_of_day,
+                    day_of_week: task.day_of_week,
+                    day_of_month: task.day_of_month
                 })
             });
             if (res.ok) {
@@ -79,6 +81,22 @@ export const TaskItem: React.FC<TaskItemProps> = ({
         } finally {
             setSaving(false);
         }
+    };
+
+    const formatSchedule = (t: Task) => {
+        const hh = String(t.hour_of_day ?? 0).padStart(2, '0') + ':00';
+        if (t.frequency === 'DAILY') return `Every day at ${hh}`;
+        if (t.frequency === 'WEEKLY') {
+            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+            const dayName = days[t.day_of_week ?? 0] || 'Monday';
+            return `Every week on ${dayName} at ${hh}`;
+        }
+        if (t.frequency === 'MONTHLY') {
+            const d = t.day_of_month ?? 1;
+            const suffix = (d % 10 === 1 && d !== 11) ? 'st' : (d % 10 === 2 && d !== 12) ? 'nd' : (d % 10 === 3 && d !== 13) ? 'rd' : 'th';
+            return `Day ${d}${suffix} of every month at ${hh}`;
+        }
+        return '';
     };
 
     const hasOutput = task.outputs && task.outputs.length > 0 && task.status !== 'RUNNING';
@@ -144,19 +162,23 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                             display: 'inline-block',
                             backgroundColor: 
                                 task.frequency === 'DAILY' ? 'var(--color-info-bg)' :
+                                task.frequency === 'WEEKLY' ? 'rgba(168, 85, 247, 0.15)' :
+                                task.frequency === 'MONTHLY' ? 'rgba(16, 185, 129, 0.15)' :
                                 task.status === 'COMPLETED' ? 'var(--color-success-bg)' :
                                 task.status === 'RUNNING' ? 'var(--color-warning-bg)' :
                                 task.status === 'FAILED' ? 'var(--color-error-bg)' :
                                 'var(--color-neutral-bg)',
                             color:
                                 task.frequency === 'DAILY' ? 'var(--color-info)' :
+                                task.frequency === 'WEEKLY' ? '#a855f7' :
+                                task.frequency === 'MONTHLY' ? '#10b981' :
                                 task.status === 'COMPLETED' ? 'var(--color-success)' :
                                 task.status === 'RUNNING' ? 'var(--color-warning)' :
                                 task.status === 'FAILED' ? 'var(--color-error)' :
                                 'var(--color-neutral)'
                         }}
                     >
-                        {task.frequency === 'DAILY' ? 'DAILY' : task.status}
+                        {task.frequency !== 'ONCE' ? task.frequency : task.status}
                     </span>
                     <span style={{ fontWeight: 600, color: 'var(--color-text-body)', lineHeight: 1.4, fontSize: '0.95rem', wordBreak: 'break-word' }}>
                         {task.prompt}
@@ -165,7 +187,7 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                 
                 {/* Task Actions */}
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
-                    {task.frequency === 'DAILY' && task.status !== 'RUNNING' && (
+                    {task.frequency !== 'ONCE' && task.status !== 'RUNNING' && (
                         <button 
                             className="secondary" 
                             style={{ fontSize: '0.75rem', padding: '0.35rem 0.75rem', borderRadius: '6px' }}
@@ -174,7 +196,7 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                             <Play size={12} /> Run Now
                         </button>
                     )}
-                    {(task.status === 'FAILED' || task.status === 'CANCELLED') && task.frequency !== 'DAILY' && (
+                    {(task.status === 'FAILED' || task.status === 'CANCELLED') && task.frequency === 'ONCE' && (
                         <button 
                             className="primary" 
                             style={{ fontSize: '0.75rem', padding: '0.35rem 0.75rem', borderRadius: '6px' }}
@@ -233,8 +255,8 @@ export const TaskItem: React.FC<TaskItemProps> = ({
             {/* Time Stamp and Expandable Toggle */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
                 <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                    {task.frequency === 'DAILY' ? <Clock size={12} /> : <CalendarDays size={12} />}
-                    {task.frequency === 'DAILY' ? `Every day at ${String(task.hour_of_day).padStart(2, '0')}:00 ${tzAbbreviation}` :
+                    {task.frequency !== 'ONCE' ? <Clock size={12} /> : <CalendarDays size={12} />}
+                    {task.frequency !== 'ONCE' ? `${formatSchedule(task)} ${tzAbbreviation}` :
                      task.status === 'RUNNING' ? `Started: ${toLocalDate(task.started_at).toLocaleTimeString()} ${tzAbbreviation}` :
                      task.status === 'CANCELLED' ? `Cancelled at: ${toLocalDate(task.updated_at).toLocaleTimeString()} ${tzAbbreviation}` :
                      `Last Run: ${toLocalDate(task.updated_at).toLocaleString()} ${tzAbbreviation}`}
