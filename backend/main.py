@@ -36,6 +36,14 @@ class TaskCreate(BaseModel):
     weekday_only: Optional[bool] = False
     context_ids: Optional[List[int]] = []
 
+class TaskUpdate(BaseModel):
+    frequency: Optional[str] = None
+    hour_of_day: Optional[int] = None
+    day_of_week: Optional[int] = None
+    day_of_month: Optional[int] = None
+    weekday_only: Optional[bool] = None
+    prompt: Optional[str] = None
+
 class TaskContextsUpdate(BaseModel):
     context_ids: List[int]
 
@@ -401,6 +409,42 @@ def delete_task(task_id: int, db: Session = Depends(get_db)):
     db.delete(task)
     db.commit()
     return {"message": "Task deleted successfully"}
+
+# Update a task by ID
+@app.put("/tasks/{task_id}", response_model=TaskSchema)
+@app.patch("/tasks/{task_id}", response_model=TaskSchema)
+def update_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db)):
+    db_task = db.query(DBTask).filter(DBTask.id == task_id).first()
+    if not db_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if payload.frequency is not None:
+        db_task.frequency = payload.frequency
+    if payload.hour_of_day is not None:
+        db_task.hour_of_day = payload.hour_of_day
+    if payload.day_of_week is not None:
+        db_task.day_of_week = payload.day_of_week
+    if payload.day_of_month is not None:
+        db_task.day_of_month = payload.day_of_month
+    if payload.weekday_only is not None:
+        db_task.weekday_only = payload.weekday_only
+    if payload.prompt is not None:
+        db_task.prompt = payload.prompt
+
+    if db_task.frequency == "ONCE":
+        db_task.next_run_at = None
+    else:
+        db_task.next_run_at = calculate_next_run(
+            db_task.frequency,
+            db_task.hour_of_day,
+            db_task.day_of_week,
+            db_task.day_of_month,
+            db_task.weekday_only
+        )
+
+    db.commit()
+    db.refresh(db_task)
+    return db_task
 
 # Context endpoints
 @app.get("/contexts", response_model=List[ContextSchema])

@@ -59,6 +59,8 @@ export const Modal: React.FC<ModalProps> = ({
                 justifyContent: 'center',
                 zIndex: 99999,
                 padding: '1rem',
+                overflowY: 'auto',
+                boxSizing: 'border-box',
                 animation: 'fadeIn 0.2s ease-out'
             }}
             onClick={onClose}
@@ -68,7 +70,7 @@ export const Modal: React.FC<ModalProps> = ({
                 style={{
                     width: '100%',
                     maxWidth: maxWidth,
-                    maxHeight: '85vh',
+                    maxHeight: 'min(85vh, calc(100vh - 2rem))',
                     display: 'flex',
                     flexDirection: 'column',
                     padding: '1.5rem',
@@ -77,7 +79,10 @@ export const Modal: React.FC<ModalProps> = ({
                     boxShadow: '0 20px 45px -8px rgba(15, 23, 42, 0.18), 0 0 0 1px var(--color-border)',
                     backgroundColor: '#ffffff',
                     color: 'var(--color-text-main)',
-                    position: 'relative'
+                    position: 'relative',
+                    boxSizing: 'border-box',
+                    margin: 'auto',
+                    overflow: 'hidden'
                 }}
                 onClick={(e) => e.stopPropagation()}
             >
@@ -89,7 +94,8 @@ export const Modal: React.FC<ModalProps> = ({
                         alignItems: 'center',
                         marginBottom: '1.25rem',
                         borderBottom: '1px solid var(--color-border)',
-                        paddingBottom: '0.85rem'
+                        paddingBottom: '0.85rem',
+                        flexShrink: 0
                     }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
                             {icon}
@@ -131,7 +137,15 @@ export const Modal: React.FC<ModalProps> = ({
                 )}
 
                 {/* Body */}
-                <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+                <div style={{ 
+                    flex: '1 1 auto', 
+                    minHeight: 0, 
+                    overflowY: 'auto', 
+                    overflowX: 'hidden', 
+                    display: 'flex', 
+                    flexDirection: 'column',
+                    paddingRight: '4px'
+                }}>
                     {children}
                 </div>
 
@@ -143,7 +157,8 @@ export const Modal: React.FC<ModalProps> = ({
                         gap: '0.75rem',
                         marginTop: '1.25rem',
                         paddingTop: '0.85rem',
-                        borderTop: '1px solid var(--color-border)'
+                        borderTop: '1px solid var(--color-border)',
+                        flexShrink: 0
                     }}>
                         {footer}
                     </div>

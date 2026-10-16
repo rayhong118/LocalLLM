@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { marked } from 'marked';
-import { Trash2, Play, RotateCcw, XCircle, Copy, Check, ChevronDown, ChevronUp, Clock, CalendarDays, BookOpen, Plus, X } from 'lucide-react';
-import { Task, Context } from '../store';
+import { Trash2, Play, RotateCcw, XCircle, Copy, Check, ChevronDown, ChevronUp, Clock, CalendarDays, Calendar, BookOpen, Plus, X } from 'lucide-react';
+import { Task, Context, TaskFrequency } from '../store';
 import { ContextSelectModal } from './ContextSelectModal';
+import { EditScheduleModal } from './EditScheduleModal';
 
 interface TaskItemProps {
     task: Task;
@@ -11,6 +12,7 @@ interface TaskItemProps {
     onRunNow: (id: number) => void;
     onCancel: (id: number) => void;
     onTaskUpdated?: (updatedTask: Task) => void;
+    isRecurringRunning?: boolean;
 }
 
 export const TaskItem: React.FC<TaskItemProps> = ({
@@ -19,12 +21,14 @@ export const TaskItem: React.FC<TaskItemProps> = ({
     onRetry,
     onRunNow,
     onCancel,
-    onTaskUpdated
+    onTaskUpdated,
+    isRecurringRunning = false
 }) => {
     const [isExpanded, setIsExpanded] = useState(false);
     const [copied, setCopied] = useState(false);
     const [tzAbbreviation, setTzAbbreviation] = useState('');
     const [showContextModal, setShowContextModal] = useState(false);
+    const [showScheduleModal, setShowScheduleModal] = useState(false);
 
     useEffect(() => {
         const tz = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' })
@@ -91,6 +95,28 @@ export const TaskItem: React.FC<TaskItemProps> = ({
         }
     };
 
+    const handleUpdateSchedule = async (updatedData: {
+        frequency: TaskFrequency;
+        hour_of_day: number;
+        weekday_only?: boolean;
+        day_of_week?: number;
+        day_of_month?: number;
+    }) => {
+        const res = await fetch(`http://localhost:8000/tasks/${task.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(updatedData)
+        });
+        if (res.ok) {
+            const updated = await res.json();
+            if (onTaskUpdated) onTaskUpdated(updated);
+            setShowScheduleModal(false);
+        } else {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to update schedule');
+        }
+    };
+
     const formatSchedule = (t: Task) => {
         const hh = String(t.hour_of_day ?? 0).padStart(2, '0') + ':00';
         if (t.frequency === 'DAILY') {
@@ -112,6 +138,8 @@ export const TaskItem: React.FC<TaskItemProps> = ({
     const hasOutput = task.outputs && task.outputs.length > 0 && task.status !== 'RUNNING';
     const latestOutput = hasOutput ? task.outputs[task.outputs.length - 1].content : '';
     const parsedHtml = hasOutput ? (marked.parse(latestOutput, { async: false, gfm: true, breaks: true }) as string) : '';
+
+    const canEditContext = task.frequency !== 'ONCE' || task.status === 'PENDING' || task.status === 'FAILED';
 
     return (
         <div 
@@ -205,14 +233,35 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                 
                 {/* Task Actions */}
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
-                    {task.frequency !== 'ONCE' && task.status !== 'RUNNING' && (
-                        <button 
-                            className="secondary" 
-                            style={{ fontSize: '0.75rem', padding: '0.35rem 0.75rem', borderRadius: '6px' }}
-                            onClick={(e) => { e.stopPropagation(); onRunNow(task.id); }}
-                        >
-                            <Play size={12} /> Run Now
-                        </button>
+                    {task.frequency !== 'ONCE' && (
+                        <>
+                            <button 
+                                className="secondary" 
+                                style={{ fontSize: '0.75rem', padding: '0.35rem 0.75rem', borderRadius: '6px' }}
+                                onClick={(e) => { e.stopPropagation(); setShowScheduleModal(true); }}
+                                title="Edit schedule frequency and hour"
+                            >
+                                <Calendar size={12} /> Edit Schedule
+                            </button>
+                            <button 
+                                className="secondary" 
+                                disabled={isRecurringRunning}
+                                style={{ 
+                                    fontSize: '0.75rem', 
+                                    padding: '0.35rem 0.75rem', 
+                                    borderRadius: '6px',
+                                    opacity: isRecurringRunning ? 0.5 : 1,
+                                    cursor: isRecurringRunning ? 'not-allowed' : 'pointer'
+                                }}
+                                onClick={(e) => { 
+                                    e.stopPropagation(); 
+                                    if (!isRecurringRunning) onRunNow(task.id); 
+                                }}
+                                title={isRecurringRunning ? "Task is currently running or queued" : "Run task immediately"}
+                            >
+                                <Play size={12} /> {isRecurringRunning ? 'Running...' : 'Run Now'}
+                            </button>
+                        </>
                     )}
                     {(task.status === 'FAILED' || task.status === 'CANCELLED' || task.status === 'NO_RESULT') && task.frequency === 'ONCE' && (
                         <button 
@@ -275,22 +324,24 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                             }}
                         >
                             {ctx.name}
-                            <button
-                                onClick={(e) => { e.stopPropagation(); handleRemoveContext(ctx.id); }}
-                                style={{
-                                    background: 'none',
-                                    border: 'none',
-                                    color: 'var(--color-primary)',
-                                    cursor: 'pointer',
-                                    padding: '1px',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    borderRadius: '50%'
-                                }}
-                                title="Remove context from task"
-                            >
-                                <X size={11} />
-                            </button>
+                            {canEditContext && (
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); handleRemoveContext(ctx.id); }}
+                                    style={{
+                                        background: 'none',
+                                        border: 'none',
+                                        color: 'var(--color-primary)',
+                                        cursor: 'pointer',
+                                        padding: '1px',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        borderRadius: '50%'
+                                    }}
+                                    title="Remove context from task"
+                                >
+                                    <X size={11} />
+                                </button>
+                            )}
                         </span>
                     ))
                 ) : (
@@ -299,41 +350,63 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                     </span>
                 )}
 
-                <button
-                    className="secondary"
-                    onClick={(e) => { e.stopPropagation(); setShowContextModal(true); }}
-                    style={{
-                        padding: '0.15rem 0.55rem',
-                        fontSize: '0.72rem',
-                        borderRadius: '999px',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '0.2rem',
-                        cursor: 'pointer',
-                        marginLeft: '0.2rem'
-                    }}
-                    title="Add context to this task"
-                >
-                    <Plus size={11} /> Add Context
-                </button>
+                {canEditContext && (
+                    <button
+                        className="secondary"
+                        onClick={(e) => { e.stopPropagation(); setShowContextModal(true); }}
+                        style={{
+                            padding: '0.15rem 0.55rem',
+                            fontSize: '0.72rem',
+                            borderRadius: '999px',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.2rem',
+                            cursor: 'pointer',
+                            marginLeft: '0.2rem'
+                        }}
+                        title="Add context to this task"
+                    >
+                        <Plus size={11} /> Add Context
+                    </button>
+                )}
 
-                <ContextSelectModal 
-                    isOpen={showContextModal}
-                    onClose={() => setShowContextModal(false)}
-                    alreadySelectedIds={(task.contexts || []).map(c => c.id)}
-                    onAdd={handleAddContexts}
-                    title={`Add Context to Task #${task.id}`}
-                />
+                {canEditContext && (
+                    <ContextSelectModal 
+                        isOpen={showContextModal}
+                        onClose={() => setShowContextModal(false)}
+                        alreadySelectedIds={(task.contexts || []).map(c => c.id)}
+                        onAdd={handleAddContexts}
+                        title={`Add Context to Task #${task.id}`}
+                    />
+                )}
             </div>
 
             {/* Time Stamp and Expandable Toggle */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)', display: 'inline-flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
                     {task.frequency !== 'ONCE' ? <Clock size={12} /> : <CalendarDays size={12} />}
                     {task.frequency !== 'ONCE' ? `${formatSchedule(task)} ${tzAbbreviation}` :
                      task.status === 'RUNNING' ? `Started: ${toLocalDate(task.started_at).toLocaleTimeString()} ${tzAbbreviation}` :
                      task.status === 'CANCELLED' ? `Cancelled at: ${toLocalDate(task.updated_at).toLocaleTimeString()} ${tzAbbreviation}` :
                      `Last Run: ${toLocalDate(task.updated_at).toLocaleString()} ${tzAbbreviation}`}
+                    {task.frequency !== 'ONCE' && (
+                        <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setShowScheduleModal(true); }}
+                            style={{
+                                background: 'none',
+                                border: 'none',
+                                color: 'var(--color-primary)',
+                                cursor: 'pointer',
+                                padding: '1px 4px',
+                                fontSize: '0.72rem',
+                                textDecoration: 'underline'
+                            }}
+                            title="Edit schedule"
+                        >
+                            Edit
+                        </button>
+                    )}
                 </span>
                 
                 {hasOutput && (
@@ -392,6 +465,15 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                         dangerouslySetInnerHTML={{ __html: parsedHtml }}
                     />
                 </div>
+            )}
+
+            {task.frequency !== 'ONCE' && (
+                <EditScheduleModal
+                    isOpen={showScheduleModal}
+                    onClose={() => setShowScheduleModal(false)}
+                    task={task}
+                    onSave={handleUpdateSchedule}
+                />
             )}
         </div>
     );

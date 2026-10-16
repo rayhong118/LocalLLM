@@ -174,17 +174,24 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, onTasksUpdated }) => 
                         <span style={countBadgeStyle}>{recurring.length}</span>
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                        {recurring.map(t => (
-                            <TaskItem 
-                                key={t.id} 
-                                task={t} 
-                                onDelete={deleteTask}
-                                onRetry={retryTask}
-                                onRunNow={runNowTask}
-                                onCancel={cancelTask}
-                                onTaskUpdated={handleTaskUpdated}
-                            />
-                        ))}
+                        {recurring.map(t => {
+                            const isRunning = tasks.some(
+                                other => (other.parent_id === t.id && (other.status === 'RUNNING' || other.status === 'PENDING')) ||
+                                         (other.id === t.id && other.status === 'RUNNING')
+                            );
+                            return (
+                                <TaskItem 
+                                    key={t.id} 
+                                    task={t} 
+                                    isRecurringRunning={isRunning}
+                                    onDelete={deleteTask}
+                                    onRetry={retryTask}
+                                    onRunNow={runNowTask}
+                                    onCancel={cancelTask}
+                                    onTaskUpdated={handleTaskUpdated}
+                                />
+                            );
+                        })}
                     </div>
                 </div>
             )}

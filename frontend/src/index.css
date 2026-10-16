@@ -1,3 +1,7 @@
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+
 :root {
     /* Brand Color & Tints: Based on rgb(251, 146, 60) */
     --color-brand: rgb(251, 146, 60);               /* #fb923c - Warm Amber-Orange Brand */

@@ -21,6 +21,7 @@ export interface Task {
     started_at: string | null;
     created_at: string;
     updated_at: string;
+    parent_id?: number | null;
     outputs: TaskOutput[];
     contexts?: Context[];
 }
