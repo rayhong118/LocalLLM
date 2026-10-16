@@ -16,6 +16,7 @@ export interface Task {
     hour_of_day: number | null;
     day_of_week?: number | null;
     day_of_month?: number | null;
+    weekday_only?: boolean;
     next_run_at: string | null;
     started_at: string | null;
     created_at: string;

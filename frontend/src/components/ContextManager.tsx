@@ -251,7 +251,7 @@ export const ContextManager: React.FC = () => {
                                                 justifyContent: 'center',
                                                 transition: 'color 0.2s'
                                             }}
-                                            onMouseEnter={(e) => e.currentTarget.style.color = 'var(--color-info)'}
+                                            onMouseEnter={(e) => e.currentTarget.style.color = 'var(--color-primary)'}
                                             onMouseLeave={(e) => e.currentTarget.style.color = 'var(--color-text-light)'}
                                         >
                                             <Edit2 size={15} />

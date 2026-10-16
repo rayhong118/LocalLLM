@@ -21,6 +21,8 @@ def init_db():
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN day_of_week INTEGER"))
                 if "day_of_month" not in existing_cols:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN day_of_month INTEGER"))
+                if "weekday_only" not in existing_cols:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN weekday_only BOOLEAN DEFAULT 0"))
             except Exception as e:
                 print(f"Migration note for {table}: {e}")
         conn.commit()

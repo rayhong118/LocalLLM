@@ -680,12 +680,21 @@ async def weee_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
 
         # Extract items
         extraction_system = (
-            "You are a product extraction assistant. Your job is to extract a list of specific products or items from a user's prompt.\n"
+            "You are a product extraction assistant. Your job is to extract a list of specific products or grocery items "
+            "from the user prompt and any provided context or watchlist.\n"
             "Output ONLY a valid JSON object with the key 'items' containing a list of strings.\n"
-            "Example prompt: 'Get deals for milk, ice cream, and steak'\n"
-            "Output: {\"items\": [\"milk\", \"ice cream\", \"steak\"]}\n"
-            "If no specific items are found, output {\"items\": []}."
+            "RULES:\n"
+            "1. Extract concrete grocery/product items mentioned in the prompt or context/watchlist (e.g. 'milk', 'steak', 'arizona tea').\n"
+            "2. Do NOT include generic instructions, site names, action words, or context headings (e.g. do NOT include 'Check Weee Deals', 'deals', 'Weee watchlist', 'PRIOR KNOWLEDGE', 'coupons').\n"
+            "3. If multiple items are listed in the prompt or watchlist, return all of them as separate items in the list.\n"
+            "Example: Prompt: 'Check deals', Context: '--- Weee watchlist ---\\nmilk, ramen, dumplings'\n"
+            "Output: {\"items\": [\"milk\", \"ramen\", \"dumplings\"]}\n"
+            "If no specific products/items are found anywhere, output {\"items\": []}."
         )
+        user_input_content = f"Prompt: {prompt}"
+        if context_str and context_str.strip():
+            user_input_content += f"\n\nContext / Watchlist:\n{context_str.strip()}"
+
         items = []
         try:
             async with httpx.AsyncClient() as client:
@@ -694,7 +703,7 @@ async def weee_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
                     headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
                     json={
                         "model": config.LLM_MODEL,
-                        "messages": [{"role": "user", "content": f"{extraction_system}\n\nPrompt: {prompt}"}],
+                        "messages": [{"role": "user", "content": f"{extraction_system}\n\n{user_input_content}"}],
                         "stream": False,
                         "temperature": 0
                     },
@@ -708,15 +717,25 @@ async def weee_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
                     raw_content = ext_json.get("message", {}).get("content", "{}")
                 data = json.loads(clean_json_text(raw_content))
                 items = data.get("items", [])
-                logger.info(f"[weee_run_pre_flight] Extracted items from prompt: {items}")
+                logger.info(f"[weee_run_pre_flight] Extracted items from prompt and context: {items}")
                 with open(log_path, "a", encoding="utf-8") as f:
-                    f.write(f"PRE-FLIGHT: Extracted items from prompt: {items}\n")
+                    f.write(f"PRE-FLIGHT: Extracted items from prompt and context: {items}\n")
         except Exception as e:
             logger.error(f"[weee_run_pre_flight] Keyword extraction failed: {e}. Falling back to simple extraction.")
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"PRE-FLIGHT: Keyword extraction failed: {e}. Falling back to simple extraction.\n")
-            noise_words = {"look", "for", "deals", "weee", "sayweee", "website", "following", "item:", "items:", "item", "items", "search", "find", "on", "products", "product", "the", "a", "an"}
-            items = [" ".join([w for w in prompt.lower().split() if w not in noise_words and len(w) > 2]).strip()]
+            source_text = prompt
+            if context_str:
+                cleaned_ctx = re.sub(r'PRIOR KNOWLEDGE.*|---.*---|USE THIS TO INFORM.*', '', context_str, flags=re.IGNORECASE).strip()
+                if cleaned_ctx:
+                    source_text = cleaned_ctx
+            raw_candidates = [c.strip() for c in re.split(r'[,;\n]', source_text) if c.strip()]
+            noise_words = {"look", "for", "deals", "weee", "sayweee", "website", "following", "item:", "items:", "item", "items", "search", "find", "on", "products", "product", "the", "a", "an", "check"}
+            filtered_candidates = [c for c in raw_candidates if c.lower() not in noise_words and len(c) > 1]
+            if filtered_candidates:
+                items = filtered_candidates
+            else:
+                items = [" ".join([w for w in prompt.lower().split() if w not in noise_words and len(w) > 2]).strip()]
 
         if not items:
             items = [prompt[:30]]

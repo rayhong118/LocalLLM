@@ -115,15 +115,15 @@ export const ContextSelectModal: React.FC<ContextSelectModalProps> = ({
                                     padding: '0.85rem 1rem',
                                     borderRadius: '8px',
                                     border: isAlreadyAttached 
-                                        ? '1px dashed rgba(148, 163, 184, 0.4)'
+                                        ? '1px dashed var(--color-border)'
                                         : isSelected 
                                         ? '1.5px solid var(--color-primary)' 
                                         : '1px solid var(--color-border)',
                                     backgroundColor: isSelected 
-                                        ? 'rgba(99, 102, 241, 0.12)' 
+                                        ? 'var(--color-primary-soft)' 
                                         : isAlreadyAttached 
-                                        ? 'rgba(0, 0, 0, 0.15)' 
-                                        : 'rgba(255, 255, 255, 0.02)',
+                                        ? 'var(--color-bg-alt)' 
+                                        : '#ffffff',
                                     cursor: isAlreadyAttached ? 'default' : 'pointer',
                                     opacity: isAlreadyAttached ? 0.6 : 1,
                                     display: 'flex',
@@ -134,7 +134,7 @@ export const ContextSelectModal: React.FC<ContextSelectModalProps> = ({
                                 }}
                             >
                                 <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ fontWeight: 600, fontSize: '0.9rem', color: isSelected ? 'var(--color-primary)' : 'var(--color-text-main)', marginBottom: '0.25rem' }}>
+                                    <div style={{ fontWeight: 600, fontSize: '0.9rem', color: isSelected ? 'var(--color-primary-active)' : 'var(--color-text-main)', marginBottom: '0.25rem' }}>
                                         {ctx.name}
                                     </div>
                                     <div style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>

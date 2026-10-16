@@ -33,6 +33,7 @@ class TaskCreate(BaseModel):
     hour_of_day: Optional[int] = None
     day_of_week: Optional[int] = None # 0-6 (0=Mon, 6=Sun)
     day_of_month: Optional[int] = None # 1-31
+    weekday_only: Optional[bool] = False
     context_ids: Optional[List[int]] = []
 
 class TaskContextsUpdate(BaseModel):
@@ -69,6 +70,7 @@ class TaskSchema(BaseModel):
     hour_of_day: Optional[int]
     day_of_week: Optional[int] = None
     day_of_month: Optional[int] = None
+    weekday_only: Optional[bool] = False
     next_run_at: Optional[datetime]
     started_at: Optional[datetime]
     created_at: datetime
@@ -88,7 +90,8 @@ def calculate_next_run(
     frequency: str, 
     hour: Optional[int], 
     day_of_week: Optional[int] = None, 
-    day_of_month: Optional[int] = None
+    day_of_month: Optional[int] = None,
+    weekday_only: Optional[bool] = False
 ) -> Optional[datetime]:
     now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     
@@ -105,6 +108,9 @@ def calculate_next_run(
         target_local = now_local.replace(hour=hour, minute=0, second=0, microsecond=0)
         if target_local <= now_local:
             target_local += timedelta(days=1)
+        if weekday_only:
+            while target_local.weekday() >= 5: # 5=Sat, 6=Sun
+                target_local += timedelta(days=1)
         return target_local.astimezone(timezone.utc).replace(tzinfo=None)
 
     elif frequency == "WEEKLY":
@@ -217,7 +223,13 @@ async def check_scheduled_tasks():
             db.add(run_task)
             
             # Update next_run_at
-            task.next_run_at = calculate_next_run(task.frequency, task.hour_of_day, task.day_of_week, task.day_of_month)
+            task.next_run_at = calculate_next_run(
+                task.frequency, 
+                task.hour_of_day, 
+                task.day_of_week, 
+                task.day_of_month,
+                task.weekday_only
+            )
             
         db.commit()
             
@@ -295,7 +307,13 @@ def get_db():
 
 @app.post("/tasks", response_model=TaskSchema)
 async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
-    next_run = calculate_next_run(task.frequency, task.hour_of_day, task.day_of_week, task.day_of_month)
+    next_run = calculate_next_run(
+        task.frequency, 
+        task.hour_of_day, 
+        task.day_of_week, 
+        task.day_of_month,
+        task.weekday_only
+    )
     
     # If it's a "ONCE" task, we trigger it manually in a moment,
     # so we set next_run_at to None to prevent the scheduler from picking it up.
@@ -310,6 +328,7 @@ async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
         hour_of_day=task.hour_of_day,
         day_of_week=task.day_of_week,
         day_of_month=task.day_of_month,
+        weekday_only=bool(task.weekday_only) if task.weekday_only is not None else False,
         next_run_at=next_run
     )
     if task.context_ids:

@@ -78,19 +78,19 @@ export const App: React.FC = () => {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
                     <div 
                         style={{
-                            background: 'linear-gradient(135deg, var(--color-primary), #6366f1)',
+                            background: 'linear-gradient(135deg, var(--color-primary), var(--color-brand))',
                             padding: '0.6rem',
                             borderRadius: '12px',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
-                            boxShadow: '0 4px 12px rgba(59, 130, 246, 0.3)'
+                            boxShadow: '0 4px 14px rgba(251, 146, 60, 0.35)'
                         }}
                     >
                         <Cpu size={24} color="#ffffff" />
                     </div>
                     <h1 style={{ fontSize: '1.75rem', fontWeight: 800 }}>
-                        LocalLLM <span style={{ background: 'linear-gradient(135deg, var(--color-primary), #818cf8)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Agent</span>
+                        LocalLLM <span style={{ background: 'linear-gradient(135deg, var(--color-primary), #ea580c)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Agent</span>
                     </h1>
                 </div>
 
@@ -108,13 +108,13 @@ export const App: React.FC = () => {
                             fontWeight: 600,
                             transition: 'all 0.2s',
                             backgroundColor: currentPage === 'dashboard' ? 'var(--color-primary-soft)' : 'transparent',
-                            color: currentPage === 'dashboard' ? 'var(--color-primary)' : 'var(--color-text-muted)',
-                            border: currentPage === 'dashboard' ? '1px solid rgba(59, 130, 246, 0.15)' : '1px solid transparent'
+                            color: currentPage === 'dashboard' ? 'var(--color-primary-active)' : 'var(--color-text-muted)',
+                            border: currentPage === 'dashboard' ? '1px solid var(--color-primary-border)' : '1px solid transparent'
                         }}
                         onMouseEnter={(e) => {
                             if (currentPage !== 'dashboard') {
                                 e.currentTarget.style.color = 'var(--color-text-main)';
-                                e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.03)';
+                                e.currentTarget.style.backgroundColor = 'var(--color-bg-alt)';
                             }
                         }}
                         onMouseLeave={(e) => {
@@ -139,13 +139,13 @@ export const App: React.FC = () => {
                             fontWeight: 600,
                             transition: 'all 0.2s',
                             backgroundColor: currentPage === 'contexts' ? 'var(--color-primary-soft)' : 'transparent',
-                            color: currentPage === 'contexts' ? 'var(--color-primary)' : 'var(--color-text-muted)',
-                            border: currentPage === 'contexts' ? '1px solid rgba(59, 130, 246, 0.15)' : '1px solid transparent'
+                            color: currentPage === 'contexts' ? 'var(--color-primary-active)' : 'var(--color-text-muted)',
+                            border: currentPage === 'contexts' ? '1px solid var(--color-primary-border)' : '1px solid transparent'
                         }}
                         onMouseEnter={(e) => {
                             if (currentPage !== 'contexts') {
                                 e.currentTarget.style.color = 'var(--color-text-main)';
-                                e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.03)';
+                                e.currentTarget.style.backgroundColor = 'var(--color-bg-alt)';
                             }
                         }}
                         onMouseLeave={(e) => {

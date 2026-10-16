@@ -93,7 +93,9 @@ export const TaskItem: React.FC<TaskItemProps> = ({
 
     const formatSchedule = (t: Task) => {
         const hh = String(t.hour_of_day ?? 0).padStart(2, '0') + ':00';
-        if (t.frequency === 'DAILY') return `Every day at ${hh}`;
+        if (t.frequency === 'DAILY') {
+            return t.weekday_only ? `Every weekday (Mon-Fri) at ${hh}` : `Every day at ${hh}`;
+        }
         if (t.frequency === 'WEEKLY') {
             const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
             const dayName = days[t.day_of_week ?? 0] || 'Monday';
@@ -167,28 +169,30 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                             whiteSpace: 'nowrap',
                             display: 'inline-block',
                             backgroundColor: 
-                                task.frequency === 'DAILY' ? 'var(--color-info-bg)' :
-                                task.frequency === 'WEEKLY' ? 'rgba(168, 85, 247, 0.15)' :
-                                task.frequency === 'MONTHLY' ? 'rgba(16, 185, 129, 0.15)' :
+                                task.frequency === 'DAILY' ? 'var(--color-primary-soft)' :
+                                task.frequency === 'WEEKLY' ? 'var(--color-accent-purple-bg)' :
+                                task.frequency === 'MONTHLY' ? 'rgba(16, 185, 129, 0.12)' :
                                 (task.status === 'SUCCESS' || task.status === 'COMPLETED') ? 'var(--color-success-bg)' :
-                                task.status === 'PARTIAL_SUCCESS' ? 'rgba(245, 158, 11, 0.15)' :
-                                task.status === 'NO_RESULT' ? 'rgba(148, 163, 184, 0.15)' :
+                                task.status === 'PARTIAL_SUCCESS' ? 'var(--color-warning-bg)' :
+                                task.status === 'NO_RESULT' ? 'var(--color-neutral-bg)' :
                                 task.status === 'RUNNING' ? 'var(--color-warning-bg)' :
                                 task.status === 'FAILED' ? 'var(--color-error-bg)' :
                                 'var(--color-neutral-bg)',
                             color:
-                                task.frequency === 'DAILY' ? 'var(--color-info)' :
-                                task.frequency === 'WEEKLY' ? '#a855f7' :
-                                task.frequency === 'MONTHLY' ? '#10b981' :
+                                task.frequency === 'DAILY' ? 'var(--color-primary-active)' :
+                                task.frequency === 'WEEKLY' ? 'var(--color-accent-purple)' :
+                                task.frequency === 'MONTHLY' ? '#047857' :
                                 (task.status === 'SUCCESS' || task.status === 'COMPLETED') ? 'var(--color-success)' :
-                                task.status === 'PARTIAL_SUCCESS' ? '#f59e0b' :
-                                task.status === 'NO_RESULT' ? '#94a3b8' :
+                                task.status === 'PARTIAL_SUCCESS' ? '#b45309' :
+                                task.status === 'NO_RESULT' ? 'var(--color-text-muted)' :
                                 task.status === 'RUNNING' ? 'var(--color-warning)' :
                                 task.status === 'FAILED' ? 'var(--color-error)' :
                                 'var(--color-neutral)'
                         }}
                     >
-                        {task.frequency !== 'ONCE' ? task.frequency : (
+                        {task.frequency !== 'ONCE' ? (
+                            task.frequency === 'DAILY' && task.weekday_only ? 'WEEKDAYS' : task.frequency
+                        ) : (
                             task.status === 'PARTIAL_SUCCESS' ? 'PARTIAL SUCCESS' :
                             task.status === 'NO_RESULT' ? 'NO RESULT' :
                             task.status
@@ -265,9 +269,9 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                                 borderRadius: '999px',
                                 fontSize: '0.72rem',
                                 fontWeight: 600,
-                                backgroundColor: 'rgba(99, 102, 241, 0.12)',
-                                color: 'var(--color-primary)',
-                                border: '1px solid rgba(99, 102, 241, 0.25)'
+                                backgroundColor: 'var(--color-primary-soft)',
+                                color: 'var(--color-primary-active)',
+                                border: '1px solid var(--color-primary-border)'
                             }}
                         >
                             {ctx.name}
@@ -369,9 +373,10 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                     style={{
                         marginTop: '1rem',
                         padding: '1.25rem',
-                        background: 'rgba(0, 0, 0, 0.25)',
+                        background: 'var(--color-bg-alt)',
                         borderRadius: '8px',
-                        borderLeft: '4px solid var(--color-info)',
+                        border: '1px solid var(--color-border)',
+                        borderLeft: '4px solid var(--color-brand)',
                         animation: 'slideDown 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards',
                         maxHeight: '2000px',
                         overflowY: 'auto'

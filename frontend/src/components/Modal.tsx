@@ -51,7 +51,7 @@ export const Modal: React.FC<ModalProps> = ({
                 left: 0,
                 right: 0,
                 bottom: 0,
-                backgroundColor: 'rgba(0, 0, 0, 0.75)',
+                backgroundColor: 'rgba(15, 23, 42, 0.45)',
                 backdropFilter: 'blur(8px)',
                 WebkitBackdropFilter: 'blur(8px)',
                 display: 'flex',
@@ -73,9 +73,9 @@ export const Modal: React.FC<ModalProps> = ({
                     flexDirection: 'column',
                     padding: '1.5rem',
                     borderRadius: '16px',
-                    border: '1.5px solid var(--color-border)',
-                    boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.05)',
-                    backgroundColor: 'rgba(20, 22, 32, 0.95)',
+                    border: '1px solid var(--color-border)',
+                    boxShadow: '0 20px 45px -8px rgba(15, 23, 42, 0.18), 0 0 0 1px var(--color-border)',
+                    backgroundColor: '#ffffff',
                     color: 'var(--color-text-main)',
                     position: 'relative'
                 }}

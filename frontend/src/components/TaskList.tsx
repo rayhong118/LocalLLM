@@ -118,21 +118,21 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, onTasksUpdated }) => 
                         fontSize: '0.85rem',
                         borderRadius: '6px',
                         border: '1px solid var(--color-border)',
-                        background: currentPage === i ? 'var(--color-primary)' : 'rgba(31, 41, 55, 0.4)',
-                        color: currentPage === i ? '#ffffff' : 'var(--color-text-muted)',
+                        background: currentPage === i ? 'linear-gradient(135deg, var(--color-primary), var(--color-brand))' : 'var(--color-bg-alt)',
+                        color: currentPage === i ? '#ffffff' : 'var(--color-text-body)',
                         fontWeight: 600,
                         transition: 'all 0.2s',
                         cursor: 'pointer'
                     }}
                     onMouseEnter={(e) => {
                         if (currentPage !== i) {
-                            e.currentTarget.style.color = '#ffffff';
-                            e.currentTarget.style.borderColor = 'var(--color-border-hover)';
+                            e.currentTarget.style.color = 'var(--color-primary-active)';
+                            e.currentTarget.style.borderColor = 'var(--color-primary)';
                         }
                     }}
                     onMouseLeave={(e) => {
                         if (currentPage !== i) {
-                            e.currentTarget.style.color = 'var(--color-text-muted)';
+                            e.currentTarget.style.color = 'var(--color-text-body)';
                             e.currentTarget.style.borderColor = 'var(--color-border)';
                         }
                     }}

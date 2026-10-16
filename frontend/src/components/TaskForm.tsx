@@ -14,6 +14,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
     const [hourOfDay, setHourOfDay] = useState<number>(new Date().getHours());
     const [dayOfWeek, setDayOfWeek] = useState<number>(new Date().getDay() === 0 ? 6 : new Date().getDay() - 1); // 0=Mon..6=Sun
     const [dayOfMonth, setDayOfMonth] = useState<number>(new Date().getDate()); // 1..31
+    const [weekdayOnly, setWeekdayOnly] = useState(false);
     const [selectedContexts, setSelectedContexts] = useState<Context[]>([]);
     const [showContextModal, setShowContextModal] = useState(false);
 
@@ -32,11 +33,13 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
                     hour_of_day: frequency !== 'ONCE' ? Number(hourOfDay) : null,
                     day_of_week: frequency === 'WEEKLY' ? Number(dayOfWeek) : null,
                     day_of_month: frequency === 'MONTHLY' ? Number(dayOfMonth) : null,
+                    weekday_only: frequency === 'DAILY' ? weekdayOnly : false,
                     context_ids: selectedContexts.map(c => c.id)
                 })
             });
             if (res.ok) {
                 setPrompt('');
+                setWeekdayOnly(false);
                 setSelectedContexts([]);
                 onTaskCreated();
             }
@@ -84,9 +87,9 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
                             borderRadius: '999px',
                             fontSize: '0.75rem',
                             fontWeight: 600,
-                            backgroundColor: 'rgba(99, 102, 241, 0.15)',
-                            color: 'var(--color-primary)',
-                            border: '1px solid rgba(99, 102, 241, 0.3)'
+                            backgroundColor: 'var(--color-primary-soft)',
+                            color: 'var(--color-primary-active)',
+                            border: '1px solid var(--color-primary-border)'
                         }}
                     >
                         {ctx.name}
@@ -154,6 +157,43 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
                         <option value="MONTHLY">Monthly Recurring</option>
                     </select>
                 </div>
+
+                {frequency === 'DAILY' && (
+                    <div style={{ display: 'flex', alignItems: 'center', height: '44px' }}>
+                        <label 
+                            style={{ 
+                                display: 'inline-flex', 
+                                alignItems: 'center', 
+                                gap: '0.55rem', 
+                                cursor: 'pointer', 
+                                fontSize: '0.85rem', 
+                                fontWeight: 600, 
+                                color: weekdayOnly ? 'var(--color-primary-active)' : 'var(--color-text-body)',
+                                background: weekdayOnly ? 'var(--color-primary-soft-hover)' : 'var(--color-bg-alt)',
+                                border: `1px solid ${weekdayOnly ? 'var(--color-primary)' : 'var(--color-border)'}`,
+                                padding: '0.65rem 0.95rem',
+                                borderRadius: '10px',
+                                transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                                userSelect: 'none'
+                            }}
+                        >
+                            <input 
+                                type="checkbox"
+                                checked={weekdayOnly}
+                                onChange={(e) => setWeekdayOnly(e.target.checked)}
+                                disabled={loading}
+                                style={{ 
+                                    width: '16px', 
+                                    height: '16px', 
+                                    accentColor: 'var(--color-primary)', 
+                                    cursor: 'pointer', 
+                                    margin: 0 
+                                }}
+                            />
+                            <span>Weekday only (Mon – Fri)</span>
+                        </label>
+                    </div>
+                )}
 
                 {frequency === 'WEEKLY' && (
                     <div style={{ flex: 1, minWidth: '150px' }}>
