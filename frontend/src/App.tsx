@@ -78,7 +78,7 @@ export const App: React.FC = () => {
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
                     <div 
                         style={{
-                            background: 'linear-gradient(135deg, var(--color-primary), var(--color-brand))',
+                            background: 'var(--color-primary)',
                             padding: '0.6rem',
                             borderRadius: '12px',
                             display: 'flex',
@@ -90,7 +90,7 @@ export const App: React.FC = () => {
                         <Cpu size={24} color="#ffffff" />
                     </div>
                     <h1 style={{ fontSize: '1.75rem', fontWeight: 800 }}>
-                        LocalLLM <span style={{ background: 'linear-gradient(135deg, var(--color-primary), #ea580c)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Agent</span>
+                        LocalLLM <span style={{ color: 'var(--color-primary)' }}>Agent</span>
                     </h1>
                 </div>
 

@@ -51,10 +51,6 @@ body {
     padding: 0;
     font-family: 'Inter', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background-color: var(--color-bg);
-    background-image: 
-        radial-gradient(at 0% 0%, rgba(251, 146, 60, 0.06) 0px, transparent 45%),
-        radial-gradient(at 100% 100%, rgba(245, 158, 11, 0.05) 0px, transparent 45%);
-    background-attachment: fixed;
     color: var(--color-text-body);
     min-height: 100vh;
     -webkit-font-smoothing: antialiased;
@@ -166,13 +162,13 @@ button:disabled {
 }
 
 button.primary {
-    background: linear-gradient(135deg, var(--color-primary), var(--color-brand));
+    background: var(--color-primary);
     color: #ffffff;
     box-shadow: 0 4px 14px 0 rgba(249, 115, 22, 0.32);
 }
 
 button.primary:hover:not(:disabled) {
-    background: linear-gradient(135deg, var(--color-primary-hover), var(--color-primary));
+    background: var(--color-primary-hover);
     transform: translateY(-1px);
     box-shadow: 0 6px 20px 0 rgba(249, 115, 22, 0.42);
 }

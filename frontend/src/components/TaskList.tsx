@@ -118,7 +118,7 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, onTasksUpdated }) => 
                         fontSize: '0.85rem',
                         borderRadius: '6px',
                         border: '1px solid var(--color-border)',
-                        background: currentPage === i ? 'linear-gradient(135deg, var(--color-primary), var(--color-brand))' : 'var(--color-bg-alt)',
+                        background: currentPage === i ? 'var(--color-primary)' : 'var(--color-bg-alt)',
                         color: currentPage === i ? '#ffffff' : 'var(--color-text-body)',
                         fontWeight: 600,
                         transition: 'all 0.2s',
