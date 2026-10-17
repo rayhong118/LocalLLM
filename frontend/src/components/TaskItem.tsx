@@ -450,9 +450,7 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                         borderRadius: '8px',
                         border: '1px solid var(--color-border)',
                         borderLeft: '4px solid var(--color-brand)',
-                        animation: 'slideDown 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards',
-                        maxHeight: '2000px',
-                        overflowY: 'auto'
+                        animation: 'slideDown 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards'
                     }}
                 >
                     <div 
@@ -460,7 +458,9 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                         style={{
                             fontSize: '0.95rem',
                             lineHeight: 1.6,
-                            color: 'var(--color-text-body)'
+                            color: 'var(--color-text-body)',
+                            wordBreak: 'break-word',
+                            overflowWrap: 'break-word'
                         }}
                         dangerouslySetInnerHTML={{ __html: parsedHtml }}
                     />

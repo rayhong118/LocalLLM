@@ -56,9 +56,10 @@ if (-not $lmProc) {
     ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
     if ($lmExe) {
-        Write-Host "  LM Studio is not running. Starting in normal mode (GUI, not headless): $lmExe..." -ForegroundColor Cyan
-        Start-Process -FilePath $lmExe -WindowStyle Normal
-        Write-Host "  Waiting for LM Studio to initialize in normal mode..." -ForegroundColor Yellow
+        Write-Host "  LM Studio is not running. Starting in detached mode (GUI, independent process): $lmExe..." -ForegroundColor Cyan
+        # Launch detached from PowerShell / terminal process tree so exiting the app never closes LM Studio
+        Start-Process -FilePath "cmd.exe" -ArgumentList "/c start `"`" `"$lmExe`"" -WindowStyle Hidden
+        Write-Host "  Waiting for LM Studio to initialize..." -ForegroundColor Yellow
         Start-Sleep -Seconds 5
     }
     else {
@@ -202,6 +203,9 @@ finally {
         $taskChrome | Invoke-CimMethod -MethodName Terminate | Out-Null
         Write-Host "  [OK] Closed task browser window(s)." -ForegroundColor Green
     }
+
+    # 3. LM Studio / Bionic is intentionally left running
+    Write-Host "  [OK] LM Studio / Bionic remains running." -ForegroundColor Green
 
     if ($agentExit -eq 0) {
         Write-Host "`nLocalLLM Server finished successfully." -ForegroundColor Green
