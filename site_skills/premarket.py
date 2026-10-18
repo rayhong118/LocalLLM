@@ -1,24 +1,30 @@
 # site_skills/premarket.py
+import asyncio
+from datetime import datetime, time, timedelta
+from email.utils import parsedate_to_datetime
+import json
 import logging
 import os
 import re
-import json
 import sqlite3
-import asyncio
+from typing import Any, Dict, List, Optional, Set, Tuple
 import xml.etree.ElementTree as ET
-from datetime import datetime, time, timedelta
-from email.utils import parsedate_to_datetime
-from typing import Any, List, Dict, Optional, Tuple, Set
 from zoneinfo import ZoneInfo
-import httpx
-from dotenv import load_dotenv
 
-from backend.core.plugin import BaseSitePlugin
-from browser_use import BrowserSession
+from dotenv import load_dotenv
+import httpx
+
 from backend import config
+from backend.core.plugin import BaseSitePlugin
+from backend.services.llm import clean_json_text
+from browser_use import BrowserSession
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# ==========================================
+# 1. Endpoints, Keywords & Precompiled Regexes
+# ==========================================
 
 FINNHUB_NEWS_API_URL = "https://finnhub.io/api/v1/news"
 FINNHUB_COMPANY_NEWS_API_URL = "https://finnhub.io/api/v1/company-news"
@@ -41,33 +47,23 @@ TICKER_IGNORE_WORDS = {
 
 # Keywords that define macroeconomic and market-wide news
 MACRO_KEYWORDS = [
-    # Monetary Policy, Central Banks & Rates
     "fed", "federal reserve", "fomc", "powell", "interest rate", "rate cut", "rate hike", 
     "monetary policy", "central bank", "ecb", "boj", "treasury", "treasuries", "bond yield", "yield curve",
-    
-    # Economic Indicators & Data
     "inflation", "cpi", "ppi", "pce", "gdp", "jobs report", "nonfarm", "unemployment", "payroll",
     "labor market", "consumer price", "producer price", "consumer spending", "retail sales", 
     "consumer confidence", "recession", "soft landing", "economic growth", "economic data",
     "debt ceiling", "budget deficit", "fiscal policy",
-    
-    # Broad Market Trends & Indexes
     "stock market", "wall street", "s&p 500", "s&p", "sp500", "nasdaq", "dow jones", "dow", 
     "russell", "vix", "market futures", "pre-market", "premarket", "opening bell", "market wrap",
     "stocks rise", "stocks fall", "stocks tumble", "stocks rally", "stocks slump", "stocks mixed",
     "global markets", "european stocks", "asian stocks", "equities",
-    
-    # Energy, Commodities & Currencies
     "oil", "crude", "brent", "wti", "opec", "strategic reserve", "strategic petroleum", 
     "gasoline", "diesel", "natural gas", "commodities", "gold", "dollar", "usd", "dxy", "forex", "currency",
-    
-    # Broad Policy & Geopolitical Events with Macro Market Impact
     "tariff", "tariffs", "trade war", "sanctions", "trade deficit", "export controls",
     "geopolitical", "middle east", "blockade", "defense spending", "sovereign wealth",
     "wealth fund", "regulatory", "antitrust", "cybersecurity policy", "national security", "iran"
 ]
 
-# Patterns characteristic of single-company corporate events
 COMPANY_SPECIFIC_PATTERNS = [
     r'\bq[1-4]\s+(?:earnings|results|profit|revenue)\b',
     r'\bearnings\s+(?:miss|beat|report|preview|call)\b',
@@ -77,97 +73,84 @@ COMPANY_SPECIFIC_PATTERNS = [
     r'\bshares\s+(?:surge|slide|soar|dip|jump|fall|tumble)\s+after\b',
 ]
 
+# Precompiled regexes for single-pass classification
+RE_MACRO = re.compile(r'\b(?:' + '|'.join(re.escape(k) for k in MACRO_KEYWORDS) + r')\b', re.IGNORECASE)
+RE_COMPANY = re.compile('|'.join(COMPANY_SPECIFIC_PATTERNS), re.IGNORECASE)
+RE_CONTEXT_BLOCK = re.compile(r'---\s*([^\n-]+)\s*---\s*\n(.*?)(?=\n\s*---|\n\s*USE THIS|\Z)', re.IGNORECASE | re.DOTALL)
+RE_WATCHLIST_LABEL = re.compile(
+    r'(?:stocks?|tickers?|watchlist|portfolio|holdings?)\s*(?:to\s*watch)?\s*[:=\-]\s*([A-Za-z0-9\s,/\$]+)|\b(?:watch|track|following)\b\s*[:=\-]?\s*([A-Za-z0-9\s,/\$]+)',
+    re.IGNORECASE
+)
+
+
+# ==========================================
+# 2. Helpers (Logging, Windows, Watchlist)
+# ==========================================
+
+def _log(log_path: str, msg: str) -> None:
+    """Safe append to execution log file."""
+    if log_path:
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(msg)
+        except Exception:
+            pass
+
 
 def calculate_premarket_window(now_et: Optional[datetime] = None) -> Tuple[datetime, datetime, int, int, str]:
-    """
-    Calculates the target pre-market time window:
-    From after-market close (4:00 PM ET) of the previous trading day up to the current morning time.
-
-    - Tuesday-Friday morning: Yesterday 4:00 PM ET -> Current time.
-    - Monday morning: Friday 4:00 PM ET -> Current time.
-    - Saturday/Sunday: Friday 4:00 PM ET -> Current time.
-
-    Returns:
-        (start_dt, end_dt, start_ts, end_ts, window_label)
-    """
+    """Calculates pre-market window: from previous close (4:00 PM ET) up to current time."""
     if now_et is None:
         now_et = datetime.now(ET_TZ)
     elif now_et.tzinfo is None:
         now_et = now_et.replace(tzinfo=ET_TZ)
 
-    weekday = now_et.weekday()  # 0 = Monday, 6 = Sunday
-
-    if weekday == 0:  # Monday
-        prev_close_date = now_et.date() - timedelta(days=3)
-        day_desc = f"Friday ({prev_close_date.strftime('%b %d')})"
-    elif weekday == 6:  # Sunday
-        prev_close_date = now_et.date() - timedelta(days=2)
-        day_desc = f"Friday ({prev_close_date.strftime('%b %d')})"
-    elif weekday == 5:  # Saturday
-        prev_close_date = now_et.date() - timedelta(days=1)
-        day_desc = f"Friday ({prev_close_date.strftime('%b %d')})"
-    else:  # Tuesday through Friday
-        prev_close_date = now_et.date() - timedelta(days=1)
-        day_desc = f"Yesterday ({prev_close_date.strftime('%b %d')})"
+    weekday = now_et.weekday()
+    days_back = 3 if weekday == 0 else (2 if weekday == 6 else 1)
+    prev_close_date = now_et.date() - timedelta(days=days_back)
+    day_desc = f"Friday ({prev_close_date.strftime('%b %d')})" if weekday in (0, 5, 6) else f"Yesterday ({prev_close_date.strftime('%b %d')})"
 
     start_dt = datetime.combine(prev_close_date, time(16, 0, 0), tzinfo=ET_TZ)
     end_dt = now_et
+    start_ts, end_ts = int(start_dt.timestamp()), int(end_dt.timestamp())
 
-    start_ts = int(start_dt.timestamp())
-    end_ts = int(end_dt.timestamp())
-
-    window_label = (
-        f"{day_desc} Post-Market ({start_dt.strftime('%I:%M %p %Z')}) "
-        f"➔ Today ({end_dt.strftime('%b %d, %I:%M %p %Z')})"
-    )
+    window_label = f"{day_desc} Post-Market ({start_dt.strftime('%I:%M %p %Z')}) ➔ Today ({end_dt.strftime('%b %d, %I:%M %p %Z')})"
     return start_dt, end_dt, start_ts, end_ts, window_label
 
 
 def extract_tickers_from_text(text: str) -> List[str]:
-    """Extract valid stock ticker symbols from text (e.g., AAPL, NVDA, $TSLA, SPY)."""
+    """Extract valid stock ticker symbols strictly from explicit formatting or context structures."""
     if not text:
         return []
 
     candidates = set()
 
-    # 1. Match explicit $TICKER format
+    # 1. Explicit $TICKER
     for match in re.findall(r'\$([A-Za-z]{1,5})\b', text):
         clean = match.upper()
         if clean not in TICKER_IGNORE_WORDS:
             candidates.add(clean)
 
-    # 2. Match bound Context Blocks: --- Context Name --- \n content
-    context_blocks = re.findall(
-        r'---\s*([^\n-]+)\s*---\s*\n(.*?)(?=\n\s*---|\n\s*USE THIS|\Z)',
-        text,
-        re.IGNORECASE | re.DOTALL
-    )
-    for header, content in context_blocks:
-        header_lower = header.lower()
-        if any(kw in header_lower for kw in ["watchlist", "stock", "ticker", "portfolio", "holding", "equities"]) or len(context_blocks) == 1:
+    # 2. Bound Context Blocks: --- Context Name --- \n content
+    for header, content in RE_CONTEXT_BLOCK.findall(text):
+        if any(kw in header.lower() for kw in ["watchlist", "stock", "ticker", "portfolio", "holding", "equities"]):
             for token in re.split(r'[\s,;\n\-\*]+', content):
                 clean = re.sub(r'[^A-Za-z]', '', token).upper()
                 if 1 <= len(clean) <= 5 and clean not in TICKER_IGNORE_WORDS:
                     candidates.add(clean)
 
-    # 3. Match labeled lists like "Watchlist: AAPL, NVDA", "stocks to watch: TSLA, MSFT"
-    patterns = [
-        r'(?:stocks?|tickers?|watchlist|portfolio|holdings?)\s*(?:to\s*watch)?\s*[:=\-]\s*([A-Za-z0-9\s,/\$]+)',
-        r'\b(?:watch|track|following)\b\s*[:=\-]?\s*([A-Za-z0-9\s,/\$]+)'
-    ]
-    for pat in patterns:
-        for match in re.finditer(pat, text, re.IGNORECASE):
-            section = match.group(1)
-            for token in re.split(r'[\s,]+', section):
-                clean = re.sub(r'[^A-Za-z]', '', token).upper()
-                if 1 <= len(clean) <= 5 and clean not in TICKER_IGNORE_WORDS:
-                    candidates.add(clean)
+    # 3. Labeled lists
+    for match in RE_WATCHLIST_LABEL.finditer(text):
+        section = match.group(1) or match.group(2) or ""
+        for token in re.split(r'[\s,]+', section):
+            clean = re.sub(r'[^A-Za-z]', '', token).upper()
+            if 1 <= len(clean) <= 5 and clean not in TICKER_IGNORE_WORDS:
+                candidates.add(clean)
 
     return sorted(list(candidates))
 
 
 def get_watchlist_from_db(db_path: str = "tasks.db", log_path: str = "") -> List[str]:
-    """Query Context table in tasks.db for any stock watchlist or stocks-to-watch entries."""
+    """Query Context table in tasks.db for any stock watchlist entries."""
     if not os.path.exists(db_path):
         return []
     try:
@@ -178,31 +161,16 @@ def get_watchlist_from_db(db_path: str = "tasks.db", log_path: str = "") -> List
         conn.close()
 
         grocery_kws = ["safeway", "weee", "grocery", "groceries", "shopping", "food"]
+        stock_kws = ["stock", "ticker", "portfolio", "equity", "equities", "watchlist", "stocks to watch", "holdings"]
 
-        # 1. First pass: specific stock contexts (e.g. 'Stock watchlist')
         for name, content in rows:
             name_lower = name.lower()
             if any(g in name_lower for g in grocery_kws):
                 continue
-            if any(kw in name_lower for kw in ["stock", "ticker", "portfolio", "equity", "equities"]):
+            if any(kw in name_lower for kw in stock_kws):
                 tickers = extract_tickers_from_text(f"--- {name} ---\n{content}\n")
                 if tickers:
-                    if log_path:
-                        with open(log_path, "a", encoding="utf-8") as f:
-                            f.write(f"PreMarket: Found stock watchlist in Context '{name}': {', '.join(tickers)}\n")
-                    return tickers
-
-        # 2. Second pass: generic watchlist (excluding groceries)
-        for name, content in rows:
-            name_lower = name.lower()
-            if any(g in name_lower for g in grocery_kws):
-                continue
-            if any(kw in name_lower for kw in ["watchlist", "stocks to watch", "holdings"]):
-                tickers = extract_tickers_from_text(f"--- {name} ---\n{content}\n")
-                if tickers:
-                    if log_path:
-                        with open(log_path, "a", encoding="utf-8") as f:
-                            f.write(f"PreMarket: Found watchlist in Context '{name}': {', '.join(tickers)}\n")
+                    _log(log_path, f"PreMarket: Found stock watchlist in Context '{name}': {', '.join(tickers)}\n")
                     return tickers
     except Exception as e:
         logger.warning(f"Error querying contexts from db: {e}")
@@ -210,19 +178,16 @@ def get_watchlist_from_db(db_path: str = "tasks.db", log_path: str = "") -> List
 
 
 def resolve_watchlist_tickers(prompt: str, context_str: str, log_path: str = "") -> List[str]:
-    """
-    Determines if there are existing context entries listing stocks to watch for.
-    Stock tickers are resolved strictly from Context, NOT prompt.
-    If none exist, returns an empty list (macro news only).
-    """
+    """Determines watchlist tickers strictly from Context, NOT prompt."""
     context_tickers = extract_tickers_from_text(context_str)
     if context_tickers:
         return context_tickers
+    return get_watchlist_from_db(log_path=log_path)
 
-    # 2. Check database Context entries
-    db_tickers = get_watchlist_from_db(log_path=log_path)
-    return db_tickers
 
+# ==========================================
+# 3. News Ingestion (Finnhub & RSS)
+# ==========================================
 
 async def fetch_finnhub_news(
     api_key: str,
@@ -231,54 +196,37 @@ async def fetch_finnhub_news(
     end_dt: Optional[datetime] = None,
     log_path: str = ""
 ) -> List[Dict[str, Any]]:
-    """
-    Fetch market news using Finnhub REST API.
-    Fetches general market news. If specific watchlist tickers are given, queries company news for them.
-    """
+    """Fetch general macro news and company news from Finnhub REST API."""
     collected_items: List[Dict[str, Any]] = []
     seen_ids = set()
 
+    _log(log_path, "Finnhub API: Fetching category 'general' news...\n")
     async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
-        # 1. Fetch General Market News (macro focus)
-        url = f"{FINNHUB_NEWS_API_URL}?category=general&token={api_key}"
-        if log_path:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write("Finnhub API: Fetching category 'general' news...\n")
         try:
-            resp = await client.get(url)
+            resp = await client.get(f"{FINNHUB_NEWS_API_URL}?category=general&token={api_key}")
             if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list):
-                    for item in data:
-                        item_id = item.get("id") or item.get("headline")
-                        if item_id and item_id not in seen_ids:
-                            seen_ids.add(item_id)
-                            collected_items.append(item)
-            else:
-                logger.warning(f"Finnhub general news returned {resp.status_code}: {resp.text[:100]}")
+                for item in resp.json():
+                    item_id = item.get("id") or item.get("headline")
+                    if item_id and item_id not in seen_ids:
+                        seen_ids.add(item_id)
+                        collected_items.append(item)
         except Exception as e:
             logger.error(f"Error fetching Finnhub general news: {e}")
 
-        # 2. If watchlist tickers are provided, fetch company-specific news specifically for them
         if tickers and start_dt and end_dt:
-            from_date = start_dt.strftime("%Y-%m-%d")
-            to_date = end_dt.strftime("%Y-%m-%d")
-            for ticker in tickers[:8]:  # query for up to 8 watchlist tickers
-                if log_path:
-                    with open(log_path, "a", encoding="utf-8") as f:
-                        f.write(f"Finnhub API: Fetching watchlist company news for '{ticker}'...\n")
-                url = f"{FINNHUB_COMPANY_NEWS_API_URL}?symbol={ticker}&from={from_date}&to={to_date}&token={api_key}"
+            from_d = start_dt.strftime("%Y-%m-%d")
+            to_d = end_dt.strftime("%Y-%m-%d")
+            for ticker in tickers[:8]:
+                _log(log_path, f"Finnhub API: Fetching watchlist company news for '{ticker}'...\n")
                 try:
-                    resp = await client.get(url)
+                    resp = await client.get(f"{FINNHUB_COMPANY_NEWS_API_URL}?symbol={ticker}&from={from_d}&to={to_d}&token={api_key}")
                     if resp.status_code == 200:
-                        data = resp.json()
-                        if isinstance(data, list):
-                            for item in data:
-                                item_id = item.get("id") or item.get("headline")
-                                if item_id and item_id not in seen_ids:
-                                    seen_ids.add(item_id)
-                                    item["related"] = ticker
-                                    collected_items.append(item)
+                        for item in resp.json():
+                            item_id = item.get("id") or item.get("headline")
+                            if item_id and item_id not in seen_ids:
+                                seen_ids.add(item_id)
+                                item["related"] = ticker
+                                collected_items.append(item)
                 except Exception as e:
                     logger.error(f"Error fetching Finnhub company news for '{ticker}': {e}")
 
@@ -286,56 +234,51 @@ async def fetch_finnhub_news(
 
 
 async def fetch_rss_market_news(log_path: str = "") -> List[Dict[str, Any]]:
-    """Fallback: Fetch financial news from Google News Business RSS when FINNHUB_API_KEY is not set."""
-    if log_path:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write("RSS Fallback: Fetching financial news from Google News Business RSS...\n")
-
+    """Fallback: Fetch financial news from Google News Business RSS."""
+    _log(log_path, "RSS Fallback: Fetching financial news from Google News Business RSS...\n")
     items: List[Dict[str, Any]] = []
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=headers) as client:
             resp = await client.get(GOOGLE_FINANCE_RSS_URL)
-            if resp.status_code != 200:
-                return items
+            if resp.status_code == 200:
+                root = ET.fromstring(resp.text)
+                channel = root.find("channel")
+                if channel is not None:
+                    for item in channel.findall("item"):
+                        title = (item.findtext("title") or "").strip()
+                        link = (item.findtext("link") or "").strip()
+                        pub_date_str = (item.findtext("pubDate") or "").strip()
+                        source_el = item.find("source")
+                        source = source_el.text.strip() if source_el is not None and source_el.text else "Market Wire"
 
-            root = ET.fromstring(resp.text)
-            channel = root.find("channel")
-            if channel is None:
-                return items
+                        item_ts = 0
+                        if pub_date_str:
+                            try:
+                                item_ts = int(parsedate_to_datetime(pub_date_str).timestamp())
+                            except Exception:
+                                pass
 
-            for item in channel.findall("item"):
-                title = (item.findtext("title") or "").strip()
-                link = (item.findtext("link") or "").strip()
-                pub_date_str = (item.findtext("pubDate") or "").strip()
-                source_el = item.find("source")
-                source = source_el.text.strip() if source_el is not None and source_el.text else "Market Wire"
-
-                item_ts = 0
-                if pub_date_str:
-                    try:
-                        dt = parsedate_to_datetime(pub_date_str)
-                        item_ts = int(dt.timestamp())
-                    except Exception:
-                        pass
-
-                clean_title = re.sub(r'\s*-\s*[^-]+$', '', title).strip()
-
-                items.append({
-                    "id": link or clean_title,
-                    "headline": clean_title,
-                    "summary": clean_title,
-                    "source": source,
-                    "url": link,
-                    "datetime": item_ts,
-                    "category": "general",
-                    "related": ""
-                })
+                        clean_title = re.sub(r'\s*-\s*[^-]+$', '', title).strip()
+                        items.append({
+                            "id": link or clean_title,
+                            "headline": clean_title,
+                            "summary": clean_title,
+                            "source": source,
+                            "url": link,
+                            "datetime": item_ts,
+                            "category": "general",
+                            "related": ""
+                        })
     except Exception as e:
         logger.error(f"Error parsing RSS fallback news: {e}")
     return items
 
+
+# ==========================================
+# 4. Classification & LLM Selection
+# ==========================================
 
 def classify_and_filter_news(
     news_items: List[Dict[str, Any]],
@@ -345,20 +288,14 @@ def classify_and_filter_news(
     max_macro_candidates: int = 15,
     max_stock_candidates: int = 8
 ) -> Tuple[List[Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
-    """
-    Filters articles within the time window and categorizes them into candidate pools:
-    1. Stock Candidates: Organized by individual ticker for tracked watchlist stocks.
-    2. Macro Candidates: Broader market, economy, Fed, inflation, rates, energy, geopolitics.
-    """
+    """Filters articles within time window into Macro and Watchlist candidate pools."""
     macro_items: List[Dict[str, Any]] = []
     stock_candidates: Dict[str, List[Dict[str, Any]]] = {t: [] for t in (watchlist_tickers or [])}
     seen_macro_ids = set()
-
     watchlist_set = set(t.upper() for t in (watchlist_tickers or []))
 
     for item in news_items:
         ts = item.get("datetime", 0)
-        # Time window check (allow 15-min tolerance on start)
         if not ((start_ts - 900) <= ts <= (end_ts + 300)):
             continue
 
@@ -369,9 +306,9 @@ def classify_and_filter_news(
 
         related = (item.get("related") or "").strip().upper()
         related_tickers = set(t.strip() for t in related.split(",") if t.strip()) if related else set()
-        text = f"{headline} {summary}".lower()
+        text = f"{headline} {summary}"
 
-        # 1. Check Watchlist Match
+        # 1. Watchlist match
         if watchlist_set:
             matching = (related_tickers & watchlist_set) or {
                 t for t in watchlist_set if re.search(r'\b' + re.escape(t) + r'\b', headline.upper())
@@ -384,27 +321,23 @@ def classify_and_filter_news(
                         stock_candidates[t].append(item_copy)
                 continue
 
-        # 2. Check if this is a single company corporate action (earnings, CEO hire, M&A)
-        # If it's single-company corporate news and NOT on the watchlist, discard it.
-        is_company_action = any(re.search(pat, text) for pat in COMPANY_SPECIFIC_PATTERNS)
-        non_broad_tickers = related_tickers - BROAD_MARKET_TICKERS
-        if is_company_action and len(non_broad_tickers) > 0:
+        # 2. Skip non-watchlist single company events
+        is_company_action = bool(RE_COMPANY.search(text))
+        non_broad = related_tickers - BROAD_MARKET_TICKERS
+        if is_company_action and len(non_broad) > 0:
             continue
 
-        # 3. Check Macroeconomic Keywords
-        is_macro = any(re.search(r'\b' + re.escape(kw) + r'\b', text) for kw in MACRO_KEYWORDS)
-        if is_macro:
-            item_id = item.get("id") or item.get("headline")
+        # 3. Macro keywords match
+        if RE_MACRO.search(text):
+            item_id = item.get("id") or headline
             if item_id not in seen_macro_ids:
                 seen_macro_ids.add(item_id)
                 macro_items.append(item)
             continue
 
-        # If it contains specific non-broad company tickers and has no macro relevance, discard
-        if len(non_broad_tickers) > 0:
+        if len(non_broad) > 0:
             continue
 
-    # Sort newest first
     macro_items.sort(key=lambda x: x.get("datetime", 0), reverse=True)
     for t in stock_candidates:
         stock_candidates[t].sort(key=lambda x: x.get("datetime", 0), reverse=True)
@@ -412,63 +345,56 @@ def classify_and_filter_news(
     return macro_items[:max_macro_candidates], stock_candidates
 
 
+def _distinct_items(existing: List[Dict[str, Any]], candidates: List[Dict[str, Any]], target_len: int) -> List[Dict[str, Any]]:
+    """Fill existing list up to target_len with distinct items from candidates."""
+    res = list(existing or [])
+    seen = {it.get("id") or it.get("headline") for it in res}
+    for it in candidates:
+        if len(res) >= target_len:
+            break
+        it_id = it.get("id") or it.get("headline")
+        if it_id not in seen:
+            seen.add(it_id)
+            res.append(it)
+    return res
+
+
 async def select_top_significant_news(
     macro_candidates: List[Dict[str, Any]],
     stock_candidates: Dict[str, List[Dict[str, Any]]],
     log_path: str = ""
 ) -> Tuple[List[Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]:
-    """
-    Uses the LLM to analyze candidate news articles and select:
-    - Top 3 most significant macroeconomic / market-moving articles.
-    - Top 2 most significant price-catalyst articles for EACH tracked stock.
-    Falls back to recency/relevance if LLM is unavailable or fails to respond.
-    """
+    """Uses LLM to select Top 3 Macro and Top 2 per-stock articles, falling back to recency."""
     if len(macro_candidates) <= 3 and all(len(items) <= 2 for items in stock_candidates.values()):
         return macro_candidates, stock_candidates
 
-    # Build prompt for LLM selection
-    prompt_lines = ["Here are the candidate news articles for today's pre-market session:"]
-    prompt_lines.append("\n=== MACRO CANDIDATES ===")
+    prompt_lines = ["Here are the candidate news articles for today's pre-market session:", "\n=== MACRO CANDIDATES ==="]
     macro_map = {}
     for i, it in enumerate(macro_candidates, 1):
         mid = f"M{i}"
         macro_map[mid] = it
-        source = it.get("source", "News")
-        headline = it.get("headline", "")
-        summary = (it.get("summary") or "")[:150]
-        prompt_lines.append(f"[{mid}] ({source}) {headline} - {summary}")
+        prompt_lines.append(f"[{mid}] ({it.get('source', 'News')}) {it.get('headline', '')} - {(it.get('summary') or '')[:150]}")
 
     stock_map = {}
     for ticker, items in stock_candidates.items():
+        stock_map[ticker] = {}
         if items:
             prompt_lines.append(f"\n=== CANDIDATES FOR {ticker} ===")
-            stock_map[ticker] = {}
             for j, it in enumerate(items, 1):
                 sid = f"{ticker}-{j}"
                 stock_map[ticker][sid] = it
-                source = it.get("source", "News")
-                headline = it.get("headline", "")
-                prompt_lines.append(f"[{sid}] ({source}) {headline}")
-        else:
-            stock_map[ticker] = {}
+                prompt_lines.append(f"[{sid}] ({it.get('source', 'News')}) {it.get('headline', '')}")
 
     system_prompt = (
         "You are an elite Wall Street financial editor.\n"
-        "Review the candidates and pick ONLY the most significant, market-moving news items:\n"
-        "1. Select the Top 3 most significant MACRO news items (monetary policy, inflation, rates, major geopolitical/commodities shifts).\n"
-        "2. Select up to 2 most significant news items for EACH tracked stock (earnings, guidance, major contracts, analyst calls, key catalysts).\n\n"
-        "Respond with a valid JSON object ONLY matching this schema:\n"
-        "{\n"
-        '  "macro": ["M1", "M2", "M3"],\n'
-        '  "stocks": {\n'
-        '    "TICKER": ["TICKER-1", "TICKER-2"]\n'
-        "  }\n"
-        "}"
+        "Pick ONLY the most significant, market-moving news items:\n"
+        "1. Top 3 most significant MACRO news items (monetary policy, inflation, rates, geopolitical shifts).\n"
+        "2. Up to 2 most significant news items for EACH tracked stock.\n\n"
+        "Respond with a valid JSON object ONLY:\n"
+        "{\"macro\": [\"M1\", \"M2\", \"M3\"], \"stocks\": {\"TICKER\": [\"TICKER-1\", \"TICKER-2\"]}}"
     )
 
-    selected_macro = None
-    selected_stocks = None
-
+    selected_macro, selected_stocks = None, None
     try:
         async with httpx.AsyncClient(timeout=min(config.LLM_TIMEOUT, 30.0)) as client:
             resp = await client.post(
@@ -485,63 +411,31 @@ async def select_top_significant_news(
                 }
             )
             if resp.status_code == 200:
-                data = resp.json()
-                msg = data.get("choices", [{}])[0].get("message", {})
-                content = (msg.get("content") or "").strip()
-                if not content and "reasoning_content" in msg:
-                    content = msg["reasoning_content"].strip()
-                content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
-                content = re.sub(r'```(?:json)?', '', content).strip()
-                m = re.search(r'\{.*\}', content, re.DOTALL)
-                if m:
-                    res_json = json.loads(m.group(0))
-                    macro_ids = res_json.get("macro", [])
-                    stocks_ids = res_json.get("stocks", {})
-                    
-                    selected_macro = [macro_map[mid] for mid in macro_ids if mid in macro_map][:3]
-                    selected_stocks = {}
-                    for t, s_map in stock_map.items():
-                        chosen_ids = stocks_ids.get(t, [])
-                        selected_stocks[t] = [s_map[sid] for sid in chosen_ids if sid in s_map][:2]
-
-                    if log_path:
-                        with open(log_path, "a", encoding="utf-8") as f:
-                            f.write(f"PreMarket Plugin: LLM selected top {len(selected_macro)} macro articles and articles for {len(selected_stocks)} stocks.\n")
+                raw = (resp.json().get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+                res_json = json.loads(clean_json_text(raw))
+                selected_macro = [macro_map[m] for m in res_json.get("macro", []) if m in macro_map][:3]
+                selected_stocks = {
+                    t: [s_map[sid] for sid in res_json.get("stocks", {}).get(t, []) if sid in s_map][:2]
+                    for t, s_map in stock_map.items()
+                }
+                _log(log_path, f"PreMarket Plugin: LLM selected top {len(selected_macro)} macro articles.\n")
     except Exception as e:
         logger.warning(f"Error in LLM news selection: {e}")
-        if log_path:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"PreMarket Plugin: LLM news selection fallback: {e}\n")
+        _log(log_path, f"PreMarket Plugin: LLM news selection fallback: {e}\n")
 
-    # Fallback if LLM unavailable or returned empty/partial results
-    if selected_macro is None or len(selected_macro) == 0:
-        selected_macro = macro_candidates[:3]
-    elif len(selected_macro) < min(3, len(macro_candidates)):
-        existing_ids = {it.get("id") or it.get("headline") for it in selected_macro}
-        for it in macro_candidates:
-            it_id = it.get("id") or it.get("headline")
-            if it_id not in existing_ids:
-                selected_macro.append(it)
-                if len(selected_macro) == 3:
-                    break
-
+    # Fallback padding
+    selected_macro = _distinct_items(selected_macro or [], macro_candidates, min(3, len(macro_candidates)))
     if selected_stocks is None:
         selected_stocks = {}
-    for t in stock_candidates.keys():
-        curr = selected_stocks.get(t, [])
-        cand_list = stock_candidates.get(t, [])
-        if len(curr) < min(2, len(cand_list)):
-            curr_ids = {it.get("id") or it.get("headline") for it in curr}
-            for it in cand_list:
-                it_id = it.get("id") or it.get("headline")
-                if it_id not in curr_ids:
-                    curr.append(it)
-                    if len(curr) == 2:
-                        break
-        selected_stocks[t] = curr
+    for t in stock_candidates:
+        selected_stocks[t] = _distinct_items(selected_stocks.get(t, []), stock_candidates[t], min(2, len(stock_candidates[t])))
 
     return selected_macro, selected_stocks
 
+
+# ==========================================
+# 5. Briefing & Report Formatter
+# ==========================================
 
 async def generate_llm_premarket_briefing(
     macro_news: List[Dict[str, Any]],
@@ -558,31 +452,26 @@ async def generate_llm_premarket_briefing(
     digest_lines = []
     for i, it in enumerate(macro_news[:3]):
         pub_dt = datetime.fromtimestamp(it.get("datetime", 0), tz=ET_TZ).strftime("%I:%M %p ET")
-        source = it.get("source", "News")
-        headline = it.get("headline", "")
-        summary = (it.get("summary") or "")[:180]
-        digest_lines.append(f"Macro {i+1}. [{pub_dt}] ({source}) {headline} - {summary}")
+        digest_lines.append(f"Macro {i+1}. [{pub_dt}] ({it.get('source', 'News')}) {it.get('headline', '')} - {(it.get('summary') or '')[:180]}")
 
     for ticker, items in watchlist_news_by_stock.items():
         for i, it in enumerate(items[:2]):
             pub_dt = datetime.fromtimestamp(it.get("datetime", 0), tz=ET_TZ).strftime("%I:%M %p ET")
-            source = it.get("source", "News")
-            headline = it.get("headline", "")
-            digest_lines.append(f"Watchlist [{ticker}] {i+1}. [{pub_dt}] ({source}) {headline}")
+            digest_lines.append(f"Watchlist [{ticker}] {i+1}. [{pub_dt}] ({it.get('source', 'News')}) {it.get('headline', '')}")
 
     news_text = "\n".join(digest_lines)
-
-    watchlist_instruction = ""
-    if watchlist_tickers:
-        watchlist_instruction = (
-            f"### 🎯 Watchlist Focus ({', '.join(watchlist_tickers)})\n"
-            "- Key company overnight developments or catalysts for watchlist stocks.\n\n"
-        )
+    watchlist_instruction = (
+        f"### 🎯 Macro News Impact on Tracked Stocks ({', '.join(watchlist_tickers)})\n"
+        f"For EACH tracked ticker ({', '.join(watchlist_tickers)}), analyze and predict what impact recent macroeconomic developments (monetary policy, Treasury yields, inflation, commodities, currencies, geopolitics) will have on that stock today:\n"
+        f"- **<TICKER>** [Impact: Bullish | Bearish | Mixed | Neutral]: 1-2 concise analytical sentences detailing the transmission mechanism from recent macro news/drivers to this stock and its outlook today.\n\n"
+        if watchlist_tickers else ""
+    )
 
     system_prompt = (
         "You are an elite Wall Street macro analyst.\n"
         "Generate a concise, high-signal 'Pre-Market Macroeconomic Briefing' based on the provided macro news.\n"
-        "Keep the briefing tight and actionable (max 3-4 bullet points per section).\n\n"
+        "Keep the briefing tight and actionable (max 3-4 bullet points per section).\n"
+        "If tracked stocks are provided, you MUST analyze each individual tracked stock's sensitivity and predicted reaction to the prevailing macroeconomic backdrop.\n\n"
         "FORMAT (Markdown):\n"
         "### 🌅 Market Sentiment & Tone\n"
         "- Tone: (Bullish / Bearish / Cautious) and the primary market driver.\n\n"
@@ -593,10 +482,8 @@ async def generate_llm_premarket_briefing(
         "- 1-2 major catalysts or data releases to monitor into the opening bell."
     )
 
-    user_prompt = f"TARGET TIME WINDOW: {timewindow_label}\n\nCOLLECTED MACRO & WATCHLIST DIGEST:\n{news_text}"
-
     try:
-        async with httpx.AsyncClient(timeout=config.LLM_TIMEOUT) as client:
+        async with httpx.AsyncClient(timeout=min(config.LLM_TIMEOUT, 20.0)) as client:
             resp = await client.post(
                 f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
@@ -604,32 +491,22 @@ async def generate_llm_premarket_briefing(
                     "model": config.LLM_MODEL,
                     "messages": [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
+                        {"role": "user", "content": f"TARGET TIME WINDOW: {timewindow_label}\nTRACKED STOCKS: {', '.join(watchlist_tickers) if watchlist_tickers else 'None'}\n\nCOLLECTED MACRO & WATCHLIST DIGEST:\n{news_text}"}
                     ],
                     "temperature": 0.2,
                     "stream": False
                 }
             )
             if resp.status_code == 200:
-                data = resp.json()
-                msg = data.get("choices", [{}])[0].get("message", {})
-                content = (msg.get("content") or "").strip()
-                if not content and "reasoning_content" in msg:
-                    content = msg["reasoning_content"].strip()
-
-                content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+                raw = (resp.json().get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+                content = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
                 if content and "Market Sentiment" in content:
-                    if log_path:
-                        with open(log_path, "a", encoding="utf-8") as f:
-                            f.write("PreMarket Plugin: LLM executive briefing generated successfully.\n")
+                    _log(log_path, "PreMarket Plugin: LLM executive briefing generated successfully.\n")
                     return content
     except Exception as e:
         logger.warning(f"LLM briefing error: {e}")
-        if log_path:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"PreMarket Plugin: LLM briefing fallback: {e}\n")
+        _log(log_path, f"PreMarket Plugin: LLM briefing fallback: {e}\n")
 
-    # Fallback deterministic briefing
     fallback = [
         "### 🌅 Market Sentiment & Tone",
         "- **Tone**: Active pre-market session driven by macro policies, global commodities, and geopolitical developments.",
@@ -638,7 +515,26 @@ async def generate_llm_premarket_briefing(
     ]
     for it in macro_news[:3]:
         fallback.append(f"- **{it.get('headline')}** ({it.get('source', 'Market')})")
+
     return "\n".join(fallback)
+
+
+def _format_news_item(idx: int, item: Dict[str, Any]) -> List[str]:
+    """Render a single news item."""
+    headline = item.get("headline", "Untitled").strip()
+    summary = item.get("summary", "").strip()
+    source = item.get("source", "Market Wire")
+    url = item.get("url", "")
+    ts = item.get("datetime", 0)
+    time_str = datetime.fromtimestamp(ts, tz=ET_TZ).strftime("%I:%M %p ET") if ts else "Recent"
+
+    title_line = f"**{idx}. [{headline}]({url})**" if url else f"**{idx}. {headline}**"
+    lines = [title_line, f"> 🕒 *{time_str}* | 🏛️ *{source}*"]
+    if summary and summary != headline and len(summary) > 20:
+        clean_sum = summary if len(summary) <= 180 else summary[:177] + "..."
+        lines.append(f"> {clean_sum}")
+    lines.append("")
+    return lines
 
 
 def format_premarket_report(
@@ -659,78 +555,39 @@ def format_premarket_report(
         "# 📈 Pre-Market Macro Intelligence Briefing",
         f"**Target Window**: {window_label}",
         f"**Data Provider**: `{data_source}` | **Generated**: {end_dt.strftime('%Y-%m-%d %I:%M %p %Z')}",
-        "",
-        "---",
-        ""
+        "", "---", ""
     ]
 
-    # Executive Briefing
     if llm_briefing:
-        lines.append(llm_briefing)
-        lines.append("")
-        lines.append("---",)
-        lines.append("")
+        lines.extend([llm_briefing, "", "---", ""])
 
-    # Macro News Section (Top 3)
-    lines.append(f"### 🏛️ Macroeconomic News (Top {len(macro_news)} items)")
-    lines.append("")
-
+    # Macro News Section
+    lines.extend([f"### 🏛️ Macroeconomic News (Top {len(macro_news)} items)", ""])
     if not macro_news:
         lines.append("> No significant macroeconomic headlines were published within this time window.")
     else:
-        for i, item in enumerate(macro_news[:3], 1):
-            headline = item.get("headline", "Untitled").strip()
-            summary = item.get("summary", "").strip()
-            source = item.get("source", "Market Wire")
-            url = item.get("url", "")
-            ts = item.get("datetime", 0)
+        for i, it in enumerate(macro_news[:3], 1):
+            lines.extend(_format_news_item(i, it))
 
-            time_str = datetime.fromtimestamp(ts, tz=ET_TZ).strftime("%I:%M %p ET") if ts else "Recent"
-
-            if url:
-                lines.append(f"**{i}. [{headline}]({url})**")
-            else:
-                lines.append(f"**{i}. {headline}**")
-            lines.append(f"> 🕒 *{time_str}* | 🏛️ *{source}*")
-            if summary and summary != headline and len(summary) > 20:
-                clean_sum = summary if len(summary) <= 180 else summary[:177] + "..."
-                lines.append(f"> {clean_sum}")
-            lines.append("")
-
-    # Watchlist News Section (Top 2 per stock)
+    # Watchlist News Section
     if watchlist_tickers:
-        lines.append("### 🎯 Watchlist Stock News (Top 2 per stock)")
-        lines.append("")
+        lines.extend(["### 🎯 Watchlist Stock News (Top 2 per stock)", ""])
         for ticker in watchlist_tickers:
             items = watchlist_news_by_stock.get(ticker, [])
             lines.append(f"#### 🔹 {ticker} ({len(items)} items)")
             if not items:
-                lines.append(f"> No significant overnight or pre-market news found for {ticker}.")
+                lines.append(f"> No company-specific overnight press releases. Trading primarily influenced by broader macro drivers (see briefing above).\n")
             else:
-                for i, item in enumerate(items[:2], 1):
-                    headline = item.get("headline", "Untitled").strip()
-                    source = item.get("source", "Market Wire")
-                    url = item.get("url", "")
-                    ts = item.get("datetime", 0)
-                    summary = item.get("summary", "").strip()
-                    time_str = datetime.fromtimestamp(ts, tz=ET_TZ).strftime("%I:%M %p ET") if ts else "Recent"
-
-                    if url:
-                        lines.append(f"**{i}. [{headline}]({url})**")
-                    else:
-                        lines.append(f"**{i}. {headline}**")
-                    lines.append(f"> 🕒 *{time_str}* | 🏛️ *{source}*")
-                    if summary and summary != headline and len(summary) > 20:
-                        clean_sum = summary if len(summary) <= 180 else summary[:177] + "..."
-                        lines.append(f"> {clean_sum}")
-            lines.append("")
+                for i, it in enumerate(items[:2], 1):
+                    lines.extend(_format_news_item(i, it))
     else:
-        lines.append("> ℹ️ *Tip: Only macro news included. To track specific stocks, add a 'Watchlist' or 'Stocks to watch' Context entry in the dashboard.*")
-        lines.append("")
+        lines.extend([
+            "> ℹ️ *Tip: Only macro news included. To track specific stocks, add a 'Watchlist' or 'Stocks to watch' Context entry in the dashboard.*",
+            ""
+        ])
 
     lines.append("***")
-    start_str = start_dt.strftime("%b %d, %I:%M %p %Z")
-    end_str = end_dt.strftime("%b %d, %I:%M %p %Z")
+    start_str, end_str = start_dt.strftime("%b %d, %I:%M %p %Z"), end_dt.strftime("%b %d, %I:%M %p %Z")
     if watchlist_tickers:
         lines.append(f"📊 **SUMMARY:** {total_count} curated news items selected ({len(macro_news)} macro, {total_stock_count} watchlist) from {start_str} to {end_str}.")
     else:
@@ -739,105 +596,64 @@ def format_premarket_report(
     return "\n".join(lines)
 
 
+# ==========================================
+# 6. Pre-Flight Orchestrator & Plugin
+# ==========================================
+
 async def premarket_run_pre_flight(
-    browser: Optional[BrowserSession],
-    prompt: str,
-    context: str,
+    browser: Optional[BrowserSession] = None,
+    prompt: str = "",
+    context: str = "",
     log_path: str = "",
     llm: Any = None
 ) -> str:
     """Main pre-flight execution logic for the PreMarket skill."""
-    if log_path:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write("PRE-FLIGHT (PREMARKET): Initializing Pre-Market News collector (Macro focus)...\n")
+    _log(log_path, "PRE-FLIGHT (PREMARKET): Initializing Pre-Market News collector (Macro focus)...\n")
 
-    # 1. Resolve Time Window
     start_dt, end_dt, start_ts, end_ts, window_label = calculate_premarket_window()
-    if log_path:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"PRE-FLIGHT (PREMARKET): Time Window: {window_label} [{start_ts} -> {end_ts}]\n")
+    _log(log_path, f"PRE-FLIGHT (PREMARKET): Time Window: {window_label} [{start_ts} -> {end_ts}]\n")
 
-    # 2. Check for Watchlist / Stocks to watch in Context or Prompt
     watchlist_tickers = resolve_watchlist_tickers(prompt, context, log_path=log_path)
     if watchlist_tickers:
         logger.info(f"[premarket] Detected watchlist stocks to watch: {watchlist_tickers}")
-        if log_path:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(f"PRE-FLIGHT (PREMARKET): Watchlist active: {', '.join(watchlist_tickers)}. Will include macro + watchlist news.\n")
+        _log(log_path, f"PRE-FLIGHT (PREMARKET): Watchlist active: {', '.join(watchlist_tickers)}. Will include macro + watchlist news.\n")
     else:
         logger.info("[premarket] No stocks-to-watch context found. Strictly filtering for MACRO news only.")
-        if log_path:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write("PRE-FLIGHT (PREMARKET): No watchlist context found. Strictly collecting MACRO news only (excluding individual company noise).\n")
+        _log(log_path, "PRE-FLIGHT (PREMARKET): No watchlist context found. Strictly collecting MACRO news only (excluding individual company noise).\n")
 
-    # 3. Check for Finnhub API Key
     finnhub_key = os.getenv("FINNHUB_API_KEY", "").strip()
-    data_source = "Finnhub API"
-    raw_news: List[Dict[str, Any]] = []
-
     if finnhub_key:
-        if log_path:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write("PRE-FLIGHT (PREMARKET): FINNHUB_API_KEY detected. Querying Finnhub REST API...\n")
+        data_source = "Finnhub API"
+        _log(log_path, "PRE-FLIGHT (PREMARKET): FINNHUB_API_KEY detected. Querying Finnhub REST API...\n")
         raw_news = await fetch_finnhub_news(
-            api_key=finnhub_key,
-            tickers=watchlist_tickers,
-            start_dt=start_dt,
-            end_dt=end_dt,
-            log_path=log_path
+            api_key=finnhub_key, tickers=watchlist_tickers, start_dt=start_dt, end_dt=end_dt, log_path=log_path
         )
     else:
         data_source = "Google News Business RSS (Set FINNHUB_API_KEY in .env for official Finnhub feeds)"
-        if log_path:
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write("PRE-FLIGHT (PREMARKET): No FINNHUB_API_KEY found in .env. Using Google News Business RSS fallback...\n")
+        _log(log_path, "PRE-FLIGHT (PREMARKET): No FINNHUB_API_KEY found in .env. Using Google News Business RSS fallback...\n")
         raw_news = await fetch_rss_market_news(log_path=log_path)
 
-    # 4. Classify into Candidate Pools
     macro_candidates, stock_candidates = classify_and_filter_news(
-        raw_news,
-        start_ts=start_ts,
-        end_ts=end_ts,
-        watchlist_tickers=watchlist_tickers
+        raw_news, start_ts=start_ts, end_ts=end_ts, watchlist_tickers=watchlist_tickers
     )
 
-    total_candidates = len(macro_candidates) + sum(len(v) for v in stock_candidates.values())
-    logger.info(f"[premarket] Candidate pool: {len(macro_candidates)} macro items and {total_candidates - len(macro_candidates)} watchlist items.")
-    if log_path:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"PRE-FLIGHT (PREMARKET): Initial candidate pool has {len(macro_candidates)} macro items and {total_candidates - len(macro_candidates)} watchlist items.\n")
-
-    # If completely empty, try broader 24-hour window
-    if total_candidates == 0 and raw_news:
+    if not macro_candidates and not any(stock_candidates.values()) and raw_news:
         last_24h_ts = int((datetime.now(ET_TZ) - timedelta(hours=24)).timestamp())
         macro_candidates, stock_candidates = classify_and_filter_news(
-            raw_news,
-            start_ts=last_24h_ts,
-            end_ts=end_ts,
-            watchlist_tickers=watchlist_tickers
+            raw_news, start_ts=last_24h_ts, end_ts=end_ts, watchlist_tickers=watchlist_tickers
         )
 
-    # 5. LLM Curation: Pick Top 3 Macro and Top 2 per Stock
     macro_news, watchlist_news_by_stock = await select_top_significant_news(
-        macro_candidates,
-        stock_candidates,
-        log_path=log_path
+        macro_candidates, stock_candidates, log_path=log_path
     )
-
     total_selected = len(macro_news) + sum(len(v) for v in watchlist_news_by_stock.values())
-    logger.info(f"[premarket] Curated to {len(macro_news)} macro items and {total_selected - len(macro_news)} watchlist items.")
-    if log_path:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"PRE-FLIGHT (PREMARKET): Curated to top {len(macro_news)} macro items and {total_selected - len(macro_news)} watchlist items across {len(watchlist_tickers)} stocks.\n")
 
-    # 6. Generate LLM Executive Briefing based on curated items
     llm_briefing = ""
     if macro_news or any(watchlist_news_by_stock.values()):
         llm_briefing = await generate_llm_premarket_briefing(
             macro_news, watchlist_news_by_stock, watchlist_tickers, window_label, log_path=log_path
         )
 
-    # 7. Format Clean Curated Markdown Report
     report = format_premarket_report(
         macro_news=macro_news,
         watchlist_news_by_stock=watchlist_news_by_stock,
@@ -848,11 +664,7 @@ async def premarket_run_pre_flight(
         llm_briefing=llm_briefing,
         data_source=data_source
     )
-
-    if log_path:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"PRE-FLIGHT SUCCESS: Pre-Market report generated with {len(macro_news)} macro items and {total_selected - len(macro_news)} watchlist items.\n")
-
+    _log(log_path, f"PRE-FLIGHT SUCCESS: Pre-Market report generated with {len(macro_news)} macro items and {total_selected - len(macro_news)} watchlist items.\n")
     return report
 
 
@@ -862,7 +674,9 @@ class PreMarketPlugin(BaseSitePlugin):
     def register_actions(self, controller: Any) -> None:
         controller.action('premarket_get_news')(premarket_get_news)
 
-    async def run_pre_flight(self, browser: BrowserSession, prompt: str, context: str, log_path: str, llm: Any) -> str:
+    async def run_pre_flight(
+        self, browser: Optional[BrowserSession], prompt: str, context: str, log_path: str = "", llm: Any = None
+    ) -> str:
         return await premarket_run_pre_flight(browser, prompt, context, log_path, llm)
 
     def evaluate_outcome(self, result_text: str) -> Optional[str]:
@@ -881,6 +695,5 @@ async def premarket_get_news(category: str = "general", symbols: str = "") -> st
     SITE-SPECIFIC SKILL: Collects market related news from yesterday after-market to this morning.
     Focuses on macroeconomic news and only includes company-specific news for stocks listed in context or symbols.
     """
-    prompt = f"Collect premarket macro news. Tickers: {symbols}" if symbols else "Collect premarket macro news."
-    return await premarket_run_pre_flight(browser=None, prompt=prompt, context="", log_path="")
-
+    context_str = f"Watchlist: {symbols}" if symbols else ""
+    return await premarket_run_pre_flight(browser=None, prompt="Collect premarket macro news.", context=context_str, log_path="")
