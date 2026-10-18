@@ -46,11 +46,73 @@ def format_bound_context_str(bound_contexts: list, prompt: str, log_path: str = 
 
 from backend.core.plugin import PluginRegistry
 
+async def select_skill_with_llm(prompt: str, log_path: str = "") -> str:
+    """Uses LLM to match the user task against available site skill descriptions."""
+    plugin_descriptions = PluginRegistry.get_plugin_descriptions()
+    if not plugin_descriptions:
+        return ""
+
+    available_skills = sorted(plugin_descriptions.keys())
+    skills_list_str = "\n".join(
+        f"- {s}: {plugin_descriptions.get(s, f'{s} website automation skill.')}"
+        for s in available_skills
+    )
+
+    eval_prompt = (
+        f"USER TASK: {prompt}\n\n"
+        f"AVAILABLE SITE SKILLS:\n{skills_list_str}\n\n"
+        "INSTRUCTIONS:\n"
+        "Match the user task to EXACTLY ONE skill from AVAILABLE SITE SKILLS (use the exact skill name), or \"NONE\" if no specialized skill applies.\n\n"
+        "SCHEMA:\n"
+        "{\"site_plugin\": \"<exact_skill_name> | NONE\"}\n"
+        "Output strictly valid JSON only."
+    )
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
+                json={
+                    "model": config.LLM_MODEL,
+                    "messages": [{"role": "user", "content": eval_prompt}],
+                    "stream": False,
+                    "temperature": 0
+                },
+                timeout=config.LLM_TIMEOUT
+            )
+            res_json = resp.json()
+            data_raw = "{}"
+            if "choices" in res_json and len(res_json["choices"]) > 0:
+                data_raw = res_json["choices"][0].get("message", {}).get("content", "{}")
+            elif "message" in res_json:
+                data_raw = res_json.get("message", {}).get("content", "{}")
+            
+            if log_path:
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"Skill Evaluator: Raw LLM response: {data_raw}\n")
+            
+            from backend.services.llm import clean_json_text
+            data = json.loads(clean_json_text(data_raw))
+            site_plugin_raw = str(data.get("site_plugin", "NONE")).strip()
+
+            for s in available_skills:
+                if s.lower() == site_plugin_raw.lower():
+                    return s
+            return ""
+    except Exception as e:
+        if log_path:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"Skill evaluation failed: {e}\n")
+        return ""
+
 async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str, str]:
     """Uses LLM to identify relevant context and match against available site skills."""
     contexts = db.query(Context).all()
     if not contexts:
-        return "", ""
+        forced_site = _detect_site_from_prompt(prompt)
+        site_plugin = forced_site or await select_skill_with_llm(prompt, log_path)
+        return "", site_plugin
 
     # Deterministic guard: if the prompt explicitly names a known skill, lock it in
     # immediately — prevents LLM from hallucinating the wrong site plugin.

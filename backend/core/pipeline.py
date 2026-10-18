@@ -13,7 +13,7 @@ from backend import config
 from backend.database.session import SessionLocal
 from backend.database.models import Task as DBTask, Output
 from backend.services.llm import JsonStrippingChatLMStudio
-from backend.services.context import get_relevant_context_str, format_bound_context_str
+from backend.services.context import get_relevant_context_str, format_bound_context_str, select_skill_with_llm
 from backend.automation.skills import controller, get_skill_descriptions
 from backend.automation.browser_utils import cleanup_headless_chrome
 
@@ -122,14 +122,11 @@ class AgentPipeline:
         else:
             self.context_str, self.site_key = await get_relevant_context_str(self.db, self.prompt, self.log_path)
         
-        # Fallback for site plugin detection
+        # If site plugin is not yet resolved, use LLM skill selection against available skill descriptions
         if not self.site_key:
-            plugins = [f[:-3] for f in os.listdir("site_skills") if f.endswith(".py") and not f.startswith("__")]
-            for p in plugins:
-                if p.lower() in self.prompt.lower():
-                    self.site_key = p
-                    self.log(f"Context Evaluator: Fallback detected site '{self.site_key}' from prompt keywords.")
-                    break
+            self.site_key = await select_skill_with_llm(self.prompt, self.log_path)
+            if self.site_key:
+                self.log(f"Context Evaluator: LLM matched site plugin '{self.site_key}' from skill descriptions.")
 
         try:
             skill_list = get_skill_descriptions()
