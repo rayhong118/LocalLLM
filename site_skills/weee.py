@@ -434,7 +434,7 @@ async def weee_get_all_deals(browser: BrowserSession, keyword: str = ""):
                 let title = label.substring(5).trim();
                 const words = title.split(' ');
                 let productId = '';
-                if (words.length > 0 && /^\d+$/.test(words[words.length - 1])) {
+                if (words.length > 0 && /^\\d+$/.test(words[words.length - 1])) {
                     productId = words[words.length - 1];
                     words.pop();
                     title = words.join(' ');
@@ -462,7 +462,7 @@ async def weee_get_all_deals(browser: BrowserSession, keyword: str = ""):
                         } else {
                             dollarTexts.push(txt);
                         }
-                    } else if (/\d+%\s*off/i.test(txt)) {
+                    } else if (/\\d+%\\s*off/i.test(txt)) {
                         discount = txt;
                     }
                 }
@@ -753,7 +753,7 @@ async def weee_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
                 "You are a categorization assistant for a grocery store. You must output ONLY a valid JSON object.\n"
                 "Format: {\"mapping\": [{\"item\": \"item name\", \"category\": \"Category Name\"}, ...]}\n"
                 "RULES:\n"
-                "1. NEVER pick 'Special Offers' if a specific food category is available.\n"
+                "1. NEVER pick 'Special Offers' if a specific category is available.\n"
                 "2. If nothing fits, use 'NONE' as category.\n"
                 "3. Crucially, items that are typically sold frozen (e.g., ice cream, frozen meals, frozen pizza, popsicles, frozen waffles, frozen vegetables, frozen fruit) MUST be categorized under 'Frozen Foods' (or similar frozen category) rather than their ingredient-based category (like 'Dairy', 'Meat', or 'Produce').\n"
                 f"Available Categories: {', '.join(available_categories)}"
@@ -856,7 +856,7 @@ async def weee_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
                             const label = c.getAttribute('aria-label') || '';
                             let title = label.substring(5).trim();
                             const words = title.split(' ');
-                            if (words.length > 0 && /^\d+$/.test(words[words.length - 1])) {
+                            if (words.length > 0 && /^\\d+$/.test(words[words.length - 1])) {
                                 words.pop();
                                 title = words.join(' ');
                             }
@@ -879,7 +879,7 @@ async def weee_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
                                     } else {
                                         dollarTexts.push(txt);
                                     }
-                                } else if (/\d+%\s*off/i.test(txt)) {
+                                } else if (/\\d+%\\s*off/i.test(txt)) {
                                     discount = txt;
                                 }
                             }
