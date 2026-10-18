@@ -943,7 +943,8 @@ async def aftermarket_run_pre_flight(
 # ==========================================
 
 class AfterMarketPlugin(BaseSitePlugin):
-    """Plugin wrapper for dynamic loading by PluginRegistry."""
+    description = "After-market daily stock report, post-market prices (yfinance), and near-term watchpoints."
+
     async def run_pre_flight(self, browser: Optional[BrowserSession], prompt: str, context: str, log_path: str = "", llm: Any = None) -> str:
         return await aftermarket_run_pre_flight(browser, prompt, context, log_path, llm)
 

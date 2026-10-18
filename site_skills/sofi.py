@@ -416,5 +416,7 @@ async def sofi_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
         return ""
 
 class SofiPlugin(BaseSitePlugin):
+    description = "SoFi accounts, banking, and financial services automation."
+
     async def run_pre_flight(self, browser, prompt: str, context: str, log_path: str, llm) -> str:
         return await sofi_run_pre_flight(browser, prompt, context, log_path, llm)

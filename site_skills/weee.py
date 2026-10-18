@@ -1079,5 +1079,7 @@ CATEGORY_EMOJIS = {
 }
 
 class WeeePlugin(BaseSitePlugin):
+    description = "SayWeee Asian and Hispanic grocery shopping, deals, and favorites."
+
     async def run_pre_flight(self, browser, prompt: str, context: str, log_path: str, llm) -> str:
         return await weee_run_pre_flight(browser, prompt, context, log_path, llm)

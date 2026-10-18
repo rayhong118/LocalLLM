@@ -3,6 +3,7 @@
 # browser-use's Page object is a CDP wrapper — it does NOT have .locator(), .get_by_text(), etc.
 
 from browser_use import BrowserSession
+from backend.core.plugin import BaseSitePlugin
 import logging
 import asyncio
 from typing import Any
@@ -1580,3 +1581,10 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"PRE-FLIGHT ERROR: {e}\n")
         return ""
+
+class SafewayPlugin(BaseSitePlugin):
+    description = "Safeway grocery deals, digital coupons, and product discount clipping."
+
+    async def run_pre_flight(self, browser: BrowserSession, prompt: str, context: str, log_path: str, llm: Any) -> str:
+        return await safeway_run_pre_flight(browser, prompt, context, log_path, llm)
+

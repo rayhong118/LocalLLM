@@ -44,23 +44,7 @@ def format_bound_context_str(bound_contexts: list, prompt: str, log_path: str = 
 
     return full_context + "USE THIS TO INFORM YOUR ACTIONS.\n\n", site_plugin
 
-SITE_SKILL_DESCRIPTIONS = {
-    "safeway": "Safeway grocery deals, coupons, and product discounts.",
-    "weee": "SayWeee Asian and Hispanic grocery shopping and favorites.",
-    "wsdot": "Washington State DOT highway traffic, road alerts, and pass reports.",
-    "premarket": "Overnight & morning pre-market financial news and macro wire.",
-    "afterMarket": "After-market daily stock report, post-market prices (yfinance), and earnings catalysts.",
-    "sofi": "SoFi accounts, banking, and financial services automation."
-}
-
-def get_available_site_skills() -> list[str]:
-    """Dynamically discover all available site skill names from site_skills/."""
-    skills = []
-    if os.path.isdir("site_skills"):
-        for fname in os.listdir("site_skills"):
-            if fname.endswith(".py") and not fname.startswith("__"):
-                skills.append(fname[:-3])
-    return sorted(skills)
+from backend.core.plugin import PluginRegistry
 
 async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str, str]:
     """Uses LLM to identify relevant context and match against available site skills."""
@@ -71,9 +55,10 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str,
     # Deterministic guard: if the prompt explicitly names a known skill, lock it in
     # immediately — prevents LLM from hallucinating the wrong site plugin.
     forced_site = _detect_site_from_prompt(prompt)
-    available_skills = get_available_site_skills()
+    plugin_descriptions = PluginRegistry.get_plugin_descriptions()
+    available_skills = sorted(plugin_descriptions.keys())
     skills_list_str = "\n".join(
-        f"- {s}: {SITE_SKILL_DESCRIPTIONS.get(s, f'{s} website automation skill.')}"
+        f"- {s}: {plugin_descriptions.get(s, f'{s} website automation skill.')}"
         for s in available_skills
     )
 

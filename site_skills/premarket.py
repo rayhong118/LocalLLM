@@ -867,7 +867,8 @@ async def premarket_run_pre_flight(
 
 
 class PreMarketPlugin(BaseSitePlugin):
-    """Plugin wrapper for dynamic loading by PluginRegistry."""
+    description = "Overnight and morning pre-market financial news and macroeconomic wire."
+
     async def run_pre_flight(self, browser: BrowserSession, prompt: str, context: str, log_path: str, llm: Any) -> str:
         return await premarket_run_pre_flight(browser, prompt, context, log_path, llm)
 

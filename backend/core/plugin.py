@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 class BaseSitePlugin(ABC):
+    description: str = ""
+
     @abstractmethod
     async def run_pre_flight(self, browser, prompt: str, context: str, log_path: str, llm) -> str:
         """
@@ -50,3 +52,23 @@ class PluginRegistry:
             print(f"Error loading plugin '{site_key}': {e}")
             
         return None
+
+    @staticmethod
+    def get_plugin_descriptions() -> dict[str, str]:
+        """Dynamically scans site_skills/ and returns a dict mapping skill key to its description."""
+        descriptions = {}
+        if not os.path.isdir("site_skills"):
+            return descriptions
+
+        for fname in os.listdir("site_skills"):
+            if fname.endswith(".py") and not fname.startswith("__"):
+                skill_key = fname[:-3]
+                plugin = PluginRegistry.get_plugin(skill_key)
+                if plugin:
+                    desc = getattr(plugin, "description", "").strip()
+                    if not desc and plugin.__doc__:
+                        first_line = plugin.__doc__.strip().split("\n")[0].strip()
+                        if not first_line.startswith("Plugin wrapper"):
+                            desc = first_line
+                    descriptions[skill_key] = desc or f"{skill_key} website automation skill."
+        return descriptions

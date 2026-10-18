@@ -754,7 +754,8 @@ async def wsdot_run_pre_flight(browser: BrowserSession, prompt: str, context_str
     return report_md
 
 class WsdotPlugin(BaseSitePlugin):
-    """Plugin wrapper for dynamic loading by PluginRegistry."""
+    description = "Washington State DOT highway traffic, road alerts, and pass reports."
+
     async def run_pre_flight(self, browser: BrowserSession, prompt: str, context: str, log_path: str, llm: Any) -> str:
         return await wsdot_run_pre_flight(browser, prompt, context, log_path, llm)
 
