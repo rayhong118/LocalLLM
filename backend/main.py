@@ -418,22 +418,32 @@ def update_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db)
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    if payload.frequency is not None:
+    schedule_changed = False
+
+    if payload.frequency is not None and payload.frequency != db_task.frequency:
         db_task.frequency = payload.frequency
-    if payload.hour_of_day is not None:
+        schedule_changed = True
+    if payload.hour_of_day is not None and payload.hour_of_day != db_task.hour_of_day:
         db_task.hour_of_day = payload.hour_of_day
-    if payload.day_of_week is not None:
+        schedule_changed = True
+    if payload.day_of_week is not None and payload.day_of_week != db_task.day_of_week:
         db_task.day_of_week = payload.day_of_week
-    if payload.day_of_month is not None:
+        schedule_changed = True
+    if payload.day_of_month is not None and payload.day_of_month != db_task.day_of_month:
         db_task.day_of_month = payload.day_of_month
-    if payload.weekday_only is not None:
+        schedule_changed = True
+    if payload.weekday_only is not None and payload.weekday_only != db_task.weekday_only:
         db_task.weekday_only = payload.weekday_only
+        schedule_changed = True
     if payload.prompt is not None:
-        db_task.prompt = payload.prompt
+        trimmed = payload.prompt.strip()
+        if not trimmed:
+            raise HTTPException(status_code=400, detail="Task prompt cannot be empty")
+        db_task.prompt = trimmed
 
     if db_task.frequency == "ONCE":
         db_task.next_run_at = None
-    else:
+    elif schedule_changed or db_task.next_run_at is None:
         db_task.next_run_at = calculate_next_run(
             db_task.frequency,
             db_task.hour_of_day,

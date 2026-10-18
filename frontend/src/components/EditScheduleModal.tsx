@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar, Clock, AlertCircle } from 'lucide-react';
+import { Calendar, Clock, AlertCircle, FileText } from 'lucide-react';
 import { Modal } from './Modal';
 import { Task, TaskFrequency } from '../store';
 
@@ -8,6 +8,7 @@ interface EditScheduleModalProps {
     onClose: () => void;
     task: Task;
     onSave: (data: {
+        prompt: string;
         frequency: TaskFrequency;
         hour_of_day: number;
         weekday_only?: boolean;
@@ -22,6 +23,7 @@ export const EditScheduleModal: React.FC<EditScheduleModalProps> = ({
     task,
     onSave
 }) => {
+    const [prompt, setPrompt] = useState<string>(task.prompt || '');
     const [frequency, setFrequency] = useState<TaskFrequency>(
         task.frequency === 'ONCE' ? 'DAILY' : task.frequency
     );
@@ -35,6 +37,7 @@ export const EditScheduleModal: React.FC<EditScheduleModalProps> = ({
 
     useEffect(() => {
         if (isOpen) {
+            setPrompt(task.prompt || '');
             setFrequency(task.frequency === 'ONCE' ? 'DAILY' : task.frequency);
             setHourOfDay(task.hour_of_day ?? 9);
             setWeekdayOnly(task.weekday_only ?? false);
@@ -81,6 +84,11 @@ export const EditScheduleModal: React.FC<EditScheduleModalProps> = ({
 
     const handleConfirm = async () => {
         setError(null);
+        const trimmedPrompt = prompt.trim();
+        if (!trimmedPrompt) {
+            setError('Task prompt cannot be empty');
+            return;
+        }
         if (frequency === 'MONTHLY' && (dayOfMonth < 1 || dayOfMonth > 31)) {
             setError('Day of month must be between 1 and 31');
             return;
@@ -89,6 +97,7 @@ export const EditScheduleModal: React.FC<EditScheduleModalProps> = ({
         setIsSaving(true);
         try {
             await onSave({
+                prompt: trimmedPrompt,
                 frequency,
                 hour_of_day: hourOfDay,
                 weekday_only: frequency === 'DAILY' ? weekdayOnly : false,
@@ -106,7 +115,7 @@ export const EditScheduleModal: React.FC<EditScheduleModalProps> = ({
             isOpen={isOpen}
             onClose={onClose}
             maxWidth="520px"
-            title="Edit Recurring Schedule"
+            title="Edit Scheduled Task"
             icon={<Calendar size={20} color="var(--color-primary)" />}
             footer={
                 <>
@@ -124,27 +133,39 @@ export const EditScheduleModal: React.FC<EditScheduleModalProps> = ({
                         onClick={handleConfirm}
                         disabled={isSaving}
                     >
-                        {isSaving ? 'Saving...' : 'Save Schedule'}
+                        {isSaving ? 'Saving...' : 'Save Changes'}
                     </button>
                 </>
             }
         >
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-                {/* Task prompt display */}
-                <div style={{
-                    fontSize: '0.85rem',
-                    color: 'var(--color-text-body)',
-                    background: 'var(--color-bg-alt)',
-                    padding: '0.75rem 1rem',
-                    borderRadius: '8px',
-                    border: '1px solid var(--color-border)',
-                    lineHeight: 1.4,
-                    wordBreak: 'break-word'
-                }}>
-                    <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--color-text-muted)', display: 'block', marginBottom: '0.25rem' }}>
-                        TASK PROMPT
-                    </span>
-                    {task.prompt}
+                {/* Task prompt input */}
+                <div>
+                    <label style={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        gap: '0.4rem', 
+                        fontSize: '0.8rem', 
+                        fontWeight: 600, 
+                        marginBottom: '0.5rem', 
+                        color: 'var(--color-text-muted)' 
+                    }}>
+                        <FileText size={14} /> Task Prompt
+                    </label>
+                    <textarea
+                        value={prompt}
+                        onChange={(e) => setPrompt(e.target.value)}
+                        placeholder="Enter task prompt..."
+                        rows={3}
+                        style={{
+                            minHeight: '88px',
+                            resize: 'vertical',
+                            lineHeight: 1.5,
+                            fontSize: '0.9rem'
+                        }}
+                        disabled={isSaving}
+                        required
+                    />
                 </div>
 
                 {error && (

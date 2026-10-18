@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { marked } from 'marked';
-import { Trash2, Play, RotateCcw, XCircle, Copy, Check, ChevronDown, ChevronUp, Clock, CalendarDays, Calendar, BookOpen, Plus, X } from 'lucide-react';
+import { Trash2, Play, RotateCcw, XCircle, Copy, Check, ChevronDown, ChevronUp, Clock, CalendarDays, Calendar, BookOpen, Plus, X, Edit3 } from 'lucide-react';
 import { Task, Context, TaskFrequency } from '../store';
 import { ContextSelectModal } from './ContextSelectModal';
 import { EditScheduleModal } from './EditScheduleModal';
@@ -96,6 +96,7 @@ export const TaskItem: React.FC<TaskItemProps> = ({
     };
 
     const handleUpdateSchedule = async (updatedData: {
+        prompt?: string;
         frequency: TaskFrequency;
         hour_of_day: number;
         weekday_only?: boolean;
@@ -226,8 +227,46 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                             task.status
                         )}
                     </span>
-                    <span style={{ fontWeight: 600, color: 'var(--color-text-body)', lineHeight: 1.4, fontSize: '0.95rem', wordBreak: 'break-word' }}>
-                        {task.prompt}
+                    <span style={{ 
+                        fontWeight: 600, 
+                        color: 'var(--color-text-body)', 
+                        lineHeight: 1.4, 
+                        fontSize: '0.95rem', 
+                        wordBreak: 'break-word',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '0.45rem',
+                        flexWrap: 'wrap'
+                    }}>
+                        <span>{task.prompt}</span>
+                        {task.frequency !== 'ONCE' && (
+                            <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setShowScheduleModal(true); }}
+                                style={{
+                                    background: 'none',
+                                    border: 'none',
+                                    padding: '2px 4px',
+                                    cursor: 'pointer',
+                                    color: 'var(--color-text-light)',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    borderRadius: '4px',
+                                    transition: 'all 0.15s'
+                                }}
+                                onMouseEnter={(e) => {
+                                    e.currentTarget.style.color = 'var(--color-primary)';
+                                    e.currentTarget.style.background = 'var(--color-primary-soft)';
+                                }}
+                                onMouseLeave={(e) => {
+                                    e.currentTarget.style.color = 'var(--color-text-light)';
+                                    e.currentTarget.style.background = 'none';
+                                }}
+                                title="Edit task prompt and schedule"
+                            >
+                                <Edit3 size={13} />
+                            </button>
+                        )}
                     </span>
                 </div>
                 
@@ -239,7 +278,7 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                                 className="secondary" 
                                 style={{ fontSize: '0.75rem', padding: '0.35rem 0.75rem', borderRadius: '6px' }}
                                 onClick={(e) => { e.stopPropagation(); setShowScheduleModal(true); }}
-                                title="Edit schedule frequency and hour"
+                                title="Edit task prompt and schedule"
                             >
                                 <Calendar size={12} /> Edit Schedule
                             </button>
@@ -402,7 +441,7 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                                 fontSize: '0.72rem',
                                 textDecoration: 'underline'
                             }}
-                            title="Edit schedule"
+                            title="Edit schedule and prompt"
                         >
                             Edit
                         </button>
