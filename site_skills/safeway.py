@@ -6,9 +6,8 @@ from browser_use import BrowserSession
 from backend.core.plugin import BaseSitePlugin
 import logging
 import asyncio
-from typing import Any
+from typing import Any, Optional
 from backend import config
-from backend.services.llm import clean_json_text
 import re
 import json
 import httpx
@@ -1585,6 +1584,51 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
 class SafewayPlugin(BaseSitePlugin):
     description = "Safeway grocery deals, digital coupons, and product discount clipping."
 
+    def register_actions(self, controller: Any) -> None:
+        controller.action('safeway_click_details')(safeway_click_details)
+        controller.action('safeway_filter_category')(safeway_filter_category)
+        controller.action('safeway_get_all_deals')(safeway_get_all_deals)
+        controller.action('safeway_clip_coupon')(safeway_clip_coupon)
+        controller.action('safeway_clip_all_matching')(safeway_clip_all_matching)
+
     async def run_pre_flight(self, browser: BrowserSession, prompt: str, context: str, log_path: str, llm: Any) -> str:
         return await safeway_run_pre_flight(browser, prompt, context, log_path, llm)
+
+    def evaluate_outcome(self, result_text: str) -> Optional[str]:
+        lower_res = result_text.lower()
+        # 1. Safeway summary line: "X items searched | Y clipped | Z not found"
+        summary_match = re.search(
+            r'(\d+)\s*(?:items?|products?)\s*searched[^\n\r]*?(\d+)\s*clipped[^\n\r]*?(?:(\d+)\s*auto-sale[^\n\r]*?)?(\d+)\s*not\s*found',
+            lower_res
+        )
+        if summary_match:
+            searched = int(summary_match.group(1))
+            clipped = int(summary_match.group(2))
+            auto_sale = int(summary_match.group(3)) if summary_match.group(3) else 0
+            not_found = int(summary_match.group(4))
+            
+            positives = clipped + auto_sale
+            if positives > 0 and not_found > 0:
+                return "PARTIAL_SUCCESS"
+            elif positives > 0 and not_found == 0:
+                return "SUCCESS"
+            elif positives == 0 and not_found > 0:
+                return "NO_RESULT"
+
+        # 2. Section check: Has explicit "No Coupons Found" or "Not Found" section
+        has_not_found_section = bool(re.search(r'(?:###|\*\*)\s*(?:❌\s*)?no\s+(?:coupons|items|deals|products)\s+found', lower_res))
+        has_clipped_section = bool(re.search(r'(?:✅\s*clipped|➖\s*auto-sale|successfully clipped|added to cart)', lower_res))
+        
+        if has_not_found_section and has_clipped_section:
+            return "PARTIAL_SUCCESS"
+        if has_not_found_section and not has_clipped_section:
+            if not re.search(r'\b(clipped \d+|found \d+ deals|\$\d+\.\d+)\b', lower_res):
+                return "NO_RESULT"
+
+        # 3. Explicit "0 results found" or "no matching deals" across whole run
+        if re.search(r'\b(?:0 deals|0 coupons|0 items|no matching (?:deals|coupons|items|results))\b', lower_res):
+            if not has_clipped_section and not re.search(r'clipped \d+', lower_res):
+                return "NO_RESULT"
+
+        return None
 

@@ -869,8 +869,21 @@ async def premarket_run_pre_flight(
 class PreMarketPlugin(BaseSitePlugin):
     description = "Overnight and morning pre-market financial news and macroeconomic wire."
 
+    def register_actions(self, controller: Any) -> None:
+        controller.action('premarket_get_news')(premarket_get_news)
+
     async def run_pre_flight(self, browser: BrowserSession, prompt: str, context: str, log_path: str, llm: Any) -> str:
         return await premarket_run_pre_flight(browser, prompt, context, log_path, llm)
+
+    def evaluate_outcome(self, result_text: str) -> Optional[str]:
+        lower_res = result_text.lower()
+        news_match = re.search(r'(\d+)\s*(?:curated\s+news\s+items\s+selected|macro\s+news\s+items\s+collected|news\s+items?\s*(?:collected|found|retrieved))', lower_res)
+        if news_match:
+            news_found = int(news_match.group(1))
+            return "SUCCESS" if news_found > 0 else "NO_RESULT"
+        if "no significant overnight or pre-market news found" in lower_res and "macro" not in lower_res:
+            return "NO_RESULT"
+        return None
 
 
 async def premarket_get_news(category: str = "general", symbols: str = "") -> str:

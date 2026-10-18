@@ -41,64 +41,16 @@ def _has_technical_blockers(lower_res: str) -> bool:
 
 def _evaluate_structured_summary(lower_res: str) -> str | None:
     """
-    Deterministic rule-based evaluator for structured skill summaries (e.g. Safeway, Weee, scrapers).
+    Generic rule-based fallback for structured summaries when no site-specific plugin evaluator matched.
     Returns 'SUCCESS', 'PARTIAL_SUCCESS', 'NO_RESULT', or None if not deterministically matchable.
     """
-    # 1. Safeway / Coupon style summary: "X items searched | Y clipped | Z not found"
-    summary_match = re.search(
-        r'(\d+)\s*(?:items?|products?)\s*searched[^\n\r]*?(\d+)\s*clipped[^\n\r]*?(?:(\d+)\s*auto-sale[^\n\r]*?)?(\d+)\s*not\s*found',
-        lower_res
-    )
-    if summary_match:
-        searched = int(summary_match.group(1))
-        clipped = int(summary_match.group(2))
-        auto_sale = int(summary_match.group(3)) if summary_match.group(3) else 0
-        not_found = int(summary_match.group(4))
-        
-        positives = clipped + auto_sale
-        if positives > 0 and not_found > 0:
-            return "PARTIAL_SUCCESS"
-        elif positives > 0 and not_found == 0:
-            return "SUCCESS"
-        elif positives == 0 and not_found > 0:
-            return "NO_RESULT"
-
-    # 2. Section check: Has explicit "No Coupons Found" or "Not Found" section
-    has_not_found_section = bool(re.search(r'(?:###|\*\*)\s*(?:❌\s*)?no\s+(?:coupons|items|deals|products)\s+found', lower_res))
-    has_clipped_section = bool(re.search(r'(?:✅\s*clipped|➖\s*auto-sale|successfully clipped|added to cart)', lower_res))
-    
-    if has_not_found_section and has_clipped_section:
-        return "PARTIAL_SUCCESS"
-    if has_not_found_section and not has_clipped_section:
-        # Check if anything positive was actually clipped or retrieved
-        if not re.search(r'\b(clipped \d+|found \d+ deals|\$\d+\.\d+)\b', lower_res):
-            return "NO_RESULT"
-
-    # 3. Explicit "0 results found" or "no matching deals" across whole run
-    if re.search(r'\b(?:0 deals|0 coupons|0 items|no matching (?:deals|coupons|items|results))\b', lower_res):
-        if not has_clipped_section and not re.search(r'clipped \d+', lower_res):
-            return "NO_RESULT"
-
-    # 4. WSDOT Traffic / Alerts style summary: "X alerts found in King County ... out of N statewide alerts"
-    wsdot_match = re.search(r'(\d+)\s*alerts?\s*(?:found\s*in|in)\s*([a-z\s]+?)\s*.*?out\s*of\s*(\d+)\s*statewide', lower_res)
-    if wsdot_match:
-        alerts_found = int(wsdot_match.group(1))
-        return "SUCCESS" if alerts_found > 0 else "NO_RESULT"
-
-    # 5. Market Report style summary (Pre-Market / After-Market)
-    market_rep_match = re.search(r'daily market report generated[^\n\r]*?(\d+)\s*(?:major\s+)?indices\s+tracked', lower_res)
-    if market_rep_match:
-        indices_count = int(market_rep_match.group(1))
-        return "SUCCESS" if indices_count > 0 else "NO_RESULT"
-
-    news_match = re.search(r'(\d+)\s*(?:market\s+|macro\s+)?news\s+items?\s*(?:collected|found|retrieved)', lower_res)
-    if news_match:
-        news_found = int(news_match.group(1))
-        return "SUCCESS" if news_found > 0 else "NO_RESULT"
+    # Explicit "0 results found" or "no matching items" across whole run
+    if re.search(r'\b(?:0\s+(?:results|items|deals|records|matches)\s+found|no\s+matching\s+(?:results|deals|items|records))\b', lower_res):
+        return "NO_RESULT"
 
     return None
 
-async def evaluate_result(prompt: str, final_res: str, history=None, log_path: str = None) -> str:
+async def evaluate_result(prompt: str, final_res: str, history=None, log_path: str = None, site_key: str = "") -> str:
     """
     Evaluates the final result of an agent run into a generic 4-tier outcome:
     - 'SUCCESS'
@@ -125,10 +77,23 @@ async def evaluate_result(prompt: str, final_res: str, history=None, log_path: s
             _log(log_path, f"Outcome Evaluation: Critical browser history errors {critical_errors} -> FAILED")
             return "FAILED"
 
-    # 3. Deterministic structured check (fast and 100% accurate for structured reports)
+    # 3. Deterministic skill-specific evaluator (if a site plugin is active)
+    if site_key:
+        try:
+            from backend.core.plugin import PluginRegistry
+            plugin = PluginRegistry.get_plugin(site_key)
+            if plugin:
+                skill_outcome = plugin.evaluate_outcome(final_res)
+                if skill_outcome in ("SUCCESS", "PARTIAL_SUCCESS", "NO_RESULT", "FAILED"):
+                    _log(log_path, f"Outcome Evaluation (Skill '{site_key}'): Outcome={skill_outcome}")
+                    return skill_outcome
+        except Exception as e:
+            _log(log_path, f"Outcome Evaluation: Skill evaluator error: {e}")
+
+    # 4. Generic deterministic structured check (fast and accurate for generic summaries)
     deterministic_outcome = _evaluate_structured_summary(lower_res)
     if deterministic_outcome:
-        _log(log_path, f"Outcome Evaluation (Deterministic): Outcome={deterministic_outcome}")
+        _log(log_path, f"Outcome Evaluation (Generic Deterministic): Outcome={deterministic_outcome}")
         return deterministic_outcome
 
     # 4. LLM Judge Evaluation (Generic for arbitrary prompts & open-ended tasks)

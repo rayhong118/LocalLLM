@@ -6,7 +6,7 @@ from browser_use import BrowserSession
 from backend.core.plugin import BaseSitePlugin
 import logging
 import asyncio
-from typing import Any
+from typing import Any, Optional
 from backend import config
 from backend.services.llm import clean_json_text
 import re
@@ -1081,5 +1081,39 @@ CATEGORY_EMOJIS = {
 class WeeePlugin(BaseSitePlugin):
     description = "SayWeee Asian and Hispanic grocery shopping, deals, and favorites."
 
+    def register_actions(self, controller: Any) -> None:
+        controller.action('weee_filter_category')(weee_filter_category)
+        controller.action('weee_get_all_deals')(weee_get_all_deals)
+        controller.action('weee_add_to_favorites_by_indices')(weee_add_to_favorites_by_indices)
+
     async def run_pre_flight(self, browser, prompt: str, context: str, log_path: str, llm) -> str:
         return await weee_run_pre_flight(browser, prompt, context, log_path, llm)
+
+    def evaluate_outcome(self, result_text: str) -> Optional[str]:
+        lower_res = result_text.lower()
+        summary_match = re.search(
+            r'(\d+)\s*items?\s*searched[^\n\r]*?(\d+)\s*added\s*to\s*favorites[^\n\r]*?(?:(\d+)\s*no\s*favorites\s*button[^\n\r]*?)?(\d+)\s*not\s*found',
+            lower_res
+        )
+        if summary_match:
+            searched = int(summary_match.group(1))
+            added = int(summary_match.group(2))
+            no_btn = int(summary_match.group(3)) if summary_match.group(3) else 0
+            not_found = int(summary_match.group(4))
+
+            positives = added + no_btn
+            if positives > 0 and not_found > 0:
+                return "PARTIAL_SUCCESS"
+            elif positives > 0 and not_found == 0:
+                return "SUCCESS"
+            elif positives == 0 and not_found > 0:
+                return "NO_RESULT"
+
+        has_not_found = bool(re.search(r'(?:###|\*\*)\s*(?:❌\s*)?no\s+(?:coupons|items|deals|products)\s+found', lower_res))
+        has_favorites = bool(re.search(r'added to favorites', lower_res))
+        if has_not_found and has_favorites:
+            return "PARTIAL_SUCCESS"
+        if has_not_found and not has_favorites:
+            return "NO_RESULT"
+
+        return None

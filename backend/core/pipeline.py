@@ -309,7 +309,7 @@ class AgentPipeline:
         if self.pre_flight_data and self.pre_flight_data not in ("PREFLIGHT_FATAL", ""):
             final_res = self.pre_flight_data
 
-        status = await evaluate_result(self.prompt, final_res, history, self.log_path)
+        status = await evaluate_result(self.prompt, final_res, history, self.log_path, site_key=getattr(self, "site_key", ""))
         
         self.task.status = status
         self.db.add(Output(task_id=self.task_id, content=final_res))

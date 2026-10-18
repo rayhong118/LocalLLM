@@ -1,10 +1,14 @@
 import os
 import importlib
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Any
 
 class BaseSitePlugin(ABC):
     description: str = ""
+
+    def register_actions(self, controller: Any) -> None:
+        """Optionally register site-specific controller actions."""
+        pass
 
     @abstractmethod
     async def run_pre_flight(self, browser, prompt: str, context: str, log_path: str, llm) -> str:
@@ -13,6 +17,14 @@ class BaseSitePlugin(ABC):
         Returns scraped data as a string to be injected into the agent task.
         """
         pass
+
+    def evaluate_outcome(self, result_text: str) -> Optional[str]:
+        """
+        Optionally evaluate the final task output deterministically.
+        Returns 'SUCCESS', 'PARTIAL_SUCCESS', 'NO_RESULT', 'FAILED', or None
+        to defer to generic LLM / heuristic evaluation.
+        """
+        return None
 
 class PluginRegistry:
     @staticmethod
@@ -54,21 +66,29 @@ class PluginRegistry:
         return None
 
     @staticmethod
-    def get_plugin_descriptions() -> dict[str, str]:
-        """Dynamically scans site_skills/ and returns a dict mapping skill key to its description."""
-        descriptions = {}
+    def get_all_plugins() -> dict[str, BaseSitePlugin]:
+        """Dynamically scans site_skills/ and returns a dict mapping skill key to its plugin instance."""
+        plugins = {}
         if not os.path.isdir("site_skills"):
-            return descriptions
+            return plugins
 
         for fname in os.listdir("site_skills"):
             if fname.endswith(".py") and not fname.startswith("__"):
                 skill_key = fname[:-3]
                 plugin = PluginRegistry.get_plugin(skill_key)
                 if plugin:
-                    desc = getattr(plugin, "description", "").strip()
-                    if not desc and plugin.__doc__:
-                        first_line = plugin.__doc__.strip().split("\n")[0].strip()
-                        if not first_line.startswith("Plugin wrapper"):
-                            desc = first_line
-                    descriptions[skill_key] = desc or f"{skill_key} website automation skill."
+                    plugins[skill_key] = plugin
+        return plugins
+
+    @staticmethod
+    def get_plugin_descriptions() -> dict[str, str]:
+        """Dynamically scans site_skills/ and returns a dict mapping skill key to its description."""
+        descriptions = {}
+        for skill_key, plugin in PluginRegistry.get_all_plugins().items():
+            desc = getattr(plugin, "description", "").strip()
+            if not desc and plugin.__doc__:
+                first_line = plugin.__doc__.strip().split("\n")[0].strip()
+                if not first_line.startswith("Plugin wrapper"):
+                    desc = first_line
+            descriptions[skill_key] = desc or f"{skill_key} website automation skill."
         return descriptions

@@ -756,8 +756,21 @@ async def wsdot_run_pre_flight(browser: BrowserSession, prompt: str, context_str
 class WsdotPlugin(BaseSitePlugin):
     description = "Washington State DOT highway traffic, road alerts, and pass reports."
 
+    def register_actions(self, controller: Any) -> None:
+        controller.action('wsdot_get_highway_alerts')(wsdot_get_highway_alerts)
+
     async def run_pre_flight(self, browser: BrowserSession, prompt: str, context: str, log_path: str, llm: Any) -> str:
         return await wsdot_run_pre_flight(browser, prompt, context, log_path, llm)
+
+    def evaluate_outcome(self, result_text: str) -> Optional[str]:
+        lower_res = result_text.lower()
+        wsdot_match = re.search(r'(\d+)\s*alerts?\s*(?:found\s*in|in)\s*([a-z\s]+?)\s*.*?out\s*of\s*(\d+)\s*statewide', lower_res)
+        if wsdot_match:
+            alerts_found = int(wsdot_match.group(1))
+            return "SUCCESS" if alerts_found > 0 else "NO_RESULT"
+        if "0 alerts found in king county" in lower_res or "no active highway alerts" in lower_res:
+            return "NO_RESULT"
+        return None
 
 # Standalone function for controller skill action
 async def wsdot_get_highway_alerts(area: str = "King County", timewindow: str = "") -> str:

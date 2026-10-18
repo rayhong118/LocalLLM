@@ -945,8 +945,19 @@ async def aftermarket_run_pre_flight(
 class AfterMarketPlugin(BaseSitePlugin):
     description = "After-market daily stock report, post-market prices (yfinance), and near-term watchpoints."
 
+    def register_actions(self, controller: Any) -> None:
+        controller.action('aftermarket_daily_report')(aftermarket_daily_report)
+
     async def run_pre_flight(self, browser: Optional[BrowserSession], prompt: str, context: str, log_path: str = "", llm: Any = None) -> str:
         return await aftermarket_run_pre_flight(browser, prompt, context, log_path, llm)
+
+    def evaluate_outcome(self, result_text: str) -> Optional[str]:
+        lower_res = result_text.lower()
+        market_rep_match = re.search(r'daily market report generated[^\n\r]*?(\d+)\s*(?:major\s+)?indices\s+tracked', lower_res)
+        if market_rep_match:
+            indices_count = int(market_rep_match.group(1))
+            return "SUCCESS" if indices_count > 0 else "NO_RESULT"
+        return None
 
 
 async def aftermarket_daily_report(symbols: str = "") -> str:
