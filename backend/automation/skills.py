@@ -9,6 +9,7 @@ from site_skills.safeway import safeway_click_details, safeway_filter_category, 
 from site_skills.weee import weee_filter_category, weee_get_all_deals, weee_add_to_favorites_by_indices
 from site_skills.wsdot import wsdot_get_highway_alerts
 from site_skills.premarket import premarket_get_news
+from site_skills.afterMarket import aftermarket_daily_report
 
 logger = logging.getLogger(__name__)
 controller = Controller()
@@ -400,3 +401,6 @@ controller.action('wsdot_get_highway_alerts')(wsdot_get_highway_alerts)
 
 # Register Pre-Market News Site-Specific Skills
 controller.action('premarket_get_news')(premarket_get_news)
+
+# Register After-Market Report Site-Specific Skills
+controller.action('aftermarket_daily_report')(aftermarket_daily_report)

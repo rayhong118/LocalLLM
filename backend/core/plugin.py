@@ -19,12 +19,18 @@ class PluginRegistry:
         if not site_key:
             return None
             
-        plugin_path = os.path.join("site_skills", f"{site_key}.py")
-        if not os.path.exists(plugin_path):
+        # Resolve real file name case-insensitively so afterMarket / aftermarket both work
+        actual_name = None
+        if os.path.isdir("site_skills"):
+            for fname in os.listdir("site_skills"):
+                if fname.lower() == f"{site_key.lower()}.py":
+                    actual_name = fname[:-3]
+                    break
+        if not actual_name:
             return None
 
         try:
-            module = importlib.import_module(f"site_skills.{site_key}")
+            module = importlib.import_module(f"site_skills.{actual_name}")
             # Try to find a class that inherits from BaseSitePlugin
             for name in dir(module):
                 obj = getattr(module, name)

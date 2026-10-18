@@ -85,7 +85,12 @@ def _evaluate_structured_summary(lower_res: str) -> str | None:
         alerts_found = int(wsdot_match.group(1))
         return "SUCCESS" if alerts_found > 0 else "NO_RESULT"
 
-    # 5. Pre-Market News style summary: "X market/macro news items collected"
+    # 5. Market Report style summary (Pre-Market / After-Market)
+    market_rep_match = re.search(r'daily market report generated[^\n\r]*?(\d+)\s*(?:major\s+)?indices\s+tracked', lower_res)
+    if market_rep_match:
+        indices_count = int(market_rep_match.group(1))
+        return "SUCCESS" if indices_count > 0 else "NO_RESULT"
+
     news_match = re.search(r'(\d+)\s*(?:market\s+|macro\s+)?news\s+items?\s*(?:collected|found|retrieved)', lower_res)
     if news_match:
         news_found = int(news_match.group(1))

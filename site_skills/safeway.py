@@ -137,7 +137,7 @@ async def _llm_match_cards_for_category(
 
     async with httpx.AsyncClient() as client:
         for chunk_idx, indices in enumerate(chunks):
-            card_list = "\n".join(f"{i}: {card_texts[i][:100]}" for i in indices)
+            card_list = "\n".join(f"{i}: {card_texts[i][:150]}" for i in indices)
             user_msg = f"Target items: {json.dumps(target_items)}\n\nCards:\n{card_list}"
 
             try:
@@ -1320,11 +1320,11 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
 
                 function cleanProductTitle(card) {
                     // 1. Try dedicated product title/name elements
+                    let title = '';
                     const titleSelectors = [
-                        '[class*="product-title"]', '[class*="deal-title"]', '[class*="offer-title"]',
-                        '[class*="coupon-title"]', '[class*="item-title"]', '[class*="product-name"]',
-                        'h3', 'h4', '[data-qa*="title"]', '[data-qa*="name"]',
-                        '[class*="description"]'
+                        '[class*="cpn-title"]', '[class*="product-title"]', '[class*="deal-title"]',
+                        '[class*="offer-title"]', '[class*="coupon-title"]', '[class*="item-title"]',
+                        '[class*="product-name"]', 'h3', 'h4', '[data-qa*="title"]', '[data-qa*="name"]'
                     ];
                     for (const sel of titleSelectors) {
                         try {
@@ -1332,13 +1332,40 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
                             if (el) {
                                 const t = (el.innerText || el.textContent || '').trim();
                                 if (t.length >= 3 && !t.startsWith('$') && !t.toLowerCase().includes('expires') && !t.toLowerCase().includes('clip')) {
-                                    return t.replace(/\\n/g, ' ').substring(0, 120);
+                                    title = t.replace(/\\n/g, ' ');
+                                    break;
                                 }
                             }
                         } catch(e) {}
                     }
+
+                    // 2. Try dedicated product details/description elements
+                    let details = '';
+                    const detailSelectors = [
+                        '[class*="cpn-details"]', '[class*="description"]', '[class*="offer-details"]',
+                        '[class*="coupon-details"]', '[class*="product-details"]'
+                    ];
+                    for (const sel of detailSelectors) {
+                        try {
+                            const el = card.querySelector(sel);
+                            if (el) {
+                                const t = (el.innerText || el.textContent || '').trim();
+                                if (t.length >= 3 && !t.startsWith('$') && !t.toLowerCase().includes('expires') && !t.toLowerCase().includes('clip')) {
+                                    details = t.replace(/\\n/g, ' ');
+                                    break;
+                                }
+                            }
+                        } catch(e) {}
+                    }
+
+                    // Combine both if both exist and are not identical
+                    if (title && details && title.toLowerCase() !== details.toLowerCase()) {
+                        return (title + ' - ' + details).substring(0, 150);
+                    }
+                    if (title) return title.substring(0, 120);
+                    if (details) return details.substring(0, 120);
                     
-                    // 2. Try product image alt text (Safeway deal images usually have alt="Brand Product Name")
+                    // 3. Try product image alt text (Safeway deal images usually have alt="Brand Product Name")
                     try {
                         const img = card.querySelector('img[alt]');
                         if (img) {
@@ -1350,7 +1377,7 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
                         }
                     } catch(e) {}
                     
-                    // 3. Fallback: Parse card innerText lines, stripping prices, dates, button text
+                    // 4. Fallback: Parse card innerText lines, stripping prices, dates, button text
                     const lines = (card.innerText || '').split('\\n').map(l => l.trim()).filter(Boolean);
                     const candidateLines = lines.filter(l => {
                         const low = l.toLowerCase();

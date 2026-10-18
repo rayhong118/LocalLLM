@@ -5,31 +5,16 @@ import httpx
 from backend import config
 from backend.database.models import Context
 
-SITE_ALIASES = {
-    "wsdot": ["wsdot", "highway alert", "highway alerts", "traffic alert", "traffic alerts", "wa traffic", "washington traffic", "wsdot.wa.gov", "king county alerts", "king county traffic"],
-    "premarket": ["premarket", "pre-market", "pre market", "market news", "market related news", "morning market", "stock news", "financial news", "overnight news", "finnhub"],
-    "safeway": ["safeway"],
-    "weee": ["weee", "sayweee"],
-    "sofi": ["sofi"]
-}
-
 def _detect_site_from_prompt(prompt: str) -> str:
-    """Deterministic check: if prompt contains a known site skill name or alias, return it immediately.
-    This prevents the LLM from hallucinating the wrong plugin when the site name or intent is explicit."""
+    """Checks if any installed site skill name appears directly in the prompt text (case-insensitive).
+    Provides a 0ms fast-path when the target site/skill is explicitly named."""
     prompt_lower = prompt.lower()
-    
-    # 1. Check aliases first
-    for site, aliases in SITE_ALIASES.items():
-        if any(alias in prompt_lower for alias in aliases):
-            return site
-
-    # 2. Check site_skills filenames
     skill_dir = "site_skills"
     if os.path.isdir(skill_dir):
         for fname in os.listdir(skill_dir):
-            if fname.endswith(".py"):
+            if fname.endswith(".py") and not fname.startswith("__"):
                 skill_name = fname[:-3]  # strip .py
-                if skill_name in prompt_lower:
+                if skill_name.lower() in prompt_lower:
                     return skill_name
     return ""
 
@@ -59,8 +44,26 @@ def format_bound_context_str(bound_contexts: list, prompt: str, log_path: str = 
 
     return full_context + "USE THIS TO INFORM YOUR ACTIONS.\n\n", site_plugin
 
+SITE_SKILL_DESCRIPTIONS = {
+    "safeway": "Safeway grocery deals, coupons, and product discounts.",
+    "weee": "SayWeee Asian and Hispanic grocery shopping and favorites.",
+    "wsdot": "Washington State DOT highway traffic, road alerts, and pass reports.",
+    "premarket": "Overnight & morning pre-market financial news and macro wire.",
+    "afterMarket": "After-market daily stock report, post-market prices (yfinance), and earnings catalysts.",
+    "sofi": "SoFi accounts, banking, and financial services automation."
+}
+
+def get_available_site_skills() -> list[str]:
+    """Dynamically discover all available site skill names from site_skills/."""
+    skills = []
+    if os.path.isdir("site_skills"):
+        for fname in os.listdir("site_skills"):
+            if fname.endswith(".py") and not fname.startswith("__"):
+                skills.append(fname[:-3])
+    return sorted(skills)
+
 async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str, str]:
-    """Uses LLM to identify relevant context and the target site plugin in one step."""
+    """Uses LLM to identify relevant context and match against available site skills."""
     contexts = db.query(Context).all()
     if not contexts:
         return "", ""
@@ -68,6 +71,11 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str,
     # Deterministic guard: if the prompt explicitly names a known skill, lock it in
     # immediately — prevents LLM from hallucinating the wrong site plugin.
     forced_site = _detect_site_from_prompt(prompt)
+    available_skills = get_available_site_skills()
+    skills_list_str = "\n".join(
+        f"- {s}: {SITE_SKILL_DESCRIPTIONS.get(s, f'{s} website automation skill.')}"
+        for s in available_skills
+    )
 
     eval_prompt = (
         f"USER TASK: {prompt}\n\n"
@@ -77,11 +85,12 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str,
         eval_prompt += f"[{i}] {c.name}: {c.content[:250]}\n---\n"
     
     eval_prompt += (
-        "\nINSTRUCTIONS:\n"
-        "1. Select context entries that describe how to use the WEBSITES or GROUPS mentioned in the task (e.g., Safeway).\n"
-        "2. Even if the specific item (like 'steak') isn't mentioned, if the context explains the 'Deals' or 'Coupons' process for that site, it IS relevant.\n"
-        "3. Identify the core domain name (e.g., 'safeway').\n"
-        "JSON ONLY: {\"relevant_indices\": [int, ...], \"site_plugin\": \"string or NONE\"}"
+        "\nAVAILABLE SITE SKILLS:\n"
+        f"{skills_list_str}\n\n"
+        "INSTRUCTIONS:\n"
+        "1. Select context entries that are relevant to the user task (e.g. watchlists, account info, or workflows for the site).\n"
+        "2. Match the user task to EXACTLY ONE skill from AVAILABLE SITE SKILLS (use the exact skill name), or 'NONE' if no specialized skill applies.\n"
+        "JSON ONLY: {\"relevant_indices\": [int, ...], \"site_plugin\": \"skill_name or NONE\"}"
     )
 
     try:
@@ -108,8 +117,15 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str,
             from backend.services.llm import clean_json_text
             data = json.loads(clean_json_text(data_raw))
             indices = data.get("relevant_indices", [])
-            site_plugin = data.get("site_plugin", "NONE").lower()
-            if site_plugin == "none": site_plugin = ""
+            site_plugin_raw = str(data.get("site_plugin", "NONE")).strip()
+
+            # Match against available_skills case-insensitively to get the exact canonical name
+            matched_skill = ""
+            for s in available_skills:
+                if s.lower() == site_plugin_raw.lower():
+                    matched_skill = s
+                    break
+            site_plugin = matched_skill
 
             # Deterministic result always wins over LLM guess
             if forced_site:
@@ -117,6 +133,16 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str,
                     with open(log_path, "a", encoding="utf-8") as f:
                         f.write(f"Context Evaluator: Overriding LLM site_plugin '{site_plugin}' → '{forced_site}' (deterministic match)\n")
                 site_plugin = forced_site
+
+            # Deterministic fallback: If LLM returned no indices, check context names against site_plugin or prompt
+            if not indices and (site_plugin or forced_site):
+                target = (site_plugin or forced_site).lower()
+                for idx, c in enumerate(contexts):
+                    c_name_lower = c.name.lower()
+                    if target in ["aftermarket", "premarket"] and any(kw in c_name_lower for kw in ["stock", "watchlist", "ticker", "portfolio", "equity", "equities"]):
+                        indices.append(idx)
+                    elif target in c_name_lower:
+                        indices.append(idx)
 
             with open(log_path, "a", encoding="utf-8") as f:
                 if not indices:
@@ -135,4 +161,18 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str,
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"Context analysis failed: {e}\n")
         # Fall back to deterministic detection if LLM fails entirely
+        full_context = ""
+        if forced_site:
+            target = forced_site.lower()
+            for c in contexts:
+                c_name_lower = c.name.lower()
+                matched = False
+                if target in ["aftermarket", "premarket"] and any(kw in c_name_lower for kw in ["stock", "watchlist", "ticker", "portfolio", "equity", "equities"]):
+                    matched = True
+                elif target in c_name_lower:
+                    matched = True
+                if matched:
+                    full_context += f"--- {c.name} ---\n{c.content}\n\n"
+        if full_context:
+            return full_context + "USE THIS TO INFORM YOUR ACTIONS.\n\n", forced_site
         return "", forced_site

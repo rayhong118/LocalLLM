@@ -17,4 +17,5 @@ dependencies = [
     "requests",
     "sqlalchemy",
     "uvicorn",
+    "yfinance>=1.7.0",
 ]

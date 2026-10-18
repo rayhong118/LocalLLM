@@ -124,9 +124,9 @@ class AgentPipeline:
         
         # Fallback for site plugin detection
         if not self.site_key:
-            plugins = [f.replace(".py", "") for f in os.listdir("site_skills") if f.endswith(".py")]
+            plugins = [f[:-3] for f in os.listdir("site_skills") if f.endswith(".py") and not f.startswith("__")]
             for p in plugins:
-                if p in self.prompt.lower():
+                if p.lower() in self.prompt.lower():
                     self.site_key = p
                     self.log(f"Context Evaluator: Fallback detected site '{self.site_key}' from prompt keywords.")
                     break
