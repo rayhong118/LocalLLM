@@ -118,17 +118,6 @@ def extract_tickers_from_text(text: str) -> List[str]:
                 if 1 <= len(clean) <= 5 and clean not in TICKER_IGNORE_WORDS:
                     candidates.add(clean)
 
-    # 4. Known large-cap tech / popular tickers if explicitly mentioned in query
-    common_tickers = {
-        "AAPL", "MSFT", "NVDA", "GOOGL", "GOOG", "AMZN", "META", "TSLA",
-        "AMD", "INTC", "NFLX", "AVGO", "QCOM", "PLTR", "ARM", "COIN",
-        "GLDM", "SPYI", "RIVN", "SCHD", "SPY", "QQQ", "DIA", "IWM", "VIX"
-    }
-    for word in re.findall(r'\b[A-Za-z]{2,5}\b', text):
-        upper_word = word.upper()
-        if upper_word in common_tickers and upper_word not in TICKER_IGNORE_WORDS:
-            candidates.add(upper_word)
-
     return sorted(list(candidates))
 
 
@@ -178,17 +167,16 @@ def get_watchlist_from_db(db_path: str = "tasks.db", log_path: str = "") -> List
 def resolve_watchlist_tickers(prompt: str, context_str: str, log_path: str = "") -> List[str]:
     """
     Determines watchlist stocks to track.
-    1. Checks prompt and bound context string.
-    2. If none found, checks database Context table.
-    3. If still none, returns [] (triggering major index mode).
+    Stock tickers are resolved strictly from Context (bound context string or database Context table).
+    Prompt is NOT used to infer stock tickers.
+    If none found, returns [] (triggering macro news only mode).
     """
-    prompt_tickers = extract_tickers_from_text(prompt)
+    # 1. Check bound context string
     context_tickers = extract_tickers_from_text(context_str)
-    combined = sorted(list(set(prompt_tickers + context_tickers)))
-    if combined:
-        return combined
+    if context_tickers:
+        return context_tickers
 
-    # Check database Context entries
+    # 2. Check database Context entries
     db_tickers = get_watchlist_from_db(log_path=log_path)
     return db_tickers
 
@@ -804,6 +792,9 @@ def format_aftermarket_report(
                     else:
                         lines.append(f"- {title} — *{source}*")
                 lines.append("")
+    elif not is_watchlist_mode:
+        lines.append("> ℹ️ *Tip: Only macroeconomic news and market benchmarks included. To track specific stocks, add a 'Stock watchlist' Context entry in your dashboard.*")
+        lines.append("")
 
     if not has_news:
         lines.append("> *No immediate breaking headlines reported in the current cycle.*")
@@ -823,7 +814,7 @@ def format_aftermarket_report(
     else:
         lines.append(
             f"📊 **SUMMARY:** Daily market report generated: {num_indices} major indices tracked, "
-            f"{len(sector_data)} sector benchmarks analyzed (0 watchlist stocks configured), {num_catalysts} upcoming catalysts flagged."
+            f"{len(sector_data)} sector benchmarks analyzed (0 watchlist stocks configured), {len(macro_news)} macro news items collected."
         )
 
     return "\n".join(lines)
@@ -861,10 +852,10 @@ async def aftermarket_run_pre_flight(
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"PRE-FLIGHT (AFTERMARKET): Watchlist active: {', '.join(watchlist_tickers)}. Fetching equity + post-market metrics.\n")
     else:
-        logger.info("[afterMarket] No stock watchlist found. Defaulting to Major Benchmarks + Sector ETFs mode.")
+        logger.info("[afterMarket] No stock watchlist found in context. Gathering MACRO news and broad market indices only.")
         if log_path:
             with open(log_path, "a", encoding="utf-8") as f:
-                f.write("PRE-FLIGHT (AFTERMARKET): No watchlist context found. Defaulting to Major Benchmarks + Sector ETFs.\n")
+                f.write("PRE-FLIGHT (AFTERMARKET): No watchlist context found. Gathering MACRO news and broad market indices only (excluding individual company noise).\n")
 
     # 3. Concurrently Fetch yfinance Data
     benchmark_symbols = [b["symbol"] for b in MAJOR_BENCHMARKS]
@@ -897,12 +888,12 @@ async def aftermarket_run_pre_flight(
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(f"PRE-FLIGHT (AFTERMARKET): Identified {len(catalysts.get('earnings', []))} upcoming earnings dates.\n")
 
-    # 5. Fetch Recent News via RSS
+    # 5. Fetch Recent News via RSS (Macro News + Watchlist News)
     if log_path:
         with open(log_path, "a", encoding="utf-8") as f:
             f.write("PRE-FLIGHT (AFTERMARKET): Fetching recent market news from Google News RSS...\n")
 
-    macro_news = await fetch_rss_news_for_query("stock+market+closing+bell+OR+after+hours+when:2d", max_items=3)
+    macro_news = await fetch_rss_news_for_query("stock+market+closing+bell+OR+after+hours+OR+wall+street+when:2d", max_items=4)
 
     stock_news_by_sym: Dict[str, List[Dict[str, Any]]] = {}
     if is_watchlist_mode:
@@ -966,5 +957,5 @@ async def aftermarket_daily_report(symbols: str = "") -> str:
     Tracks major indices and watchlist stocks, including regular close, after-hours/post-market prices,
     earnings calendar, technical levels, and key catalysts to watch in the near future.
     """
-    prompt = f"After-market daily report. Symbols: {symbols}" if symbols else "After-market daily report."
-    return await aftermarket_run_pre_flight(browser=None, prompt=prompt, context="", log_path="")
+    context_str = f"Watchlist: {symbols}" if symbols else ""
+    return await aftermarket_run_pre_flight(browser=None, prompt="After-market daily report.", context=context_str, log_path="")

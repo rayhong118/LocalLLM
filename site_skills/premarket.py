@@ -163,15 +163,6 @@ def extract_tickers_from_text(text: str) -> List[str]:
                 if 1 <= len(clean) <= 5 and clean not in TICKER_IGNORE_WORDS:
                     candidates.add(clean)
 
-    # 4. Known large-cap tech tickers if explicitly mentioned in query
-    common_tickers = {
-        "AAPL", "MSFT", "NVDA", "GOOGL", "GOOG", "AMZN", "META", "TSLA",
-        "AMD", "INTC", "NFLX", "AVGO", "QCOM", "PLTR", "ARM", "COIN"
-    }
-    for word in re.findall(r'\b[A-Z]{2,5}\b', text):
-        if word in common_tickers and word not in TICKER_IGNORE_WORDS:
-            candidates.add(word)
-
     return sorted(list(candidates))
 
 
@@ -220,14 +211,13 @@ def get_watchlist_from_db(db_path: str = "tasks.db", log_path: str = "") -> List
 
 def resolve_watchlist_tickers(prompt: str, context_str: str, log_path: str = "") -> List[str]:
     """
-    Determines if there are existing context or prompt entries listing stocks to watch for.
-    If none exist, returns an empty list.
+    Determines if there are existing context entries listing stocks to watch for.
+    Stock tickers are resolved strictly from Context, NOT prompt.
+    If none exist, returns an empty list (macro news only).
     """
-    prompt_tickers = extract_tickers_from_text(prompt)
     context_tickers = extract_tickers_from_text(context_str)
-    combined = sorted(list(set(prompt_tickers + context_tickers)))
-    if combined:
-        return combined
+    if context_tickers:
+        return context_tickers
 
     # 2. Check database Context entries
     db_tickers = get_watchlist_from_db(log_path=log_path)
