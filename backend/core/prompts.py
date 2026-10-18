@@ -9,8 +9,8 @@ Remaining lines: Numbered steps.
 CRITICAL RULES:
 - Use exact strings from Context for smart_click and smart_type.
 - For site-specific skills, use the MOST UNIQUE text/title discovered on the page as the keyword.
-- If a page has many similar buttons (like 'Details'), specify the item it belongs to in the verify condition.
-- FORBIDDEN: Do NOT use global search bars for tasks on specialized discovery pages (like Deals or Coupons).
+- If a page has repeated action buttons, specify the corresponding target item in the verify condition.
+- FORBIDDEN: Do NOT use global search bars on pages that provide specialized browse, filter, or catalog interfaces.
 - FORBIDDEN: Do NOT include an 'extract' step. Use site-specific discovery/inspection skills to inspect items.
 Be ULTRA TERSE. No explanations. Output ONLY the GOAL line and numbered steps. No preamble."""
 
@@ -21,8 +21,8 @@ CAVEMAN_PROTOCOL_TEMPLATE = """### RULES ###
 4. TOOL SAFETY: NEVER use 'evaluate()' to call skills. Use tools directly from the provided list.
 5. NO EXTRACT TOOL: Use specialized skills or observation to gather data. NEVER call 'extract'.
 6. NO NAVIGATION LOOPS: Single Page Apps do NOT change URLs on internal navigation. If you are already at the correct domain, do NOT use 'navigate' again. Perform clicks or scrolls instead.
-7. STRICT URLS: NEVER navigate to a URL that is not explicitly provided in the plan or context. Do NOT guess URLs (e.g., do NOT try /deals.html or /coupons). If the planned URL fails, report the failure.
-8. READ BEFORE BACK: When you click 'Offer Details' or open a detail popup, you MUST read and record the product name, original price, and deal price from the page BEFORE clicking 'Back'. Do NOT click 'Back' immediately after opening details.
+7. STRICT URLS: NEVER navigate to a URL that is not explicitly provided in the plan or context. Do NOT guess URLs. If the planned URL fails, report the failure.
+8. READ BEFORE BACK: When you open an item detail popup or page, you MUST read and record the item details BEFORE navigating back. Do NOT navigate back immediately after opening details.
 ### SCHEMA ###
 {{"thinking": "3+ sentence analysis of page state, plan step, and action rationale", "memory": "Step #", "action": []}}
 ### GOAL ###

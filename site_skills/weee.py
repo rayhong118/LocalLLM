@@ -70,10 +70,12 @@ async def _llm_match_cards(card_texts: list[str], keyword: str, log_path: str = 
         "You are a strict product matching assistant. Given a search term and a numbered list of coupon descriptions, "
         "return ONLY the indices of cards whose product is the SAME SPECIFIC ITEM as the search term.\n\n"
         "STRICT RULES:\n"
-        "1. The product on the card must BE the search term or a specific brand of it.\n"
+        "1. The product on the card must BE the search term or a specific brand variant of it.\n"
         "2. If a card mentions a DIFFERENT brand or a DIFFERENT product type, do NOT match it even if it is in the same category.\n"
         "3. Evaluate EACH card individually. Do NOT output ranges.\n"
-        "4. Output ONLY: {\"matches\": [0, 3, 7]}  or  {\"matches\": []}\n"
+        "SCHEMA:\n"
+        "{\"matches\": [<card_index>, ...]}\n"
+        "If no cards match, return {\"matches\": []}."
     )
 
     user_msg = f"Search term: \"{keyword}\"\n\nCards:\n{card_list}"
@@ -678,17 +680,15 @@ async def weee_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
         except Exception as me:
             logger.warning(f"[weee_run_pre_flight] Modal close button error (likely not present): {me}")
 
-        # Extract items
         extraction_system = (
-            "You are a product extraction assistant. Your job is to extract a list of specific products or grocery items "
-            "from the user prompt and any provided context or watchlist.\n"
-            "Output ONLY a valid JSON object with the key 'items' containing a list of strings.\n"
+            "You are a product extraction assistant. Your job is to extract a list of specific products or items "
+            "from the user prompt and any provided context or watchlist.\n\n"
             "RULES:\n"
-            "1. Extract concrete grocery/product items mentioned in the prompt or context/watchlist (e.g. 'milk', 'steak', 'arizona tea').\n"
-            "2. Do NOT include generic instructions, site names, action words, or context headings (e.g. do NOT include 'Check Weee Deals', 'deals', 'Weee watchlist', 'PRIOR KNOWLEDGE', 'coupons').\n"
-            "3. If multiple items are listed in the prompt or watchlist, return all of them as separate items in the list.\n"
-            "Example: Prompt: 'Check deals', Context: '--- Weee watchlist ---\\nmilk, ramen, dumplings'\n"
-            "Output: {\"items\": [\"milk\", \"ramen\", \"dumplings\"]}\n"
+            "1. Extract specific product/item noun phrases explicitly requested in the prompt or context.\n"
+            "2. Do NOT include generic instructions, site names, action words, or context headings (e.g. ignore 'check', 'deals', 'watchlist', 'coupons').\n"
+            "3. If multiple items are listed, return all of them as separate items in the list.\n"
+            "SCHEMA:\n"
+            "{\"items\": [\"<item_name>\", ...]}\n"
             "If no specific products/items are found anywhere, output {\"items\": []}."
         )
         user_input_content = f"Prompt: {prompt}"
@@ -750,12 +750,13 @@ async def weee_run_pre_flight(browser: BrowserSession, prompt: str, context_str:
         
         if available_categories and items:
             selector_system = (
-                "You are a categorization assistant for a grocery store. You must output ONLY a valid JSON object.\n"
-                "Format: {\"mapping\": [{\"item\": \"item name\", \"category\": \"Category Name\"}, ...]}\n"
+                "You are a store categorization assistant. Output strictly valid JSON matching the schema.\n"
+                "SCHEMA:\n"
+                "{\"mapping\": [{\"item\": \"<item_name>\", \"category\": \"<category_name>\"}, ...]}\n"
                 "RULES:\n"
-                "1. NEVER pick 'Special Offers' if a specific category is available.\n"
+                "1. NEVER pick 'Special Offers' if a specific department/category fits.\n"
                 "2. If nothing fits, use 'NONE' as category.\n"
-                "3. Crucially, items that are typically sold frozen (e.g., ice cream, frozen meals, frozen pizza, popsicles, frozen waffles, frozen vegetables, frozen fruit) MUST be categorized under 'Frozen Foods' (or similar frozen category) rather than their ingredient-based category (like 'Dairy', 'Meat', or 'Produce').\n"
+                "3. Items that are typically sold frozen must be categorized under 'Frozen Foods' (or similar frozen category) rather than general ingredient or department categories.\n"
                 f"Available Categories: {', '.join(available_categories)}"
             )
             try:

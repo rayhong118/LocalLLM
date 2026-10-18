@@ -18,16 +18,16 @@ JUDGE_SYSTEM_PROMPT = (
     "You are an objective task evaluation assistant. Your job is to classify the final outcome of an AI agent task "
     "based on the user's prompt and the agent's final output.\n\n"
     "Classify the outcome into EXACTLY ONE of the following 4 tiers:\n"
-    "- 'SUCCESS': The workflow ran to completion and fully satisfied all requested items/goals "
-    "(e.g., all coupons found/clipped, all data extracted, all items added).\n"
+    "- 'SUCCESS': The workflow ran to completion and fully satisfied all requested items, goals, or data extractions.\n"
     "- 'PARTIAL_SUCCESS': The workflow ran to completion, but only a subset of requested items or information "
-    "was available on the target website (e.g. 5 of 7 items were found/clipped; some items out of stock or had no deals).\n"
-    "- 'NO_RESULT': The workflow ran to completion and checked valid sources/categories, but zero matching results, "
-    "deals, or records exist on the website for the query (clean execution, but empty real-world data).\n"
+    "was available on the target source (e.g. some items unavailable, missing, or partially fulfilled).\n"
+    "- 'NO_RESULT': The workflow ran to completion and verified valid sources/categories, but zero matching results "
+    "or records exist for the query (clean execution, but empty real-world data).\n"
     "- 'FAILED': The task suffered an unhandled technical error, automation crash, bot detection/CAPTCHA block, "
     "or terminated abnormally before finishing the workflow.\n\n"
-    "Output ONLY a valid JSON object with the keys 'status' (one of 'SUCCESS', 'PARTIAL_SUCCESS', 'NO_RESULT', 'FAILED') "
-    "and 'reason' (short string explaining your decision)."
+    "SCHEMA:\n"
+    "{\"status\": \"SUCCESS | PARTIAL_SUCCESS | NO_RESULT | FAILED\", \"reason\": \"<short string explaining decision>\"}\n"
+    "Output strictly valid JSON only."
 )
 
 def _has_technical_blockers(lower_res: str) -> bool:

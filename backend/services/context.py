@@ -73,9 +73,11 @@ async def get_relevant_context_str(db, prompt: str, log_path: str) -> tuple[str,
         "\nAVAILABLE SITE SKILLS:\n"
         f"{skills_list_str}\n\n"
         "INSTRUCTIONS:\n"
-        "1. Select context entries that are relevant to the user task (e.g. watchlists, account info, or workflows for the site).\n"
-        "2. Match the user task to EXACTLY ONE skill from AVAILABLE SITE SKILLS (use the exact skill name), or 'NONE' if no specialized skill applies.\n"
-        "JSON ONLY: {\"relevant_indices\": [int, ...], \"site_plugin\": \"skill_name or NONE\"}"
+        "1. Select context entry indices that are directly relevant to the user task.\n"
+        "2. Match the user task to EXACTLY ONE skill from AVAILABLE SITE SKILLS (use the exact skill name), or 'NONE' if no specialized skill applies.\n\n"
+        "SCHEMA:\n"
+        "{\"relevant_indices\": [<index_int>, ...], \"site_plugin\": \"<exact_skill_name> | NONE\"}\n"
+        "Output strictly valid JSON only."
     )
 
     try:

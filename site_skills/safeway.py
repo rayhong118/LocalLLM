@@ -543,12 +543,12 @@ async def _llm_match_cards_for_category(
         "You are a strict product matching assistant. Given a list of target search items and a numbered list of product titles, "
         "determine which cards match each target item.\n\n"
         "STRICT RULES:\n"
-        "1. Match the target item or a specific brand/variety of it (e.g. 'ice cream' matches 'Häagen-Dazs Novelties', 'gelato', 'ice cream bars'; 'coke' matches 'Coca-Cola'; 'paper tissues' matches 'Kleenex Facial Tissues'; 'detergent' matches 'Tide Pods').\n"
-        "2. If a card is a DIFFERENT product type, do NOT match it even if in the same category (e.g. waffles or pizza are NOT ice cream; spring water is NOT sparkling water; hand soap is NOT laundry detergent).\n"
+        "1. A card matches an item if the product on the card is the requested item, a brand variant, or a specific flavor/size of it.\n"
+        "2. If a card is a DIFFERENT product type, do NOT match it, even if it shares ingredients, brand, or store aisle.\n"
         "3. Output ONLY a valid JSON object mapping each target item to an array of matching card indices. If no cards match, use an empty array.\n"
-        "Example output format:\n"
-        "{\"matches\": {\"coke\": [2], \"paper towels\": [5], \"Arizona tea\": []}}\n"
-        "Be direct and do NOT write explanations."
+        "SCHEMA:\n"
+        "{\"matches\": {\"<target_item>\": [<card_index>, ...]}}\n"
+        "Be direct and do NOT write explanations or conversational text."
     )
 
     all_matches_by_item = {item: [] for item in target_items}
@@ -701,16 +701,16 @@ async def safeway_run_pre_flight(browser: BrowserSession, prompt: str, context_s
         extraction_system = (
             "You are a store product extraction and categorization assistant for Safeway.\n"
             "Given a user prompt and context/watchlist, extract specific products or shopping items to search for "
-            "(including food, beverages, paper goods, household cleaning, personal care, baby items, and pet supplies) "
             "and assign each item to the best matching category from the Available Categories list.\n\n"
             "RULES:\n"
-            "1. Extract concrete products/items (e.g. 'Arizona tea', 'paper towels', 'ice cream', 'laundry detergent', 'shampoo', 'cat food').\n"
-            "2. Assign each item to the best matching store category from Available Categories (or 'NONE' if no category fits).\n"
-            "3. NEVER pick 'Special Offers' if a specific department/product category fits.\n"
-            "4. CRITICAL: Items typically sold frozen (e.g. ice cream, frozen meals, frozen pizza, popsicles, frozen waffles, frozen vegetables) MUST be categorized under 'Frozen Foods' rather than general categories (like 'Dairy' or 'Produce').\n"
+            "1. Extract specific product/item noun phrases explicitly requested in the prompt or context.\n"
+            "2. Do NOT extract instructions, store names, action verbs, or generic deal terms (e.g. ignore 'check', 'safeway', 'deals', 'discounts').\n"
+            "3. Assign each item to the best matching store category from Available Categories (or 'NONE' if no category fits).\n"
+            "4. NEVER pick 'Special Offers' if a specific department/product category fits.\n"
+            "5. Items typically sold frozen must be categorized under 'Frozen Foods' rather than general department categories.\n"
             f"Available Categories: {', '.join(available_categories)}\n\n"
-            "Output ONLY valid JSON in format:\n"
-            "{\"items\": [{\"item\": \"item name\", \"category\": \"Category Name\"}, ...]}\n"
+            "SCHEMA:\n"
+            "{\"items\": [{\"item\": \"<item_name>\", \"category\": \"<category_name>\"}]}\n"
             "If no items found, return {\"items\": []}."
         )
 
