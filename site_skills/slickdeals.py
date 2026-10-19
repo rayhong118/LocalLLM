@@ -7,6 +7,7 @@ Monitors watchlisted items via targeted keyword RSS feeds and/or tracks hot Fron
 import asyncio
 from datetime import datetime, timezone
 import html
+import json
 import logging
 import os
 import re
@@ -17,6 +18,7 @@ import httpx
 
 from backend import config
 from backend.core.plugin import BaseSitePlugin
+from backend.services.llm import clean_json_text
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +281,152 @@ async def fetch_popular_deals(client: httpx.AsyncClient, limit: int = 25) -> Lis
 
 
 # ==============================================================================
+# LLM 2-Stage Query Optimization & Deal Validation
+# ==============================================================================
+
+async def extract_search_terms_with_llm(
+    watchlist_items: List[str],
+    log_path: str = ""
+) -> Dict[str, str]:
+    """
+    Stage 1: Extract minimal, high-recall search terms from detailed item names.
+    Temporarily omits secondary details (specs, colors, fluff) so Slickdeals keyword search can match broadly.
+    """
+    if not watchlist_items:
+        return {}
+
+    prompt = f"""You are a search query optimizer for a deal forum (Slickdeals).
+From each detailed target item name, extract the optimal, concise search term (typically 2-4 words) so fine details can be temporarily omitted to maximize deal retrieval.
+Keep: Brand and core model or product type (e.g. "Bluetti Elite 200", "Renogy solar panel", "Sony WH-1000XM5", "iPad Air M2").
+Omit: Minor technical specifications (Wh, mAh, watts, voltage), storage size, color, bundled items, and generic marketing buzzwords.
+
+Input items:
+{json.dumps(watchlist_items, indent=2)}
+
+Respond with ONLY a valid JSON object mapping each original item string to its extracted search term.
+Example format:
+{{
+  "original item name": "search term"
+}}
+"""
+    try:
+        async with httpx.AsyncClient(timeout=float(getattr(config, "LLM_TIMEOUT", 120))) as client:
+            resp = await client.post(
+                f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
+                json={
+                    "model": config.LLM_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "temperature": 0
+                }
+            )
+            if resp.status_code == 200:
+                raw = (
+                    resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                    or resp.json().get("message", {}).get("content", "")
+                )
+                data = json.loads(clean_json_text(raw))
+                if isinstance(data, dict):
+                    resolved = {}
+                    for item in watchlist_items:
+                        term = data.get(item) or data.get(item.strip()) or item
+                        resolved[item] = str(term).strip()
+                        _log(log_path, f"Slickdeals: Stage 1 Search Term: '{item}' -> '{resolved[item]}'")
+                    return resolved
+    except Exception as e:
+        _log(log_path, f"Slickdeals: Stage 1 LLM extraction fallback ({e}); using raw item names.")
+
+    return {item: item for item in watchlist_items}
+
+
+async def validate_candidate_deals_with_llm(
+    target_item: str,
+    candidates: List[Dict[str, Any]],
+    log_path: str = ""
+) -> List[Dict[str, Any]]:
+    """
+    Stage 2: Validate candidate deals against the original full item name and its details.
+    Ensures model numbers match, rejects accessories/cables, and distinguishes specs from models.
+    """
+    if not candidates:
+        return []
+
+    deal_cards = [
+        f"[{i}] Title: \"{d['title']}\" | Price: {d.get('price', '')} | Store: {d.get('store', '')}"
+        for i, d in enumerate(candidates, 1)
+    ]
+    deals_text = "\n".join(deal_cards)
+
+    prompt = f"""You are a strict product deal validation assistant.
+Your task is to determine whether candidate deals found on a deal forum match the user's target item and its details.
+
+Target Item: "{target_item}"
+
+Candidate Deals:
+{deals_text}
+
+Rules:
+1. Model Number Matching: The specific model number or series must match the target item. A different model number in the same product line (e.g., "Elite 10" vs target "Elite 200") is NOT a match.
+2. Specifications Are Not Model Numbers: A matching technical specification (e.g., "200W AC" or "200Wh") does NOT satisfy a requirement for a model number (e.g., "Elite 200").
+3. Product vs. Accessory: The deal must be for the actual product, NOT an accessory, case, skin, cable, or replacement part.
+4. Generational Match: If the target specifies a generation or processor (e.g., "M2", "XM5"), the deal must match that generation.
+5. Generic Queries: If the target item is generic without a specific model number (e.g., "Renogy portable solar panel"), any product matching that brand and category IS a valid match.
+
+Respond with ONLY a JSON object in this format:
+{{
+  "evaluations": [
+    {{
+      "deal_index": 1,
+      "is_match": true,
+      "reason": "Brief explanation"
+    }}
+  ]
+}}
+"""
+    try:
+        async with httpx.AsyncClient(timeout=float(getattr(config, "LLM_TIMEOUT", 120))) as client:
+            resp = await client.post(
+                f"{config.LLM_BASE_URL.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {config.LLM_API_KEY}"},
+                json={
+                    "model": config.LLM_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "temperature": 0
+                }
+            )
+            if resp.status_code == 200:
+                raw = (
+                    resp.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+                    or resp.json().get("message", {}).get("content", "")
+                )
+                data = json.loads(clean_json_text(raw))
+                evals = data.get("evaluations", [])
+                match_map = {
+                    int(ev["deal_index"]): (ev.get("is_match", False), ev.get("reason", ""))
+                    for ev in evals
+                    if "deal_index" in ev
+                }
+
+                validated = []
+                for i, deal in enumerate(candidates, 1):
+                    is_match, reason = match_map.get(i, (True, "No explicit evaluation"))
+                    if is_match:
+                        validated.append(deal)
+                    else:
+                        _log(log_path, f"Slickdeals: Stage 2 REJECTED deal for '{target_item}': '{deal['title']}' ({reason})")
+
+                _log(log_path, f"Slickdeals: Stage 2 Validation for '{target_item}': {len(candidates)} candidate(s) -> {len(validated)} verified.")
+                return validated
+    except Exception as e:
+        _log(log_path, f"Slickdeals: Stage 2 validation fallback due to {e}; retaining candidates.")
+        return candidates
+
+    return candidates
+
+
+# ==============================================================================
 # Markdown Report Formatting
 # ==============================================================================
 
@@ -413,9 +561,13 @@ class SlickdealsPlugin(BaseSitePlugin):
 
             _log(log_path, f"Slickdeals: Executing Targeted Watchlist search for {len(watchlist_items)} item(s)...")
 
-            # Concurrently search RSS feeds for all items + fetch frontpage for cross-matching
+            # Stage 1: Extract high-recall search terms via LLM (omitting secondary details)
+            _log(log_path, "Slickdeals: Stage 1 - Extracting optimized search terms via LLM...")
+            search_terms = await extract_search_terms_with_llm(watchlist_items, log_path=log_path)
+
+            # Concurrently search RSS feeds for all items using optimized search terms + fetch frontpage
             search_tasks = [
-                search_deals_for_item(item, client, max_results=3, log_path=log_path)
+                search_deals_for_item(search_terms.get(item, item), client, max_results=5, log_path=log_path)
                 for item in watchlist_items
             ]
             fp_task = fetch_frontpage_deals(client, limit=30)
@@ -424,19 +576,37 @@ class SlickdealsPlugin(BaseSitePlugin):
             item_deals_list = results[:-1]
             frontpage_deals = results[-1]
 
-            target_results: Dict[str, List[Dict[str, Any]]] = {}
-            for item_name, deals in zip(watchlist_items, item_deals_list):
-                target_results[item_name] = deals
+            # Stage 2: Validate candidate deals against full target item details via LLM
+            _log(log_path, "Slickdeals: Stage 2 - Validating candidates against item details via LLM...")
+            val_tasks = [
+                validate_candidate_deals_with_llm(item, deals, log_path=log_path)
+                for item, deals in zip(watchlist_items, item_deals_list)
+            ]
+            validated_deals_list = await asyncio.gather(*val_tasks)
 
-            # Cross-reference frontpage matches
-            frontpage_matches: List[Dict[str, Any]] = []
+            target_results: Dict[str, List[Dict[str, Any]]] = {}
+            for item_name, deals in zip(watchlist_items, validated_deals_list):
+                target_results[item_name] = deals[:3]
+
+            # Cross-reference frontpage matches and validate with LLM if potential matches exist
+            frontpage_candidates: List[Tuple[str, Dict[str, Any]]] = []
             for fp in frontpage_deals:
                 fp_title_lower = fp["title"].lower()
                 for item in watchlist_items:
-                    if item.lower() in fp_title_lower:
-                        if fp not in frontpage_matches:
-                            frontpage_matches.append(fp)
-                        break
+                    search_kw = search_terms.get(item, item).split()[0].lower()
+                    if search_kw in fp_title_lower:
+                        frontpage_candidates.append((item, fp))
+
+            frontpage_matches: List[Dict[str, Any]] = []
+            if frontpage_candidates:
+                fp_val_tasks = [
+                    validate_candidate_deals_with_llm(target_item, [deal], log_path=log_path)
+                    for target_item, deal in frontpage_candidates
+                ]
+                fp_val_results = await asyncio.gather(*fp_val_tasks)
+                for (target_item, deal), val in zip(frontpage_candidates, fp_val_results):
+                    if val and deal not in frontpage_matches:
+                        frontpage_matches.append(deal)
 
             elapsed = (datetime.now() - start_time).total_seconds()
             _log(log_path, f"Slickdeals: Watchlist search completed in {elapsed:.2f}s.")
