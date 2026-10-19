@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { BookOpen, Plus, Trash2, Edit2, Check, Info } from 'lucide-react';
+import { BookOpen, Plus, Trash2, Edit2, Check, Info, RefreshCw } from 'lucide-react';
 import { Context } from '../store';
 
 export const ContextManager: React.FC = () => {
   const [contexts, setContexts] = useState<Context[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [newName, setNewName] = useState('');
   const [newContent, setNewContent] = useState('');
@@ -12,7 +13,8 @@ export const ContextManager: React.FC = () => {
   const [editName, setEditName] = useState('');
   const [editContent, setEditContent] = useState('');
 
-  const fetchContexts = async () => {
+  const fetchContexts = async (isInitial = false) => {
+    if (isInitial) setIsLoading(true);
     try {
       const res = await fetch('http://localhost:8000/contexts');
       if (res.ok) {
@@ -21,11 +23,13 @@ export const ContextManager: React.FC = () => {
       }
     } catch (err) {
       console.error('Failed to fetch contexts:', err);
+    } finally {
+      setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchContexts();
+    fetchContexts(true);
   }, []);
 
   const addContext = async () => {
@@ -110,19 +114,42 @@ export const ContextManager: React.FC = () => {
           <BookOpen size={22} color="var(--color-primary)" />
           <h2 style={{ fontSize: '1.5rem', fontWeight: 700 }}>Reference Contexts</h2>
         </div>
-        <button
-          className={showAddForm ? 'secondary' : 'primary'}
-          onClick={() => setShowAddForm(!showAddForm)}
-          style={{ padding: '0.6rem 1.25rem' }}
-        >
-          {showAddForm ? (
-            <>Cancel</>
-          ) : (
-            <>
-              <Plus size={16} /> Add New Context
-            </>
-          )}
-        </button>
+        <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
+          <button
+            className="secondary"
+            onClick={() => fetchContexts(true)}
+            disabled={isLoading || isSaving}
+            title="Refresh contexts from database"
+            style={{
+              padding: '0.6rem 0.85rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              fontSize: '0.85rem'
+            }}
+          >
+            <RefreshCw
+              size={14}
+              style={{
+                animation: isLoading ? 'spin 1.2s linear infinite' : undefined
+              }}
+            />
+            {isLoading ? 'Loading...' : 'Refresh'}
+          </button>
+          <button
+            className={showAddForm ? 'secondary' : 'primary'}
+            onClick={() => setShowAddForm(!showAddForm)}
+            style={{ padding: '0.6rem 1.25rem' }}
+          >
+            {showAddForm ? (
+              <>Cancel</>
+            ) : (
+              <>
+                <Plus size={16} /> Add New Context
+              </>
+            )}
+          </button>
+        </div>
       </div>
 
       {showAddForm && (
@@ -190,9 +217,57 @@ export const ContextManager: React.FC = () => {
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-        {contexts.length === 0 && !showAddForm ? (
+        {isLoading ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div
+              className="glass-card animate-fade-in"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.75rem',
+                padding: '1.25rem',
+                color: 'var(--color-text-muted)',
+                fontSize: '0.92rem',
+                borderRadius: '12px'
+              }}
+            >
+              <span
+                className="spinner"
+                style={{
+                  width: '1.35rem',
+                  height: '1.35rem',
+                  borderWidth: '2.5px',
+                  borderColor: 'rgba(251, 146, 60, 0.25)',
+                  borderTopColor: 'var(--color-primary)'
+                }}
+              />
+              <span style={{ fontWeight: 500 }}>Loading reference contexts from database...</span>
+            </div>
+
+            {/* Skeleton Context Cards */}
+            {[1, 2].map((idx) => (
+              <div
+                key={idx}
+                className="glass-card animate-fade-in"
+                style={{
+                  padding: '1.4rem',
+                  border: '1px solid var(--color-border)',
+                  borderRadius: '14px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.85rem'
+                }}
+              >
+                <div className="skeleton" style={{ width: idx === 1 ? '38%' : '26%', height: '1.2rem' }} />
+                <div className="skeleton" style={{ width: '92%', height: '0.85rem' }} />
+                <div className="skeleton" style={{ width: '70%', height: '0.85rem' }} />
+              </div>
+            ))}
+          </div>
+        ) : contexts.length === 0 && !showAddForm ? (
           <div
-            className="glass-card"
+            className="glass-card animate-fade-in"
             style={{
               textAlign: 'center',
               padding: '4rem 2rem',
