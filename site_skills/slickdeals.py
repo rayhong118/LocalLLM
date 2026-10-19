@@ -1,0 +1,466 @@
+# site_skills/slickdeals.py
+"""
+Slickdeals RSS Automation Plugin.
+Monitors watchlisted items via targeted keyword RSS feeds and/or tracks hot Frontpage and Popular deals.
+"""
+
+import asyncio
+from datetime import datetime, timezone
+import html
+import logging
+import os
+import re
+from typing import Any, Dict, List, Optional, Set, Tuple
+import xml.etree.ElementTree as ET
+
+import httpx
+
+from backend import config
+from backend.core.plugin import BaseSitePlugin
+
+logger = logging.getLogger(__name__)
+
+# ==============================================================================
+# Endpoints & Constants
+# ==============================================================================
+
+BASE_SEARCH_RSS = "https://slickdeals.net/newsearch.php"
+FRONTPAGE_RSS_URL = "https://slickdeals.net/newsearch.php?mode=frontpage&searcharea=deals&searchin=first&rss=1"
+POPULAR_RSS_URL = "https://slickdeals.net/newsearch.php?mode=popdeals&searcharea=deals&searchin=first&rss=1"
+
+DEFAULT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/rss+xml, application/xml, text/xml, */*",
+}
+
+# Common noise words to ignore when extracting watchlist terms from prompt
+PROMPT_NOISE_WORDS = {
+    "slickdeals", "slickdeal", "deals", "deal", "check", "find", "search", 
+    "for", "on", "the", "and", "or", "in", "item", "items", "watch", "watchlist", 
+    "please", "monitor", "look", "get", "show", "list", "me", "latest", "hot", "popular"
+}
+
+
+def _log(log_path: str, msg: str) -> None:
+    if log_path:
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass
+    logger.info(msg)
+
+
+# ==============================================================================
+# Watchlist Extraction
+# ==============================================================================
+
+def extract_watchlist_items(prompt: str, context_str: str = "", log_path: str = "") -> List[str]:
+    """
+    Extract target items to search from bound context or prompt.
+    Returns a deduplicated list of cleaned item search strings.
+    """
+    items: List[str] = []
+
+    # 1. First priority: Bound context string
+    if context_str:
+        # Check blocks formatted like --- Context Name --- \n items
+        lines = [line.strip() for line in context_str.splitlines() if line.strip()]
+        for line in lines:
+            if line.startswith("---") or line.startswith("PRIOR KNOWLEDGE") or line.startswith("USE THIS"):
+                continue
+            # Split comma-separated or newline-separated items
+            for token in re.split(r'[,;\n]+', line):
+                clean = re.sub(r'^[•\-\*\d\.\)\s]+', '', token).strip()
+                if clean and len(clean) >= 2 and clean.lower() not in PROMPT_NOISE_WORDS:
+                    if clean not in items:
+                        items.append(clean)
+
+    # 2. Second priority: Query active database contexts if no items from bound context
+    if not items:
+        try:
+            from backend.database.session import SessionLocal
+            from backend.database.models import Context
+            with SessionLocal() as db:
+                contexts = db.query(Context).all()
+                deal_kws = ["slickdeals", "deals", "deal", "shopping", "products", "items", "electronics", "gadgets"]
+                grocery_stock_kws = ["safeway", "weee", "grocery", "groceries", "stock", "portfolio", "ticker"]
+                for c in contexts:
+                    name_lower = c.name.lower()
+                    if any(bad in name_lower for bad in grocery_stock_kws):
+                        continue
+                    if any(good in name_lower for good in deal_kws) or "watchlist" in name_lower:
+                        for token in re.split(r'[,;\n]+', c.content):
+                            clean = re.sub(r'^[•\-\*\d\.\)\s]+', '', token).strip()
+                            if clean and len(clean) >= 2 and clean.lower() not in PROMPT_NOISE_WORDS:
+                                if clean not in items:
+                                    items.append(clean)
+        except Exception as e:
+            _log(log_path, f"Slickdeals: Database context query note: {e}")
+
+    # 3. Third priority: Extract items from prompt
+    # E.g.: "check slickdeals for ipad, airpods, oled tv"
+    if not items:
+        # Match pattern: for/on/search <items>
+        match = re.search(r'(?:for|deals\s+on|search\s+for|search|watch)\s+([A-Za-z0-9\s,\-\/\+]+?)(?:\s+(?:on|using|via)\s+slickdeals|\s*$)', prompt, re.IGNORECASE)
+        if match:
+            candidate_text = match.group(1).strip()
+            # Split by comma or 'and'
+            parts = re.split(r'[,]+|\band\b', candidate_text, flags=re.IGNORECASE)
+            for part in parts:
+                clean = part.strip()
+                words = [w for w in clean.split() if w.lower() not in PROMPT_NOISE_WORDS]
+                candidate = " ".join(words).strip()
+                if candidate and len(candidate) >= 2 and candidate.lower() not in PROMPT_NOISE_WORDS:
+                    if candidate not in items:
+                        items.append(candidate)
+
+    if items and log_path:
+        _log(log_path, f"Slickdeals: Resolved {len(items)} watchlist item(s): {', '.join(items)}")
+
+    return items
+
+
+def is_hot_popular_request(prompt: str) -> bool:
+    """Return True if prompt explicitly asks for trending, hot, popular, or frontpage deals."""
+    p_lower = prompt.lower()
+    return any(kw in p_lower for kw in ["hot deal", "popular", "frontpage", "trending", "top deal", "best deal", "today's deal"])
+
+
+# ==============================================================================
+# RSS Fetching & Parsing
+# ==============================================================================
+
+def clean_deal_title(raw_title: str) -> str:
+    """Unescape HTML and strip excess whitespace from deal titles."""
+    return html.unescape(raw_title or "").strip()
+
+
+def parse_clean_link(raw_link: str) -> str:
+    """Strip tracking UTM query parameters from deal links for clean output."""
+    if not raw_link:
+        return ""
+    clean = raw_link.split("?")[0].strip()
+    return clean or raw_link.strip()
+
+
+def extract_price_and_store(title: str, description: str) -> Tuple[str, str]:
+    """Extract price and store/merchant name from deal title and description."""
+    # Price extraction from title (e.g. $49.99, $1,299, from $15, Free)
+    price = ""
+    price_match = re.search(r'(?:from\s+)?\$[\d,]+(?:\.\d{2})?', title, re.IGNORECASE)
+    if price_match:
+        price = price_match.group(0).strip()
+    elif re.search(r'\bfree\b', title, re.IGNORECASE):
+        price = "Free"
+
+    # Store/merchant extraction (e.g. [amazon.com], via Best Buy, Costco Members:)
+    store = ""
+    store_bracket = re.search(r'\[([a-zA-Z0-9\.\-_]+)\]', description)
+    if store_bracket:
+        store = store_bracket.group(1).strip()
+    else:
+        store_prefix = re.search(r'^(?:via\s+|at\s+|from\s+)?([A-Za-z0-9\s]+?)(?:Members?:|\:|\s+has\s+|\s+via\s+)', title)
+        if store_prefix:
+            cand = store_prefix.group(1).strip()
+            if len(cand) <= 25 and cand.lower() not in {"deal", "hot", "price", "open boxes", "refurb", "new"}:
+                store = cand
+
+    return price or "See deal", store or "Online"
+
+
+def parse_rss_items(xml_content: str, max_items: int = 25) -> List[Dict[str, Any]]:
+    """Parse RSS XML content into structured deal objects."""
+    deals = []
+    if not xml_content:
+        return deals
+
+    try:
+        root = ET.fromstring(xml_content)
+        channel = root.find("channel")
+        if channel is None:
+            return deals
+
+        items = channel.findall("item")
+        for item in items[:max_items]:
+            title = clean_deal_title(item.findtext("title") or "")
+            link = parse_clean_link(item.findtext("link") or "")
+            pub_date = item.findtext("pubDate") or ""
+            raw_desc = html.unescape(item.findtext("description") or "")
+            clean_desc = re.sub(r'<[^>]+>', ' ', raw_desc).strip()
+
+            if not title or not link:
+                continue
+
+            price, store = extract_price_and_store(title, clean_desc)
+
+            deals.append({
+                "title": title,
+                "link": link,
+                "price": price,
+                "store": store,
+                "pub_date": pub_date,
+                "description": clean_desc[:250],
+            })
+    except Exception as e:
+        logger.warning(f"Error parsing RSS XML: {e}")
+
+    return deals
+
+
+async def fetch_rss_feed(url: str, client: httpx.AsyncClient) -> str:
+    """Fetch RSS content with timeout and error handling."""
+    try:
+        resp = await client.get(url, headers=DEFAULT_HEADERS, timeout=12.0, follow_redirects=True)
+        if resp.status_code == 200:
+            return resp.text
+        else:
+            logger.warning(f"Slickdeals RSS returned HTTP {resp.status_code} for {url}")
+            return ""
+    except Exception as e:
+        logger.warning(f"Error fetching RSS from {url}: {e}")
+        return ""
+
+
+# ==============================================================================
+# Search & Matching Logic
+# ==============================================================================
+
+async def search_deals_for_item(
+    item_query: str,
+    client: httpx.AsyncClient,
+    max_results: int = 5,
+    log_path: str = ""
+) -> List[Dict[str, Any]]:
+    """
+    Search deals for a specific target item.
+    First tries searchin=title for precision, then falls back to searchin=first if needed.
+    """
+    encoded_query = httpx.URL("", params={"q": item_query}).query.decode("utf-8")
+    
+    # 1. High precision title search
+    title_url = f"{BASE_SEARCH_RSS}?{encoded_query}&searcharea=deals&searchin=title&rss=1"
+    xml_data = await fetch_rss_feed(title_url, client)
+    deals = parse_rss_items(xml_data, max_items=max_results)
+
+    # 2. Fallback to broad first-post search if title search returned 0 items
+    if not deals:
+        first_url = f"{BASE_SEARCH_RSS}?{encoded_query}&searcharea=deals&searchin=first&rss=1"
+        xml_data = await fetch_rss_feed(first_url, client)
+        all_broad = parse_rss_items(xml_data, max_items=15)
+        
+        # Filter broad results so they actually mention the query keywords
+        tokens = [t.lower() for t in item_query.split() if len(t) > 1]
+        for d in all_broad:
+            d_title_lower = d["title"].lower()
+            if any(t in d_title_lower for t in tokens):
+                deals.append(d)
+                if len(deals) >= max_results:
+                    break
+
+    _log(log_path, f"Slickdeals: Found {len(deals)} deal(s) for '{item_query}'")
+    return deals
+
+
+async def fetch_frontpage_deals(client: httpx.AsyncClient, limit: int = 25) -> List[Dict[str, Any]]:
+    """Fetch current Frontpage curated deals."""
+    xml_data = await fetch_rss_feed(FRONTPAGE_RSS_URL, client)
+    return parse_rss_items(xml_data, max_items=limit)
+
+
+async def fetch_popular_deals(client: httpx.AsyncClient, limit: int = 25) -> List[Dict[str, Any]]:
+    """Fetch current community Popular deals."""
+    xml_data = await fetch_rss_feed(POPULAR_RSS_URL, client)
+    return parse_rss_items(xml_data, max_items=limit)
+
+
+# ==============================================================================
+# Markdown Report Formatting
+# ==============================================================================
+
+def format_deals_report(
+    target_results: Dict[str, List[Dict[str, Any]]],
+    frontpage_matches: List[Dict[str, Any]],
+    curated_deals: Optional[List[Dict[str, Any]]] = None,
+    is_general_feed: bool = False
+) -> str:
+    """Format the results into a markdown summary adhering to 4-tier evaluation format."""
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    if is_general_feed:
+        deals = curated_deals or []
+        if not deals:
+            return (
+                f"## 🏷️ Slickdeals Top Deals Report ({now_str})\n\n"
+                f"**Summary**: 0 items searched | 0 deals found | 0 not found\n\n"
+                f"No active frontpage or popular deals were retrieved from Slickdeals."
+            )
+
+        lines = [
+            f"## 🏷️ Slickdeals Hot & Popular Deals ({now_str})\n",
+            f"**Summary**: {len(deals)} items searched | {len(deals)} deals found | 0 not found\n",
+            f"Found **{len(deals)}** trending deals across Slickdeals Frontpage & Popular feeds:\n"
+        ]
+
+        for i, deal in enumerate(deals[:20], 1):
+            lines.append(
+                f"{i}. **[{deal['title']}]({deal['link']})**\n"
+                f"   - **Price**: `{deal['price']}` | **Store**: *{deal['store']}*\n"
+            )
+
+        return "\n".join(lines)
+
+    # Watchlist report
+    total_searched = len(target_results)
+    found_count = sum(1 for items in target_results.values() if items)
+    not_found_count = total_searched - found_count
+
+    lines = [
+        f"## 🏷️ Slickdeals Watchlist Report ({now_str})\n",
+        f"**Summary**: {total_searched} items searched | {found_count} deals found | {not_found_count} not found\n"
+    ]
+
+    # Highlight any frontpage matches
+    if frontpage_matches:
+        lines.append(f"### 🔥 Hot Frontpage Matches ({len(frontpage_matches)})\n")
+        for match in frontpage_matches:
+            lines.append(
+                f"- **[{match['title']}]({match['link']})**\n"
+                f"  - **Price**: `{match['price']}` | **Store**: *{match['store']}*\n"
+            )
+        lines.append("")
+
+    # Detailed item results
+    lines.append("### 📋 Watchlisted Items\n")
+    for item_name, deals in target_results.items():
+        if deals:
+            lines.append(f"#### 🎯 {item_name} ({len(deals)} deal{'s' if len(deals) != 1 else ''} found)\n")
+            for deal in deals[:3]:
+                lines.append(
+                    f"- **[{deal['title']}]({deal['link']})**\n"
+                    f"  - **Price**: `{deal['price']}` | **Store**: *{deal['store']}*\n"
+                )
+        else:
+            lines.append(f"#### ⚪ {item_name}: No active deals found on Slickdeals\n")
+
+    return "\n".join(lines)
+
+
+# ==============================================================================
+# Main Plugin Class
+# ==============================================================================
+
+class SlickdealsPlugin(BaseSitePlugin):
+    """
+    Slickdeals RSS deal monitoring automation plugin.
+    Fast, deterministic deal discovery using official RSS feeds for watchlists or trending bargains.
+    """
+    description: str = (
+        "Search and monitor deals on Slickdeals using RSS feeds for watchlisted items or trending/popular deals."
+    )
+
+    async def run_pre_flight(
+        self,
+        browser: Any,
+        prompt: str,
+        context: str,
+        log_path: str,
+        llm: Any
+    ) -> str:
+        """
+        Executes Slickdeals RSS retrieval.
+        Runs purely over HTTP via RSS feeds without needing browser rendering overhead.
+        """
+        _log(log_path, "\n=== SLICKDEALS RSS AUTOMATION STARTED ===")
+        start_time = datetime.now()
+
+        # 1. Resolve watchlisted items
+        watchlist_items = extract_watchlist_items(prompt, context, log_path)
+        general_mode = is_hot_popular_request(prompt) and not watchlist_items
+
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            # Mode A: General Hot / Popular Deals
+            if general_mode or (not watchlist_items and is_hot_popular_request(prompt)):
+                _log(log_path, "Slickdeals: Executing Hot & Popular Deals Discovery mode...")
+                fp_task = fetch_frontpage_deals(client, limit=20)
+                pop_task = fetch_popular_deals(client, limit=20)
+                fp_deals, pop_deals = await asyncio.gather(fp_task, pop_task)
+
+                # Deduplicate by link
+                seen_links: Set[str] = set()
+                combined: List[Dict[str, Any]] = []
+                for d in fp_deals + pop_deals:
+                    if d["link"] not in seen_links:
+                        seen_links.add(d["link"])
+                        combined.append(d)
+
+                elapsed = (datetime.now() - start_time).total_seconds()
+                _log(log_path, f"Slickdeals: Finished in {elapsed:.2f}s with {len(combined)} deals.")
+                return format_deals_report({}, [], curated_deals=combined, is_general_feed=True)
+
+            # Mode B: Targeted Watchlist Items Search
+            # If no items detected at all, default to general frontpage
+            if not watchlist_items:
+                _log(log_path, "Slickdeals: No specific items found in watchlist or prompt; pulling Frontpage deals...")
+                fp_deals = await fetch_frontpage_deals(client, limit=20)
+                elapsed = (datetime.now() - start_time).total_seconds()
+                _log(log_path, f"Slickdeals: Finished in {elapsed:.2f}s with {len(fp_deals)} Frontpage deals.")
+                return format_deals_report({}, [], curated_deals=fp_deals, is_general_feed=True)
+
+            _log(log_path, f"Slickdeals: Executing Targeted Watchlist search for {len(watchlist_items)} item(s)...")
+
+            # Concurrently search RSS feeds for all items + fetch frontpage for cross-matching
+            search_tasks = [
+                search_deals_for_item(item, client, max_results=3, log_path=log_path)
+                for item in watchlist_items
+            ]
+            fp_task = fetch_frontpage_deals(client, limit=30)
+
+            results = await asyncio.gather(*search_tasks, fp_task)
+            item_deals_list = results[:-1]
+            frontpage_deals = results[-1]
+
+            target_results: Dict[str, List[Dict[str, Any]]] = {}
+            for item_name, deals in zip(watchlist_items, item_deals_list):
+                target_results[item_name] = deals
+
+            # Cross-reference frontpage matches
+            frontpage_matches: List[Dict[str, Any]] = []
+            for fp in frontpage_deals:
+                fp_title_lower = fp["title"].lower()
+                for item in watchlist_items:
+                    if item.lower() in fp_title_lower:
+                        if fp not in frontpage_matches:
+                            frontpage_matches.append(fp)
+                        break
+
+            elapsed = (datetime.now() - start_time).total_seconds()
+            _log(log_path, f"Slickdeals: Watchlist search completed in {elapsed:.2f}s.")
+            return format_deals_report(target_results, frontpage_matches, is_general_feed=False)
+
+    def evaluate_outcome(self, result_text: str) -> Optional[str]:
+        """
+        Deterministically evaluates outcome based on summary line:
+        'X items searched | Y deals found | Z not found'
+        """
+        match = re.search(r'(\d+)\s+items\s+searched\s+\|\s+(\d+)\s+deals\s+found\s+\|\s+(\d+)\s+not\s+found', result_text)
+        if match:
+            searched = int(match.group(1))
+            found = int(match.group(2))
+            not_found = int(match.group(3))
+
+            if searched > 0 and found == searched and not_found == 0:
+                return "SUCCESS"
+            elif found > 0:
+                return "PARTIAL_SUCCESS"
+            elif found == 0:
+                return "NO_RESULT"
+
+        if "No active deals found" in result_text and "deals found" not in result_text:
+            return "NO_RESULT"
+
+        return None
