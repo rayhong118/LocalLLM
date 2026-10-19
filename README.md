@@ -50,6 +50,16 @@ HEADLESS=false
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 TELEGRAM_CHAT_ID=your_chat_id_here
 TELEGRAM_NOTIFY_ALL=true
+
+# Database (Turso / libSQL) — Defaults to local tasks.db if omitted
+# Option A: Remote Turso Cloud Database
+TURSO_DATABASE_URL=libsql://your-db-org.turso.io
+TURSO_AUTH_TOKEN=your_turso_auth_token_here
+
+# Option B: Turso Embedded Replica (Local SQLite synced with Turso Cloud)
+# TURSO_SYNC_URL=libsql://your-db-org.turso.io
+# TURSO_AUTH_TOKEN=your_turso_auth_token_here
+# TURSO_LOCAL_REPLICA_PATH=tasks_replica.db
 ```
 
 ### Launching the Application
@@ -63,6 +73,20 @@ This script automatically:
 2. Synchronizes backend Python dependencies via `uv`.
 3. Starts the **FastAPI** backend on `http://localhost:8000`.
 4. Starts the **Vite + React** frontend on `http://localhost:5173`.
+
+### 🗄️ Database Migration to Turso
+
+To migrate your existing SQLite database (`tasks.db`) to Turso:
+
+1. Add your `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` to `.env`.
+2. Run the migration script:
+```powershell
+uv run python -m backend.database.migrate_to_turso
+```
+To test without writing any data:
+```powershell
+uv run python -m backend.database.migrate_to_turso --dry-run
+```
 
 ---
 

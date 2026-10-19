@@ -150,16 +150,30 @@ def extract_tickers_from_text(text: str) -> List[str]:
 
 
 def get_watchlist_from_db(db_path: str = "tasks.db", log_path: str = "") -> List[str]:
-    """Query Context table in tasks.db for any stock watchlist entries."""
-    if not os.path.exists(db_path):
-        return []
+    """Query Context table from active database (Turso or local SQLite) for any stock watchlist entries."""
+    rows = []
     try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT name, content FROM contexts")
-        rows = cursor.fetchall()
-        conn.close()
+        from backend.database.session import SessionLocal
+        from backend.database.models import Context
+        with SessionLocal() as db:
+            contexts = db.query(Context).all()
+            rows = [(c.name, c.content) for c in contexts]
+    except Exception as e:
+        logger.debug(f"SessionLocal context query fallback: {e}")
+        if os.path.exists(db_path):
+            try:
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT name, content FROM contexts")
+                rows = cursor.fetchall()
+                conn.close()
+            except Exception as err:
+                logger.warning(f"Error querying contexts from sqlite3: {err}")
 
+    if not rows:
+        return []
+
+    try:
         grocery_kws = ["safeway", "weee", "grocery", "groceries", "shopping", "food"]
         stock_kws = ["stock", "ticker", "portfolio", "equity", "equities", "watchlist", "stocks to watch", "holdings"]
 

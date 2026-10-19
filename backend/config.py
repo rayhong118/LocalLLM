@@ -46,3 +46,10 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 TELEGRAM_NOTIFY_ALL = os.environ.get("TELEGRAM_NOTIFY_ALL", "true").lower() in ("true", "1", "yes")
 
+# Turso Database Configuration
+TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "").strip()
+TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
+TURSO_SYNC_URL = os.environ.get("TURSO_SYNC_URL", "").strip()
+TURSO_LOCAL_REPLICA_PATH = os.environ.get("TURSO_LOCAL_REPLICA_PATH", "tasks_replica.db").strip()
+
+
