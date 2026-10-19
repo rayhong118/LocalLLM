@@ -35,7 +35,7 @@ It features a hybrid architecture combining general-purpose browser agent reason
 
 ### Environment Configuration
 
-Create or edit `.env` in the project root:
+Create or edit `.env` in the project root (see [ENV.md](ENV.md) for full field documentation):
 ```env
 # LLM Endpoint (LM Studio / vLLM / Ollama)
 LLM_BASE_URL=http://localhost:1234/v1

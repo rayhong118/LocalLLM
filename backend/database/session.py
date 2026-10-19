@@ -28,7 +28,7 @@ class SQLiteDialect_libsql(SQLiteDialect_pysqlite):
         # libSQL does not need or support pysqlite's create_function hooks (e.g. REGEXP, FLOOR)
         return None
 
-registry.register("sqlite.libsql", __name__, "SQLiteDialect_libsql")
+registry.impls["sqlite.libsql"] = lambda: SQLiteDialect_libsql
 
 def is_turso_enabled() -> bool:
     """Return True if Turso cloud URL or embedded replica sync URL is configured."""
