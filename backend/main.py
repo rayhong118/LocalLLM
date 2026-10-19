@@ -34,6 +34,7 @@ class TaskCreate(BaseModel):
     day_of_week: Optional[int] = None # 0-6 (0=Mon, 6=Sun)
     day_of_month: Optional[int] = None # 1-31
     weekday_only: Optional[bool] = False
+    silent_if_no_result: Optional[bool] = False
     context_ids: Optional[List[int]] = []
 
 class TaskUpdate(BaseModel):
@@ -42,6 +43,7 @@ class TaskUpdate(BaseModel):
     day_of_week: Optional[int] = None
     day_of_month: Optional[int] = None
     weekday_only: Optional[bool] = None
+    silent_if_no_result: Optional[bool] = None
     prompt: Optional[str] = None
 
 class TaskContextsUpdate(BaseModel):
@@ -79,6 +81,7 @@ class TaskSchema(BaseModel):
     day_of_week: Optional[int] = None
     day_of_month: Optional[int] = None
     weekday_only: Optional[bool] = False
+    silent_if_no_result: Optional[bool] = False
     next_run_at: Optional[datetime]
     started_at: Optional[datetime]
     created_at: datetime
@@ -220,12 +223,13 @@ async def check_scheduled_tasks():
         for task in tasks:
             print(f"Triggering scheduled {task.frequency.lower()} task {task.id}: {task.prompt}")
             
-            # Spawn ONCE task inheriting parent's contexts
+            # Spawn ONCE task inheriting parent's contexts and silent_if_no_result setting
             run_task = DBTask(
                 prompt=task.prompt, 
                 status="PENDING", 
                 frequency="ONCE", 
                 parent_id=task.id,
+                silent_if_no_result=task.silent_if_no_result or False,
                 contexts=list(task.contexts)
             )
             db.add(run_task)
@@ -337,6 +341,7 @@ async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
         day_of_week=task.day_of_week,
         day_of_month=task.day_of_month,
         weekday_only=bool(task.weekday_only) if task.weekday_only is not None else False,
+        silent_if_no_result=bool(task.silent_if_no_result) if task.silent_if_no_result is not None else False,
         next_run_at=next_run
     )
     if task.context_ids:
@@ -435,6 +440,8 @@ def update_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db)
     if payload.weekday_only is not None and payload.weekday_only != db_task.weekday_only:
         db_task.weekday_only = payload.weekday_only
         schedule_changed = True
+    if payload.silent_if_no_result is not None:
+        db_task.silent_if_no_result = payload.silent_if_no_result
     if payload.prompt is not None:
         trimmed = payload.prompt.strip()
         if not trimmed:
@@ -510,12 +517,13 @@ async def run_task_now(task_id: int, db: Session = Depends(get_db)):
     if not db_task:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    # Spawn a ONCE task for it inheriting contexts
+    # Spawn a ONCE task for it inheriting contexts and silent_if_no_result setting
     run_task = DBTask(
         prompt=db_task.prompt, 
         status="PENDING", 
         frequency="ONCE", 
         parent_id=db_task.id,
+        silent_if_no_result=db_task.silent_if_no_result or False,
         contexts=list(db_task.contexts)
     )
     db.add(run_task)

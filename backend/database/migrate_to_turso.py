@@ -116,6 +116,8 @@ def run_migration(
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN day_of_month INTEGER"))
                 if "weekday_only" not in cols:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN weekday_only BOOLEAN DEFAULT 0"))
+                if "silent_if_no_result" not in cols:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN silent_if_no_result BOOLEAN DEFAULT 0"))
             except Exception as e:
                 logger.debug(f"Schema check note: {e}")
         conn.commit()
@@ -172,6 +174,7 @@ def run_migration(
                     next_run_at=t.next_run_at,
                     started_at=t.started_at,
                     parent_id=parent_id,
+                    silent_if_no_result=getattr(t, "silent_if_no_result", False),
                     created_at=t.created_at,
                     updated_at=t.updated_at,
                 )
@@ -184,6 +187,7 @@ def run_migration(
                 existing.day_of_week = t.day_of_week
                 existing.day_of_month = t.day_of_month
                 existing.weekday_only = t.weekday_only
+                existing.silent_if_no_result = getattr(t, "silent_if_no_result", False)
                 existing.next_run_at = t.next_run_at
                 existing.started_at = t.started_at
                 existing.parent_id = parent_id

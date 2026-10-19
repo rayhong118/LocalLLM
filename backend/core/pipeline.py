@@ -315,12 +315,22 @@ class AgentPipeline:
 
         # Trigger Telegram notification if criteria met
         if getattr(config, "TELEGRAM_NOTIFY_ALL", False) or self.task.parent_id is not None:
-            await send_telegram_notification(
-                task_id=self.task_id,
-                prompt=self.prompt,
-                status=self.task.status,
-                result_content=final_res
-            )
+            # Check if silent_if_no_result is enabled (on this task or inherited from parent)
+            is_silent_no_result = getattr(self.task, "silent_if_no_result", False)
+            if not is_silent_no_result and self.task.parent_id and self.db:
+                parent = self.db.query(DBTask).filter(DBTask.id == self.task.parent_id).first()
+                if parent and getattr(parent, "silent_if_no_result", False):
+                    is_silent_no_result = True
+
+            if is_silent_no_result and status == "NO_RESULT":
+                self.log(f"Telegram notification skipped: Task #{self.task_id} returned NO_RESULT and silent_if_no_result is True.")
+            else:
+                await send_telegram_notification(
+                    task_id=self.task_id,
+                    prompt=self.prompt,
+                    status=self.task.status,
+                    result_content=final_res
+                )
 
     async def handle_fatal_error(self, e):
         self.log(f"\nFATAL AGENT ERROR: {e}")

@@ -14,7 +14,8 @@ import {
   BookOpen,
   Plus,
   X,
-  Edit3
+  Edit3,
+  BellOff
 } from 'lucide-react';
 import { Task, Context, TaskFrequency } from '../store';
 import { ContextSelectModal } from './ContextSelectModal';
@@ -118,6 +119,7 @@ export const TaskItem: React.FC<TaskItemProps> = ({
     weekday_only?: boolean;
     day_of_week?: number;
     day_of_month?: number;
+    silent_if_no_result?: boolean;
   }) => {
     const res = await fetch(`http://localhost:8000/tasks/${task.id}`, {
       method: 'PUT',
@@ -238,6 +240,26 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                   ? 'NO RESULT'
                   : task.status}
           </span>
+          {task.silent_if_no_result && (
+            <span
+              style={{
+                padding: '0.2rem 0.55rem',
+                borderRadius: '999px',
+                fontSize: '0.68rem',
+                fontWeight: 600,
+                backgroundColor: 'var(--color-bg-alt)',
+                color: 'var(--color-text-muted)',
+                border: '1px solid var(--color-border)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.25rem',
+                whiteSpace: 'nowrap'
+              }}
+              title="Silent on NO_RESULT: Telegram notification is skipped if 0 matching results are found"
+            >
+              <BellOff size={11} /> Silent on No Result
+            </span>
+          )}
           <span
             style={{
               fontWeight: 600,

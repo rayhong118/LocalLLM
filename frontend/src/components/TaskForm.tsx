@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Calendar, Clock, Sparkles, BookOpen, Plus, X } from 'lucide-react';
+import { Calendar, Clock, Sparkles, BookOpen, Plus, X, BellOff } from 'lucide-react';
 import { TaskFrequency, Context } from '../store';
 import { ContextSelectModal } from './ContextSelectModal';
 
@@ -15,6 +15,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
   const [dayOfWeek, setDayOfWeek] = useState<number>(new Date().getDay() === 0 ? 6 : new Date().getDay() - 1); // 0=Mon..6=Sun
   const [dayOfMonth, setDayOfMonth] = useState<number>(new Date().getDate()); // 1..31
   const [weekdayOnly, setWeekdayOnly] = useState(false);
+  const [silentIfNoResult, setSilentIfNoResult] = useState(false);
   const [selectedContexts, setSelectedContexts] = useState<Context[]>([]);
   const [showContextModal, setShowContextModal] = useState(false);
 
@@ -34,12 +35,14 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
           day_of_week: frequency === 'WEEKLY' ? Number(dayOfWeek) : null,
           day_of_month: frequency === 'MONTHLY' ? Number(dayOfMonth) : null,
           weekday_only: frequency === 'DAILY' ? weekdayOnly : false,
+          silent_if_no_result: silentIfNoResult,
           context_ids: selectedContexts.map((c) => c.id)
         })
       });
       if (res.ok) {
         setPrompt('');
         setWeekdayOnly(false);
+        setSilentIfNoResult(false);
         setSelectedContexts([]);
         onTaskCreated();
       }
@@ -307,6 +310,37 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
             />
           </div>
         )}
+      </div>
+
+      {/* Options: Silent if no result */}
+      <div style={{ marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+        <label
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '0.45rem',
+            cursor: 'pointer',
+            fontSize: '0.85rem',
+            color: 'var(--color-text-body)',
+            userSelect: 'none',
+            fontWeight: 500
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={silentIfNoResult}
+            onChange={(e) => setSilentIfNoResult(e.target.checked)}
+            disabled={loading}
+            style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+          />
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+            <BellOff size={14} color="var(--color-text-muted)" />
+            Silent if no result
+          </span>
+        </label>
+        <span style={{ fontSize: '0.75rem', color: 'var(--color-text-light)' }}>
+          (Skip Telegram alert if 0 items are found)
+        </span>
       </div>
 
       <button

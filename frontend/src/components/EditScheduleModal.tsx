@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar, Clock, AlertCircle, FileText } from 'lucide-react';
+import { Calendar, Clock, AlertCircle, FileText, BellOff } from 'lucide-react';
 import { Modal } from './Modal';
 import { Task, TaskFrequency } from '../store';
 
@@ -14,6 +14,7 @@ interface EditScheduleModalProps {
     weekday_only?: boolean;
     day_of_week?: number;
     day_of_month?: number;
+    silent_if_no_result?: boolean;
   }) => Promise<void>;
 }
 
@@ -22,6 +23,7 @@ export const EditScheduleModal: React.FC<EditScheduleModalProps> = ({ isOpen, on
   const [frequency, setFrequency] = useState<TaskFrequency>(task.frequency === 'ONCE' ? 'DAILY' : task.frequency);
   const [hourOfDay, setHourOfDay] = useState<number>(task.hour_of_day ?? 9);
   const [weekdayOnly, setWeekdayOnly] = useState<boolean>(task.weekday_only ?? false);
+  const [silentIfNoResult, setSilentIfNoResult] = useState<boolean>(task.silent_if_no_result ?? false);
   const [dayOfWeek, setDayOfWeek] = useState<number>(task.day_of_week ?? 0);
   const [dayOfMonth, setDayOfMonth] = useState<number>(task.day_of_month ?? 1);
   const [tzAbbreviation, setTzAbbreviation] = useState('');
@@ -34,6 +36,7 @@ export const EditScheduleModal: React.FC<EditScheduleModalProps> = ({ isOpen, on
       setFrequency(task.frequency === 'ONCE' ? 'DAILY' : task.frequency);
       setHourOfDay(task.hour_of_day ?? 9);
       setWeekdayOnly(task.weekday_only ?? false);
+      setSilentIfNoResult(task.silent_if_no_result ?? false);
       setDayOfWeek(task.day_of_week ?? 0);
       setDayOfMonth(task.day_of_month ?? 1);
       setError(null);
@@ -97,7 +100,8 @@ export const EditScheduleModal: React.FC<EditScheduleModalProps> = ({ isOpen, on
         hour_of_day: hourOfDay,
         weekday_only: frequency === 'DAILY' ? weekdayOnly : false,
         day_of_week: frequency === 'WEEKLY' ? dayOfWeek : undefined,
-        day_of_month: frequency === 'MONTHLY' ? dayOfMonth : undefined
+        day_of_month: frequency === 'MONTHLY' ? dayOfMonth : undefined,
+        silent_if_no_result: silentIfNoResult
       });
     } catch (err: any) {
       setError(err?.message || 'Failed to update schedule');
@@ -311,6 +315,37 @@ export const EditScheduleModal: React.FC<EditScheduleModalProps> = ({ isOpen, on
               </option>
             ))}
           </select>
+        </div>
+
+        {/* Silent if no result toggle */}
+        <div style={{ marginTop: '0.25rem', padding: '0.65rem 0.85rem', borderRadius: '8px', background: 'var(--color-bg-alt)', border: '1px solid var(--color-border)' }}>
+          <label
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+              cursor: 'pointer',
+              fontSize: '0.85rem',
+              color: 'var(--color-text-body)',
+              userSelect: 'none',
+              fontWeight: 500
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={silentIfNoResult}
+              onChange={(e) => setSilentIfNoResult(e.target.checked)}
+              disabled={isSaving}
+              style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+            />
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+              <BellOff size={14} color="var(--color-text-muted)" />
+              Silent if no result
+            </span>
+          </label>
+          <div style={{ fontSize: '0.72rem', color: 'var(--color-text-light)', marginLeft: '1.5rem', marginTop: '0.15rem' }}>
+            Do not send Telegram notification if 0 matching results are found.
+          </div>
         </div>
 
         {/* Live Preview Card */}

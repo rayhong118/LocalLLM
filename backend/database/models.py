@@ -30,7 +30,8 @@ class Task(Base):
     started_at = Column(DateTime, nullable=True)
     
     parent_id = Column(Integer, ForeignKey("tasks.id"), nullable=True)
- 
+    silent_if_no_result = Column(Boolean, default=False)
+
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None), onupdate=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
