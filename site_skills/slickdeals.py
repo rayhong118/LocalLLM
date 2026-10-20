@@ -295,15 +295,13 @@ async def extract_search_terms_with_llm(
     if not watchlist_items:
         return {}
 
-    prompt = f"""You are a search query optimizer for a deal forum (Slickdeals).
-From each detailed target item name, extract the optimal, concise search term (typically 2-4 words) so fine details can be temporarily omitted to maximize deal retrieval.
-Keep: Brand and core model or product type (e.g. "Bluetti Elite 200", "Renogy solar panel", "Sony WH-1000XM5", "iPad Air M2").
-Omit: Minor technical specifications (Wh, mAh, watts, voltage), storage size, color, bundled items, and generic marketing buzzwords.
+    prompt = f"""Extract concise search keywords (brand + core product or model, 2-4 words) for each item to query a deal forum.
+Omit secondary details: technical specifications (watts, Wh, mAh, voltage), storage, color, bundles, conditions, and parenthetical constraints.
 
-Input items:
+Items:
 {json.dumps(watchlist_items, indent=2)}
 
-Respond with ONLY a valid JSON object mapping each original item string to its extracted search term.
+Return ONLY a valid JSON object mapping each original item string to its search query.
 Example format:
 {{
   "original item name": "search term"
@@ -359,19 +357,15 @@ async def validate_candidate_deals_with_llm(
     deals_text = "\n".join(deal_cards)
 
     prompt = f"""You are a strict product deal validation assistant.
-Your task is to determine whether candidate deals found on a deal forum match the user's target item and its details.
-
-Target Item: "{target_item}"
+Determine whether candidate deals match the target item: "{target_item}".
 
 Candidate Deals:
 {deals_text}
 
 Rules:
-1. Model Number Matching: The specific model number or series must match the target item. A different model number in the same product line (e.g., "Elite 10" vs target "Elite 200") is NOT a match.
-2. Specifications Are Not Model Numbers: A matching technical specification (e.g., "200W AC" or "200Wh") does NOT satisfy a requirement for a model number (e.g., "Elite 200").
-3. Product vs. Accessory: The deal must be for the actual product, NOT an accessory, case, skin, cable, or replacement part.
-4. Generational Match: If the target specifies a generation or processor (e.g., "M2", "XM5"), the deal must match that generation.
-5. Generic Queries: If the target item is generic without a specific model number (e.g., "Renogy portable solar panel"), any product matching that brand and category IS a valid match.
+1. Product vs. Accessory: The deal must be for the actual product, NOT an accessory, case, skin, cable, or replacement part.
+2. Model & Generation: If the target specifies an exact model number or generation, candidates for different models in the same product line do NOT match. Technical specifications (e.g. wattage, capacity, dimensions) are NOT model numbers.
+3. Constraints & Generics: If the target specifies constraints (e.g. max wattage, size), candidates must satisfy them. If the target is generic without a specific model number, any product matching the brand and category is valid.
 
 Respond with ONLY a JSON object in this format:
 {{
