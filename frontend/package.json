@@ -12,8 +12,10 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@types/leaflet": "^1.9.22",
     "@types/marked": "^5.0.2",
     "jotai": "^2.12.1",
+    "leaflet": "^1.9.4",
     "lucide-react": "^0.475.0",
     "marked": "^17.0.5",
     "react": "^18.3.1",

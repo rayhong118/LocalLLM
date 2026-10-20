@@ -42,12 +42,20 @@ async def send_telegram_notification(task_id: int, prompt: str, status: str, res
     }
     status_emoji = status_emojis.get(status, "📋")
     escaped_prompt = html.escape(prompt)
-    formatted_result = markdown_to_telegram_html(result_content)
-    
-    # Truncate if content is too long for Telegram (max 4096 characters)
-    max_len = 3800
-    if len(formatted_result) > max_len:
-        formatted_result = formatted_result[:max_len] + "\n\n<i>(Result truncated...)</i>"
+
+    # 1. Strip raw data payload code blocks (e.g. wsdot-map-data) before sending to Telegram
+    clean_content = re.sub(r'```(?:wsdot-map-data|[a-z0-9_-]+-data)[\s\S]*?```', '', result_content or '').strip()
+
+    # 2. Pre-truncate markdown before HTML formatting to prevent slicing tags in half
+    max_raw_len = 3200
+    is_truncated = False
+    if len(clean_content) > max_raw_len:
+        clean_content = clean_content[:max_raw_len].rstrip()
+        is_truncated = True
+
+    formatted_result = markdown_to_telegram_html(clean_content)
+    if is_truncated:
+        formatted_result += "\n\n<i>(Result truncated for Telegram...)</i>"
 
     message = (
         f"{status_emoji} <b>Task Completion Report</b>\n"
@@ -71,6 +79,24 @@ async def send_telegram_notification(task_id: int, prompt: str, status: str, res
             if resp.status_code == 200:
                 logger.info(f"[Telegram] Notification sent for task {task_id}")
             else:
-                logger.error(f"[Telegram] Bot API returned {resp.status_code}: {resp.text}")
+                # Fallback: If Telegram fails with 400 (e.g. unclosed HTML tag), retry sending as plain text
+                logger.warning(f"[Telegram] HTML parse failed ({resp.status_code}: {resp.text}); retrying with plain text fallback.")
+                fallback_text = (
+                    f"{status_emoji} Task Completion Report\n"
+                    f"Task ID: {task_id}\n"
+                    f"Prompt: {prompt}\n"
+                    f"Status: {status}\n\n"
+                    f"Result:\n{clean_content[:3500]}"
+                )
+                fallback_payload = {
+                    "chat_id": chat_id,
+                    "text": fallback_text,
+                    "disable_web_page_preview": True
+                }
+                fallback_resp = await client.post(url, json=fallback_payload, timeout=15)
+                if fallback_resp.status_code == 200:
+                    logger.info(f"[Telegram] Plain text fallback notification sent for task {task_id}")
+                else:
+                    logger.error(f"[Telegram] Plain text fallback also failed: {fallback_resp.text}")
     except Exception as e:
         logger.error(f"[Telegram] Connection failed: {e}")

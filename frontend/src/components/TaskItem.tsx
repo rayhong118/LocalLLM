@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { marked } from 'marked';
 import {
   Trash2,
@@ -20,6 +20,7 @@ import {
 import { Task, Context, TaskFrequency } from '../store';
 import { ContextSelectModal } from './ContextSelectModal';
 import { EditScheduleModal } from './EditScheduleModal';
+import { WsdotMap, WsdotMapAlertItem } from './WsdotMap';
 
 interface TaskItemProps {
   task: Task;
@@ -157,7 +158,28 @@ export const TaskItem: React.FC<TaskItemProps> = ({
 
   const hasOutput = task.outputs && task.outputs.length > 0 && task.status !== 'RUNNING';
   const latestOutput = hasOutput ? task.outputs[task.outputs.length - 1].content : '';
-  const parsedHtml = hasOutput ? (marked.parse(latestOutput, { async: false, gfm: true, breaks: true }) as string) : '';
+
+  const { cleanMarkdown, mapAlerts } = useMemo(() => {
+    if (!latestOutput) return { cleanMarkdown: '', mapAlerts: [] as WsdotMapAlertItem[] };
+    const match = latestOutput.match(/```wsdot-map-data\s*([\s\S]*?)\s*```/);
+    if (match) {
+      try {
+        const parsed = JSON.parse(match[1]);
+        const cleaned = latestOutput.replace(/```wsdot-map-data\s*[\s\S]*?\s*```/, '').trim();
+        return {
+          cleanMarkdown: cleaned,
+          mapAlerts: Array.isArray(parsed) ? (parsed as WsdotMapAlertItem[]) : []
+        };
+      } catch (e) {
+        console.error('Failed to parse wsdot-map-data:', e);
+      }
+    }
+    return { cleanMarkdown: latestOutput, mapAlerts: [] as WsdotMapAlertItem[] };
+  }, [latestOutput]);
+
+  const parsedHtml = hasOutput
+    ? (marked.parse(cleanMarkdown, { async: false, gfm: true, breaks: true }) as string)
+    : '';
 
   const canEditContext = task.frequency !== 'ONCE' || task.status === 'PENDING' || task.status === 'FAILED';
 
@@ -553,6 +575,10 @@ export const TaskItem: React.FC<TaskItemProps> = ({
             animation: 'slideDown 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards'
           }}
         >
+          {mapAlerts && mapAlerts.length > 0 && (
+            <WsdotMap alerts={mapAlerts} />
+          )}
+
           <div
             className="markdown-body"
             style={{

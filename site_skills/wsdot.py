@@ -1,11 +1,12 @@
 # site_skills/wsdot.py
 import asyncio
 from datetime import datetime, timedelta
+import html
 import json
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 from dotenv import load_dotenv
 import httpx
@@ -30,6 +31,24 @@ KING_LON_MIN, KING_LON_MAX = -122.53, -121.12
 # Highway classification sets
 INTERSTATES = {"5", "82", "90", "182", "205", "405", "705"}
 US_HIGHWAYS = {"2", "12", "97", "101", "195", "395"}
+
+# Default primary corridors if none specified in prompt
+DEFAULT_CORRIDORS = {"5", "90", "405", "520"}
+CORRIDOR_ORDER = {"405": 1, "520": 2, "90": 3, "5": 4, "522": 5, "18": 6, "167": 7, "99": 8, "2": 9}
+
+CORRIDOR_REGEX_MAP = {
+    "405": re.compile(r'\b(?:i-?405|interstate\s*405|405)\b', re.IGNORECASE),
+    "5": re.compile(r'\b(?:i-?5|interstate\s*5|highway\s*5|hwy\s*5)\b', re.IGNORECASE),
+    "90": re.compile(r'\b(?:i-?90|interstate\s*90|highway\s*90|hwy\s*90)\b', re.IGNORECASE),
+    "520": re.compile(r'\b(?:sr-?520|state\s*route\s*520|highway\s*520|hwy\s*520|520)\b', re.IGNORECASE),
+    "522": re.compile(r'\b(?:sr-?522|state\s*route\s*522|highway\s*522|hwy\s*522|522)\b', re.IGNORECASE),
+    "167": re.compile(r'\b(?:sr-?167|state\s*route\s*167|highway\s*167|hwy\s*167|167)\b', re.IGNORECASE),
+    "18": re.compile(r'\b(?:sr-?18|state\s*route\s*18|highway\s*18|hwy\s*18)\b', re.IGNORECASE),
+    "99": re.compile(r'\b(?:sr-?99|state\s*route\s*99|highway\s*99|hwy\s*99|aurora)\b', re.IGNORECASE),
+    "2": re.compile(r'\b(?:us-?2|highway\s*2|hwy\s*2)\b', re.IGNORECASE),
+}
+
+RE_ALL_CORRIDORS = re.compile(r'\b(?:all\s*(?:highways?|corridors?|routes?|roads?)|entire|all)\b', re.IGNORECASE)
 
 DIRECTION_MAP = {
     "N": "Northbound", "NB": "Northbound",
@@ -80,6 +99,19 @@ WEEKDAY_MAP = {
 # ==========================================
 # 2. Helpers (Logging, Formatting, Dates)
 # ==========================================
+
+def clean_alert_text(text: Optional[str]) -> str:
+    """Sanitizes raw text from WSDOT API (converts embedded HTML links to Markdown and strips raw HTML tags)."""
+    if not text:
+        return ""
+    # Convert <a href="url">anchor</a> to [anchor](url)
+    cleaned = re.sub(r'<a\s+(?:[^>]*?\s+)?href=["\'](.*?)["\'][^>]*?>(.*?)</a>', r'[\2](\1)', str(text), flags=re.IGNORECASE)
+    # Remove any stray HTML tags like <br>, <span>, <p>
+    cleaned = re.sub(r'<[^>]+>', ' ', cleaned)
+    cleaned = html.unescape(cleaned)
+    # Normalize excessive spaces
+    return re.sub(r'[ \t]+', ' ', cleaned).strip()
+
 
 def _log(log_path: str, msg: str) -> None:
     """Safe append to execution log file."""
@@ -143,6 +175,65 @@ def _get_alert_coords(item: Dict[str, Any]) -> List[Tuple[float, float, str]]:
             elif road:
                 coords.append((0.0, 0.0, road))
     return coords
+
+
+def get_alert_road(item: Dict[str, Any]) -> str:
+    """Extract clean highway number (e.g. '5', '405', '90') from alert item."""
+    for loc_key in ("StartRoadwayLocation", "EndRoadwayLocation"):
+        loc = item.get(loc_key)
+        if isinstance(loc, dict):
+            road = str(loc.get("RoadName") or "").strip().lstrip('0')
+            if road:
+                return road
+    return ""
+
+
+def format_corridors_label(corridors: Optional[Any]) -> str:
+    """Formats a set of corridor codes into readable highway names (e.g., 'I-405, I-90, I-5')."""
+    if corridors is None:
+        return "All King County Corridors"
+    names = [format_highway_name(c) for c in sorted(corridors, key=lambda c: CORRIDOR_ORDER.get(c, 50))]
+    return ", ".join(names)
+
+
+def resolve_corridors(query_str: str) -> Tuple[Optional[Set[str]], str]:
+    """
+    Extracts requested highway corridors from query (e.g. 'i5 i90 i405', 'i-405 only').
+    Returns (set_of_corridor_keys, display_label).
+    If 'all' is explicitly requested, returns (None, 'All King County Corridors').
+    If no corridor is mentioned, defaults to (DEFAULT_CORRIDORS, 'I-405, SR 520, I-90, I-5 (Primary Corridors)').
+    """
+    q = (query_str or "").lower().strip()
+    if RE_ALL_CORRIDORS.search(q):
+        return None, "All King County Corridors"
+
+    matched: Set[str] = set()
+    for key, regex in CORRIDOR_REGEX_MAP.items():
+        if regex.search(q):
+            matched.add(key)
+
+    if matched:
+        return matched, format_corridors_label(matched)
+
+    return DEFAULT_CORRIDORS, "I-405, SR 520, I-90, I-5 (Primary Corridors)"
+
+
+def alert_matches_corridors(item: Dict[str, Any], target_corridors: Optional[Set[str]]) -> bool:
+    """Determines whether an alert belongs to one of the target corridors."""
+    if target_corridors is None:
+        return True
+
+    road = get_alert_road(item)
+    if road and road in target_corridors:
+        return True
+
+    text = f"{item.get('HeadlineDescription', '')} {item.get('ExtendedDescription', '')}"
+    for corr in target_corridors:
+        regex = CORRIDOR_REGEX_MAP.get(corr)
+        if regex and regex.search(text):
+            return True
+
+    return False
 
 
 # ==========================================
@@ -324,67 +415,84 @@ def select_top_impactful_alerts(alerts: List[Dict[str, Any]], max_items: int = 5
     return sorted(alerts, key=score_alert, reverse=True)[:max_items]
 
 
-def generate_deterministic_bellevue_briefing(impactful: List[Dict[str, Any]], total_bellevue: int, timewindow_label: str = "") -> str:
-    """Deterministic briefing fallback for Bellevue and Eastside commuters."""
+def generate_deterministic_commute_briefing(
+    impactful: List[Dict[str, Any]], 
+    total_alerts: int, 
+    corridors_label: str = "",
+    timewindow_label: str = ""
+) -> str:
+    """Deterministic briefing fallback for commute corridors."""
     period_str = f" for **{timewindow_label}**" if timewindow_label else ""
+    corr_desc = corridors_label or "key highway corridors"
     if not impactful:
         return (
-            "### 🏙️ Bellevue & Eastside Commuter Briefing\n\n"
-            f"✅ **All primary Eastside highway corridors (I-405, SR 520, I-90) have no critical disruptions{period_str}.**\n"
-            "Traffic conditions on major routes are operating nominally."
+            f"### 🚗 Puget Sound Commuter Briefing\n\n"
+            f"✅ **All selected highway corridors ({corr_desc}) have no critical disruptions{period_str}.**\n"
+            "Traffic conditions on these routes are operating nominally."
         )
 
     lines = [
-        "### 🏙️ Bellevue & Eastside Commuter Briefing\n",
-        f"**Overview:** Found {total_bellevue} active alerts affecting Bellevue and Eastside routes{period_str}.",
+        "### 🚗 Puget Sound Commuter Briefing\n",
+        f"**Overview:** Found {total_alerts} active alerts affecting {corr_desc}{period_str}.",
         "",
         "#### 🚨 Critical Disruptions (TL;DR)"
     ]
     for a in impactful[:3]:
         road_raw = (a.get("StartRoadwayLocation") or {}).get("RoadName")
         hwy = format_highway_name(road_raw)
-        h = (a.get("HeadlineDescription") or "Incident reported").strip()
+        h = clean_alert_text(a.get("HeadlineDescription") or "Incident reported")
         lines.append(f"- **{hwy}:** {h} *(Scheduled: {parse_wsdot_date(a.get('StartTime'))} ➔ {parse_wsdot_date(a.get('EndTime'))})*")
 
     lines.extend([
         "",
         "#### 💡 Commuter Advice",
-        "- Allow additional travel time on I-405 and connecting ramps; monitor real-time navigation for unexpected slowdowns."
+        f"- Monitor real-time navigation for sudden lane closures on {corr_desc}; allow extra travel time during peak commute hours."
     ])
     return "\n".join(lines)
 
 
-async def generate_llm_commute_briefing(bellevue_alerts: List[Dict[str, Any]], timewindow_label: str = "", log_path: str = "") -> str:
-    """Uses local LLM to generate an executive commute briefing for Bellevue and Eastside drivers."""
-    impactful = select_top_impactful_alerts(bellevue_alerts, max_items=4)
+# Backwards compatibility alias
+def generate_deterministic_bellevue_briefing(impactful: List[Dict[str, Any]], total_bellevue: int, timewindow_label: str = "") -> str:
+    return generate_deterministic_commute_briefing(impactful, total_bellevue, corridors_label="Bellevue & Eastside", timewindow_label=timewindow_label)
+
+
+async def generate_llm_commute_briefing(
+    target_alerts: List[Dict[str, Any]], 
+    corridors_label: str = "",
+    timewindow_label: str = "", 
+    log_path: str = ""
+) -> str:
+    """Uses local LLM to generate an executive commute briefing for selected driver corridors."""
+    impactful = select_top_impactful_alerts(target_alerts, max_items=4)
     if not impactful:
-        return generate_deterministic_bellevue_briefing([], total_bellevue=0, timewindow_label=timewindow_label)
+        return generate_deterministic_commute_briefing([], total_alerts=0, corridors_label=corridors_label, timewindow_label=timewindow_label)
 
     alert_lines = []
     for idx, a in enumerate(impactful, 1):
         road_raw = (a.get("StartRoadwayLocation") or {}).get("RoadName")
         hwy = format_highway_name(road_raw)
         prio = (a.get("Priority") or "Medium").capitalize()
-        headline = (a.get("HeadlineDescription") or "").strip()
+        headline = clean_alert_text(a.get("HeadlineDescription") or "")
         alert_lines.append(f"{idx}. [{hwy} - {prio}] {headline} (Schedule: {parse_wsdot_date(a.get('StartTime'))} to {parse_wsdot_date(a.get('EndTime'))})")
 
+    corr_desc = corridors_label or "I-5, I-90, I-405"
     timing_clause = f" active during **{timewindow_label}**" if timewindow_label else ""
     prompt = (
-        f"You are a traffic reporter for Bellevue, WA and the Eastside commute region.\n"
-        f"Here are {len(impactful)} key road alerts currently affecting Bellevue highway corridors{timing_clause}:\n\n"
+        f"You are a Puget Sound traffic reporter focusing on corridors: {corr_desc}.\n"
+        f"Here are {len(impactful)} key road alerts currently affecting these corridors{timing_clause}:\n\n"
         f"{chr(10).join(alert_lines)}\n\n"
         f"Provide a concise commute briefing in Markdown with these EXACT 3 sections:\n"
-        f"### 🏙️ Bellevue & Eastside Commuter Briefing\n\n"
+        f"### 🚗 Puget Sound Commuter Briefing ({corr_desc})\n\n"
         f"#### 🚨 Critical Disruptions (TL;DR)\n"
         f"- 2 short bullets on the highest-impact closures or ramp blocks.\n\n"
         f"#### 🛣️ Key Corridor Impacts\n"
-        f"- 1-2 sentences on I-405, SR 520, and I-90 corridor outlook.\n\n"
+        f"- 1-2 sentences on the corridor outlook ({corr_desc}).\n\n"
         f"#### 💡 Commuter Advice & Detours\n"
-        f"- 1 practical tip for Bellevue drivers.\n\n"
+        f"- 1 practical tip for drivers.\n\n"
         f"Keep the entire briefing under 150 words. Be direct and driver-focused."
     )
 
-    _log(log_path, f"PRE-FLIGHT (WSDOT): Requesting LLM commute analysis for {len(impactful)} alerts...\n")
+    _log(log_path, f"PRE-FLIGHT (WSDOT): Requesting LLM commute analysis for {len(impactful)} alerts ({corr_desc})...\n")
 
     try:
         async with httpx.AsyncClient(timeout=float(getattr(config, "LLM_TIMEOUT", 90))) as client:
@@ -393,7 +501,7 @@ async def generate_llm_commute_briefing(bellevue_alerts: List[Dict[str, Any]], t
                 json={
                     "model": config.LLM_MODEL,
                     "messages": [
-                        {"role": "system", "content": "You are a professional Bellevue traffic reporter. Output ONLY the final Markdown briefing."},
+                        {"role": "system", "content": "You are a professional Puget Sound traffic reporter. Output ONLY the final Markdown briefing."},
                         {"role": "user", "content": prompt}
                     ],
                     "temperature": 0.2,
@@ -404,14 +512,14 @@ async def generate_llm_commute_briefing(bellevue_alerts: List[Dict[str, Any]], t
                 data = resp.json()
                 content = (data.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
                 content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
-                if "Bellevue" in content:
+                if content and ("Commuter Briefing" in content or "Disruptions" in content or len(content) > 40):
                     _log(log_path, "PRE-FLIGHT (WSDOT): LLM commute briefing generated successfully.\n")
                     return content
     except Exception as e:
         logger.warning(f"[wsdot] LLM commute briefing fallback ({e}); using deterministic briefing.")
         _log(log_path, f"PRE-FLIGHT (WSDOT): LLM briefing fallback due to: {e}\n")
 
-    return generate_deterministic_bellevue_briefing(impactful, len(bellevue_alerts), timewindow_label=timewindow_label)
+    return generate_deterministic_commute_briefing(impactful, len(target_alerts), corridors_label=corridors_label, timewindow_label=timewindow_label)
 
 
 # ==========================================
@@ -446,27 +554,93 @@ async def fetch_wsdot_highway_alerts(access_code: Optional[str] = None, log_path
     return []
 
 
+def extract_map_alert_items(alerts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Extracts structured geospatial coordinate data for interactive web map rendering."""
+    items = []
+    for a in alerts:
+        start_loc = a.get("StartRoadwayLocation") or {}
+        end_loc = a.get("EndRoadwayLocation") or {}
+
+        start_lat = start_loc.get("Latitude")
+        start_lon = start_loc.get("Longitude")
+        if start_lat is None or start_lon is None:
+            continue
+        try:
+            start_lat = float(start_lat)
+            start_lon = float(start_lon)
+        except (ValueError, TypeError):
+            continue
+
+        if not (start_lat and start_lon):
+            continue
+
+        end_lat = end_loc.get("Latitude")
+        end_lon = end_loc.get("Longitude")
+        valid_end = None
+        if end_lat is not None and end_lon is not None:
+            try:
+                e_lat, e_lon = float(end_lat), float(end_lon)
+                if e_lat and e_lon:
+                    valid_end = {"lat": e_lat, "lon": e_lon}
+            except (ValueError, TypeError):
+                pass
+
+        road_raw = start_loc.get("RoadName") or end_loc.get("RoadName")
+        hwy_label = format_highway_name(road_raw)
+        road_key = get_alert_road(a)
+
+        prio = (a.get("Priority") or "Medium").capitalize()
+        cat = (a.get("EventCategory") or "Alert").strip()
+        headline = clean_alert_text(a.get("HeadlineDescription") or "Traffic disruption")
+        dir_code = start_loc.get("Direction") or end_loc.get("Direction") or ""
+        direction = DIRECTION_MAP.get(dir_code, dir_code)
+
+        mp_start = start_loc.get("MilePost")
+        mp_end = end_loc.get("MilePost")
+        mp_str = f"MP {mp_start}" if mp_start is not None else ""
+        if mp_end is not None and mp_end != mp_start:
+            mp_str += f" - {mp_end}"
+
+        items.append({
+            "id": a.get("AlertID") or f"{start_lat}_{start_lon}",
+            "road": road_key,
+            "highway": hwy_label,
+            "priority": prio,
+            "category": cat,
+            "headline": headline,
+            "direction": direction,
+            "milepost": mp_str,
+            "start": {"lat": start_lat, "lon": start_lon},
+            "end": valid_end,
+            "startTime": parse_wsdot_date(a.get("StartTime")),
+            "endTime": parse_wsdot_date(a.get("EndTime"))
+        })
+    return items
+
+
 def format_alerts_report(
     king_alerts: List[Dict[str, Any]], 
     total_statewide: int, 
     llm_briefing: Optional[str] = None,
     timewindow_label: Optional[str] = None,
-    total_king_unfiltered: Optional[int] = None
+    total_king_unfiltered: Optional[int] = None,
+    corridors_label: Optional[str] = None
 ) -> str:
-    """Formats King County highway alerts into a structured, readable Markdown report with Eastside LLM briefing."""
+    """Formats King County highway alerts into a structured, readable Markdown report with commute briefing."""
     if not king_alerts:
         period_text = f" matching **{timewindow_label}**" if timewindow_label else ""
+        corr_text = f" on **{corridors_label}**" if corridors_label else " in King County"
         return (
             "# 🚗 WSDOT Highway Alerts: King County Area\n\n"
-            f"✅ **No active highway alerts or major traffic disruptions reported in King County{period_text}.**\n\n"
+            f"✅ **No active highway alerts or major traffic disruptions reported{corr_text}{period_text}.**\n\n"
             "***\n"
-            f"📊 **SUMMARY:** 0 alerts found in King County out of {total_statewide} statewide alerts."
+            f"📊 **SUMMARY:** 0 alerts found for {corridors_label or 'King County'} out of {total_statewide} statewide alerts."
         )
 
     def sort_key(item):
         prio = (item.get("Priority") or "LOW").upper()
         prio_rank = PRIORITY_ORDER.get(prio, 99)
-        road = (item.get("StartRoadwayLocation") or {}).get("RoadName") or "999"
+        road = get_alert_road(item) or "999"
         return (prio_rank, road)
 
     sorted_alerts = sorted(king_alerts, key=sort_key)
@@ -484,15 +658,20 @@ def format_alerts_report(
     high_prio_total = counts.get("Highest", 0) + counts.get("High", 0)
 
     md = ["# 🚗 WSDOT Highway Alerts: King County Area\n"]
+    if corridors_label:
+        md.append(f"🛣️ **Corridors:** {corridors_label}")
     if timewindow_label:
         md.append(f"📅 **Target Period:** {timewindow_label}\n")
+    else:
+        md.append("")
 
     if llm_briefing:
         md.append(llm_briefing.strip() + "\n")
         md.append("***\n")
 
-    filter_note = f" ({total_king_unfiltered} total alerts across all dates in King County)" if total_king_unfiltered and total_king_unfiltered != len(king_alerts) else ""
-    md.append(f"**Found {len(king_alerts)} active alerts** affecting highways in King County during this period{filter_note} ({total_statewide} alerts statewide).\n")
+    filter_note = f" ({total_king_unfiltered} total alerts across all King County routes)" if total_king_unfiltered and total_king_unfiltered != len(king_alerts) else ""
+    corr_desc = f" affecting **{corridors_label}**" if corridors_label else " affecting highways in King County"
+    md.append(f"**Found {len(king_alerts)} active alerts**{corr_desc} during this period{filter_note} ({total_statewide} alerts statewide).\n")
 
     # Critical Alerts Callout
     critical = [a for a in sorted_alerts if (a.get("Priority") or "").upper() in ("HIGHEST", "HIGH")]
@@ -501,7 +680,7 @@ def format_alerts_report(
         for a in critical:
             hwy = format_highway_name((a.get("StartRoadwayLocation") or {}).get("RoadName"))
             cat = a.get("EventCategory") or "Incident"
-            headline = a.get("HeadlineDescription") or "No description provided."
+            headline = clean_alert_text(a.get("HeadlineDescription") or "No description provided.")
             md.append(f"- **🚨 {hwy} — {cat.upper()}**")
             md.append(f"  - **Alert:** {headline}")
             md.append(f"  - **Duration:** {parse_wsdot_date(a.get('StartTime'))} ➔ {parse_wsdot_date(a.get('EndTime'))}")
@@ -533,8 +712,8 @@ def format_alerts_report(
             loc_parts = [p for p in (direction, mp_str) if p]
             loc_line = f" ({', '.join(loc_parts)})" if loc_parts else ""
 
-            headline = (a.get("HeadlineDescription") or "").strip()
-            extended = (a.get("ExtendedDescription") or "").strip()
+            headline = clean_alert_text(a.get("HeadlineDescription") or "")
+            extended = clean_alert_text(a.get("ExtendedDescription") or "")
 
             md.append(f"{idx}. {prio_badge} **[{category}]**{loc_line} — *Priority: {priority}*")
             md.append(f"   * **Details:** {headline}")
@@ -544,11 +723,21 @@ def format_alerts_report(
             md.append("")
 
     md.append("***")
+    filter_context = f"for **{corridors_label}** " if corridors_label else ""
     md.append(
-        f"📊 **SUMMARY:** {len(king_alerts)} alerts found in King County "
+        f"📊 **SUMMARY:** {len(king_alerts)} alerts found {filter_context}"
         f"({high_prio_total} High/Highest, {counts.get('Medium', 0)} Medium, {counts.get('Low', 0) + counts.get('Lowest', 0)} Low) "
         f"out of {total_statewide} statewide alerts."
     )
+
+    # Attach interactive map data payload
+    map_items = extract_map_alert_items(sorted_alerts)
+    if map_items:
+        md.append("")
+        md.append("```wsdot-map-data")
+        md.append(json.dumps(map_items))
+        md.append("```")
+
     return "\n".join(md)
 
 
@@ -579,25 +768,32 @@ async def wsdot_run_pre_flight(
     all_king_alerts = [a for a in all_alerts if is_in_king_county(a)]
     query = f"{prompt} {context_str}".strip()
     window_start, window_end, window_label = await resolve_timewindow(query, log_path=log_path)
+    target_corridors, corridor_label = resolve_corridors(query)
 
     active_king_alerts = (
         [a for a in all_king_alerts if alert_overlaps_timewindow(a, window_start, window_end)]
         if window_start and window_end else all_king_alerts
     )
 
-    bellevue_alerts = [a for a in active_king_alerts if is_bellevue_eastside_alert(a)]
-    _log(log_path, f"PRE-FLIGHT (WSDOT): Found {len(active_king_alerts)} alerts in King County ({len(bellevue_alerts)} Bellevue/Eastside) for {window_label}.\n")
+    filtered_alerts = [a for a in active_king_alerts if alert_matches_corridors(a, target_corridors)]
+    _log(log_path, f"PRE-FLIGHT (WSDOT): Found {len(filtered_alerts)} alerts for corridors [{corridor_label}] in King County ({len(active_king_alerts)} total in county) for {window_label}.\n")
 
-    briefing = await generate_llm_commute_briefing(bellevue_alerts, timewindow_label=window_label, log_path=log_path)
+    briefing = await generate_llm_commute_briefing(
+        filtered_alerts, 
+        corridors_label=corridor_label, 
+        timewindow_label=window_label, 
+        log_path=log_path
+    )
     report_md = format_alerts_report(
-        active_king_alerts,
+        filtered_alerts,
         total_statewide=len(all_alerts),
         llm_briefing=briefing,
         timewindow_label=window_label,
-        total_king_unfiltered=len(all_king_alerts)
+        total_king_unfiltered=len(active_king_alerts),
+        corridors_label=corridor_label
     )
 
-    _log(log_path, f"PRE-FLIGHT SUCCESS: WSDOT report generated with {len(active_king_alerts)} King County alerts for {window_label}.\n")
+    _log(log_path, f"PRE-FLIGHT SUCCESS: WSDOT report generated with {len(filtered_alerts)} alerts on [{corridor_label}] for {window_label}.\n")
     return report_md
 
 
@@ -614,15 +810,15 @@ class WsdotPlugin(BaseSitePlugin):
 
     def evaluate_outcome(self, result_text: str) -> Optional[str]:
         lower_res = result_text.lower()
-        wsdot_match = re.search(r'(\d+)\s*alerts?\s*(?:found\s*in|in)\s*([a-z\s]+?)\s*.*?out\s*of\s*(\d+)\s*statewide', lower_res)
+        wsdot_match = re.search(r'(\d+)\s*alerts?\s*(?:found\s*in|in|found\s*for|found)\s*([a-z\s]+?)\s*.*?out\s*of\s*(\d+)\s*statewide', lower_res)
         if wsdot_match:
             alerts_found = int(wsdot_match.group(1))
             return "SUCCESS" if alerts_found > 0 else "NO_RESULT"
-        if "0 alerts found in king county" in lower_res or "no active highway alerts" in lower_res:
+        if "0 alerts found" in lower_res or "no active highway alerts" in lower_res:
             return "NO_RESULT"
         return None
 
 
-async def wsdot_get_highway_alerts(area: str = "King County", timewindow: str = "") -> str:
+async def wsdot_get_highway_alerts(area: str = "King County", timewindow: str = "", corridors: str = "") -> str:
     """SITE-SPECIFIC SKILL: Retrieves current active highway alerts for King County from WSDOT API."""
-    return await wsdot_run_pre_flight(browser=None, prompt=f"{area} {timewindow}".strip())
+    return await wsdot_run_pre_flight(browser=None, prompt=f"{area} {corridors} {timewindow}".strip())
