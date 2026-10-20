@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Calendar, Clock, Sparkles, BookOpen, Plus, X, BellOff } from 'lucide-react';
+import { Calendar, Clock, Sparkles, BookOpen, Plus, X, BellOff, History } from 'lucide-react';
 import { TaskFrequency, Context } from '../store';
 import { ContextSelectModal } from './ContextSelectModal';
 
@@ -16,6 +16,8 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
   const [dayOfMonth, setDayOfMonth] = useState<number>(new Date().getDate()); // 1..31
   const [weekdayOnly, setWeekdayOnly] = useState(false);
   const [silentIfNoResult, setSilentIfNoResult] = useState(false);
+  const [autoCleanup, setAutoCleanup] = useState(false);
+  const [maxHistoryRuns, setMaxHistoryRuns] = useState<number>(5);
   const [selectedContexts, setSelectedContexts] = useState<Context[]>([]);
   const [showContextModal, setShowContextModal] = useState(false);
 
@@ -36,6 +38,7 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
           day_of_month: frequency === 'MONTHLY' ? Number(dayOfMonth) : null,
           weekday_only: frequency === 'DAILY' ? weekdayOnly : false,
           silent_if_no_result: silentIfNoResult,
+          max_history_runs: frequency !== 'ONCE' && autoCleanup ? Number(maxHistoryRuns) || 5 : null,
           context_ids: selectedContexts.map((c) => c.id)
         })
       });
@@ -43,6 +46,8 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
         setPrompt('');
         setWeekdayOnly(false);
         setSilentIfNoResult(false);
+        setAutoCleanup(false);
+        setMaxHistoryRuns(5);
         setSelectedContexts([]);
         onTaskCreated();
       }
@@ -312,35 +317,105 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
         )}
       </div>
 
-      {/* Options: Silent if no result */}
-      <div style={{ marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
-        <label
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '0.45rem',
-            cursor: 'pointer',
-            fontSize: '0.85rem',
-            color: 'var(--color-text-body)',
-            userSelect: 'none',
-            fontWeight: 500
-          }}
-        >
-          <input
-            type="checkbox"
-            checked={silentIfNoResult}
-            onChange={(e) => setSilentIfNoResult(e.target.checked)}
-            disabled={loading}
-            style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: 'var(--color-primary)' }}
-          />
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
-            <BellOff size={14} color="var(--color-text-muted)" />
-            Silent if no result
+      {/* Options */}
+      <div style={{ marginBottom: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+          <label
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '0.45rem',
+              cursor: 'pointer',
+              fontSize: '0.85rem',
+              color: 'var(--color-text-body)',
+              userSelect: 'none',
+              fontWeight: 500
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={silentIfNoResult}
+              onChange={(e) => setSilentIfNoResult(e.target.checked)}
+              disabled={loading}
+              style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+            />
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+              <BellOff size={14} color="var(--color-text-muted)" />
+              Silent if no result
+            </span>
+          </label>
+          <span style={{ fontSize: '0.75rem', color: 'var(--color-text-light)' }}>
+            (Skip Telegram alert if 0 items are found)
           </span>
-        </label>
-        <span style={{ fontSize: '0.75rem', color: 'var(--color-text-light)' }}>
-          (Skip Telegram alert if 0 items are found)
-        </span>
+        </div>
+
+        {frequency !== 'ONCE' && (
+          <div
+            style={{
+              padding: '0.65rem 0.85rem',
+              borderRadius: '8px',
+              background: 'var(--color-bg-alt)',
+              border: '1px solid var(--color-border)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '0.75rem',
+              flexWrap: 'wrap'
+            }}
+          >
+            <label
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.45rem',
+                cursor: 'pointer',
+                fontSize: '0.85rem',
+                color: 'var(--color-text-body)',
+                userSelect: 'none',
+                fontWeight: 500
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={autoCleanup}
+                onChange={(e) => setAutoCleanup(e.target.checked)}
+                disabled={loading}
+                style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+              />
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+                <History size={14} color="var(--color-primary)" />
+                Auto-cleanup older runs
+              </span>
+            </label>
+
+            {autoCleanup && (
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+                <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
+                  Keep latest
+                </span>
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={maxHistoryRuns}
+                  onChange={(e) => setMaxHistoryRuns(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                  disabled={loading}
+                  style={{
+                    width: '60px',
+                    padding: '0.2rem 0.4rem',
+                    textAlign: 'center',
+                    fontSize: '0.85rem',
+                    fontWeight: 700,
+                    borderRadius: '6px'
+                  }}
+                />
+                <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
+                  runs
+                </span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <button

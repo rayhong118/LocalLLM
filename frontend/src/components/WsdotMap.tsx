@@ -70,26 +70,26 @@ export const WsdotMap: React.FC<WsdotMapProps> = ({ alerts }) => {
     const c = category.toLowerCase();
     if (p === 'HIGHEST' || p === 'HIGH' || c.includes('closure')) {
       return {
-        bg: '#ef4444',
-        border: '#b91c1c',
-        glow: 'rgba(239, 68, 68, 0.4)',
-        label: 'High Impact',
+        bg: '#dc2626', // Vivid High-Impact Crimson Red
+        halo: '#7f1d1d',
+        glow: 'rgba(220, 38, 38, 0.55)',
+        label: 'High Impact / Closure',
         textColor: '#ffffff'
       };
     }
     if (p === 'MEDIUM') {
       return {
-        bg: '#f59e0b',
-        border: '#d97706',
-        glow: 'rgba(245, 158, 11, 0.35)',
+        bg: '#ea580c', // Vivid Blaze/Safety Orange (DOT Traffic Hazard)
+        halo: '#7c2d12',
+        glow: 'rgba(234, 88, 12, 0.45)',
         label: 'Medium Impact',
         textColor: '#ffffff'
       };
     }
     return {
-      bg: '#0284c7',
-      border: '#0369a1',
-      glow: 'rgba(2, 132, 199, 0.25)',
+      bg: '#2563eb', // Vivid Royal Blue
+      halo: '#1e3a8a',
+      glow: 'rgba(37, 99, 235, 0.35)',
       label: 'Minor / Info',
       textColor: '#ffffff'
     };
@@ -155,53 +155,26 @@ export const WsdotMap: React.FC<WsdotMapProps> = ({ alerts }) => {
     filteredAlerts.forEach((alert) => {
       const theme = getPriorityTheme(alert.priority, alert.category);
       const isHigh = alert.priority.toUpperCase() === 'HIGH' || alert.priority.toUpperCase() === 'HIGHEST' || alert.category.toLowerCase().includes('closure');
+      const isMedium = alert.priority.toUpperCase() === 'MEDIUM';
+      const iconEmoji = isHigh ? '🚨' : isMedium ? '⚠️' : 'ℹ️';
 
-      // Create Custom HTML Pin Icon
+      // Create Custom High-Vis HTML Pin Icon with highway badge & pointer tip
       const iconHtml = `
-        <div style="
-          position: relative;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          width: 32px;
-          height: 32px;
-        ">
-          ${isHigh ? `<div style="
-            position: absolute;
-            width: 36px;
-            height: 36px;
-            border-radius: 50%;
-            background: ${theme.glow};
-            animation: pulse-ring 2s infinite ease-out;
-          "></div>` : ''}
-          <div style="
-            position: relative;
-            z-index: 2;
-            width: 26px;
-            height: 26px;
-            border-radius: 50%;
-            background: ${theme.bg};
-            border: 2px solid #ffffff;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #ffffff;
-            font-size: 11px;
-            font-weight: 700;
-            cursor: pointer;
-            transition: transform 0.15s ease;
-          ">
-            ${alert.highway.replace('I-', '').replace('SR ', '')}
+        <div class="wsdot-marker-wrap">
+          ${isHigh ? `<div class="wsdot-pulse-ring" style="background: ${theme.glow};"></div>` : ''}
+          <div class="wsdot-pin-body" style="background: ${theme.bg};">
+            <span style="font-size: 11px; line-height: 1;">${iconEmoji}</span>
+            <span>${alert.highway}</span>
           </div>
+          <div class="wsdot-pin-tip" style="border-top-color: ${theme.bg};"></div>
         </div>
       `;
 
       const customIcon = L.divIcon({
         className: 'custom-wsdot-pin',
         html: iconHtml,
-        iconSize: [32, 32],
-        iconAnchor: [16, 16]
+        iconSize: [64, 34],
+        iconAnchor: [32, 34]
       });
 
       const startCoord = L.latLng(alert.start.lat, alert.start.lon);
@@ -250,19 +223,32 @@ export const WsdotMap: React.FC<WsdotMapProps> = ({ alerts }) => {
 
       layerGroup.addLayer(marker);
 
-      // If valid end coordinates exist, draw highlighted road segment polyline
+      // If valid end coordinates exist, draw high-visibility double-layered polyline
       if (alert.end && (alert.end.lat !== alert.start.lat || alert.end.lon !== alert.start.lon)) {
         const endCoord = L.latLng(alert.end.lat, alert.end.lon);
         bounds.extend(endCoord);
 
-        const line = L.polyline([startCoord, endCoord], {
-          color: theme.bg,
-          weight: 5,
-          opacity: 0.8,
-          dashArray: isHigh ? undefined : '6, 6'
+        // 1. Dark casing outline underneath (provides 100% contrast against pink/red highways)
+        const casingLine = L.polyline([startCoord, endCoord], {
+          color: '#0f172a',
+          weight: 12,
+          opacity: 0.95,
+          lineCap: 'round',
+          lineJoin: 'round'
         });
-        line.bindPopup(popupContent);
-        layerGroup.addLayer(line);
+        layerGroup.addLayer(casingLine);
+
+        // 2. High-vis colored core line (blaze hazard orange or crimson)
+        const coreLine = L.polyline([startCoord, endCoord], {
+          color: theme.bg,
+          weight: 7,
+          opacity: 1.0,
+          lineCap: 'round',
+          lineJoin: 'round',
+          dashArray: isHigh ? undefined : '10, 8'
+        });
+        coreLine.bindPopup(popupContent);
+        layerGroup.addLayer(coreLine);
       }
     });
 
@@ -476,6 +462,7 @@ export const WsdotMap: React.FC<WsdotMapProps> = ({ alerts }) => {
       {/* Map Container Element */}
       <div
         ref={mapContainerRef}
+        className="wsdot-map-canvas"
         style={{
           width: '100%',
           height: isExpanded ? '520px' : '360px',

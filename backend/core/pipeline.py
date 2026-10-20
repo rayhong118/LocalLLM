@@ -313,6 +313,18 @@ class AgentPipeline:
         self.log(f"Final Task Outcome: {status}\nFinal Result: {final_res}")
         self.db.commit()
 
+        # Auto-cleanup older runs if parent recurring task has retention configured
+        if self.task.parent_id:
+            try:
+                parent = self.db.query(DBTask).filter(DBTask.id == self.task.parent_id).first()
+                if parent and getattr(parent, "max_history_runs", None):
+                    from backend.services.task_cleanup import cleanup_old_task_runs
+                    cleaned = cleanup_old_task_runs(self.db, parent.id, parent.max_history_runs)
+                    if cleaned:
+                        self.log(f"Auto-cleanup: purged {cleaned} older run(s) for parent task #{parent.id} (retention: {parent.max_history_runs})")
+            except Exception as e:
+                self.log(f"Auto-cleanup error: {e}")
+
         # Trigger Telegram notification if criteria met
         if getattr(config, "TELEGRAM_NOTIFY_ALL", False) or self.task.parent_id is not None:
             # Check if silent_if_no_result is enabled (on this task or inherited from parent)
@@ -338,6 +350,15 @@ class AgentPipeline:
             self.task.status = "FAILED"
             self.db.add(Output(task_id=self.task_id, content=str(e)))
             self.db.commit()
+
+            if self.task.parent_id:
+                try:
+                    parent = self.db.query(DBTask).filter(DBTask.id == self.task.parent_id).first()
+                    if parent and getattr(parent, "max_history_runs", None):
+                        from backend.services.task_cleanup import cleanup_old_task_runs
+                        cleanup_old_task_runs(self.db, parent.id, parent.max_history_runs)
+                except Exception:
+                    pass
 
             # Trigger Telegram notification if criteria met
             if getattr(config, "TELEGRAM_NOTIFY_ALL", False) or self.task.parent_id is not None:

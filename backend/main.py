@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 import contextlib
 import atexit
 from backend.automation.browser_utils import cleanup_browser_processes
+from backend.services.task_cleanup import delete_task_logs, cleanup_old_task_runs
 
 atexit.register(cleanup_browser_processes)
 
@@ -35,6 +36,7 @@ class TaskCreate(BaseModel):
     day_of_month: Optional[int] = None # 1-31
     weekday_only: Optional[bool] = False
     silent_if_no_result: Optional[bool] = False
+    max_history_runs: Optional[int] = None
     context_ids: Optional[List[int]] = []
 
 class TaskUpdate(BaseModel):
@@ -44,6 +46,7 @@ class TaskUpdate(BaseModel):
     day_of_month: Optional[int] = None
     weekday_only: Optional[bool] = None
     silent_if_no_result: Optional[bool] = None
+    max_history_runs: Optional[int] = None
     prompt: Optional[str] = None
 
 class TaskContextsUpdate(BaseModel):
@@ -82,6 +85,7 @@ class TaskSchema(BaseModel):
     day_of_month: Optional[int] = None
     weekday_only: Optional[bool] = False
     silent_if_no_result: Optional[bool] = False
+    max_history_runs: Optional[int] = None
     next_run_at: Optional[datetime]
     started_at: Optional[datetime]
     created_at: datetime
@@ -342,6 +346,7 @@ async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
         day_of_month=task.day_of_month,
         weekday_only=bool(task.weekday_only) if task.weekday_only is not None else False,
         silent_if_no_result=bool(task.silent_if_no_result) if task.silent_if_no_result is not None else False,
+        max_history_runs=task.max_history_runs if task.frequency != "ONCE" else None,
         next_run_at=next_run
     )
     if task.context_ids:
@@ -411,6 +416,19 @@ def delete_task(task_id: int, db: Session = Depends(get_db)):
     task = db.query(DBTask).filter(DBTask.id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    # Delete child runs and their logs if this was a recurring parent task
+    child_tasks = db.query(DBTask).filter(DBTask.parent_id == task_id).all()
+    for child in child_tasks:
+        delete_task_logs(child.id)
+        db.query(DBOutput).filter(DBOutput.task_id == child.id).delete()
+        child.contexts.clear()
+        db.delete(child)
+    db.flush()
+
+    delete_task_logs(task.id)
+    db.query(DBOutput).filter(DBOutput.task_id == task.id).delete()
+    task.contexts.clear()
     db.delete(task)
     db.commit()
     return {"message": "Task deleted successfully"}
@@ -442,6 +460,10 @@ def update_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db)
         schedule_changed = True
     if payload.silent_if_no_result is not None:
         db_task.silent_if_no_result = payload.silent_if_no_result
+    if "max_history_runs" in payload.model_fields_set:
+        db_task.max_history_runs = payload.max_history_runs
+        if db_task.max_history_runs and db_task.max_history_runs > 0:
+            cleanup_old_task_runs(db, db_task.id, db_task.max_history_runs)
     if payload.prompt is not None:
         trimmed = payload.prompt.strip()
         if not trimmed:

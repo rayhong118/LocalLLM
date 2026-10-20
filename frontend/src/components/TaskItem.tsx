@@ -15,7 +15,8 @@ import {
   Plus,
   X,
   Edit3,
-  BellOff
+  BellOff,
+  History
 } from 'lucide-react';
 import { Task, Context, TaskFrequency } from '../store';
 import { ContextSelectModal } from './ContextSelectModal';
@@ -121,6 +122,7 @@ export const TaskItem: React.FC<TaskItemProps> = ({
     day_of_week?: number;
     day_of_month?: number;
     silent_if_no_result?: boolean;
+    max_history_runs?: number | null;
   }) => {
     const res = await fetch(`http://localhost:8000/tasks/${task.id}`, {
       method: 'PUT',
@@ -280,6 +282,26 @@ export const TaskItem: React.FC<TaskItemProps> = ({
               title="Silent on NO_RESULT: Telegram notification is skipped if 0 matching results are found"
             >
               <BellOff size={11} /> Silent on No Result
+            </span>
+          )}
+          {Boolean(task.max_history_runs) && (
+            <span
+              style={{
+                padding: '0.2rem 0.55rem',
+                borderRadius: '999px',
+                fontSize: '0.68rem',
+                fontWeight: 600,
+                backgroundColor: 'var(--color-bg-alt)',
+                color: 'var(--color-text-muted)',
+                border: '1px solid var(--color-border)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.25rem',
+                whiteSpace: 'nowrap'
+              }}
+              title={`Keep latest ${task.max_history_runs} runs: older runs and log files are purged automatically`}
+            >
+              <History size={11} /> Keep {task.max_history_runs} runs
             </span>
           )}
           <span

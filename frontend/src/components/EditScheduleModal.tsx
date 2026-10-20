@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar, Clock, AlertCircle, FileText, BellOff } from 'lucide-react';
+import { Calendar, Clock, AlertCircle, FileText, BellOff, History } from 'lucide-react';
 import { Modal } from './Modal';
 import { Task, TaskFrequency } from '../store';
 
@@ -15,6 +15,7 @@ interface EditScheduleModalProps {
     day_of_week?: number;
     day_of_month?: number;
     silent_if_no_result?: boolean;
+    max_history_runs?: number | null;
   }) => Promise<void>;
 }
 
@@ -24,6 +25,8 @@ export const EditScheduleModal: React.FC<EditScheduleModalProps> = ({ isOpen, on
   const [hourOfDay, setHourOfDay] = useState<number>(task.hour_of_day ?? 9);
   const [weekdayOnly, setWeekdayOnly] = useState<boolean>(task.weekday_only ?? false);
   const [silentIfNoResult, setSilentIfNoResult] = useState<boolean>(task.silent_if_no_result ?? false);
+  const [autoCleanup, setAutoCleanup] = useState<boolean>(Boolean(task.max_history_runs && task.max_history_runs > 0));
+  const [maxHistoryRuns, setMaxHistoryRuns] = useState<number>(task.max_history_runs || 5);
   const [dayOfWeek, setDayOfWeek] = useState<number>(task.day_of_week ?? 0);
   const [dayOfMonth, setDayOfMonth] = useState<number>(task.day_of_month ?? 1);
   const [tzAbbreviation, setTzAbbreviation] = useState('');
@@ -37,6 +40,8 @@ export const EditScheduleModal: React.FC<EditScheduleModalProps> = ({ isOpen, on
       setHourOfDay(task.hour_of_day ?? 9);
       setWeekdayOnly(task.weekday_only ?? false);
       setSilentIfNoResult(task.silent_if_no_result ?? false);
+      setAutoCleanup(Boolean(task.max_history_runs && task.max_history_runs > 0));
+      setMaxHistoryRuns(task.max_history_runs || 5);
       setDayOfWeek(task.day_of_week ?? 0);
       setDayOfMonth(task.day_of_month ?? 1);
       setError(null);
@@ -101,7 +106,8 @@ export const EditScheduleModal: React.FC<EditScheduleModalProps> = ({ isOpen, on
         weekday_only: frequency === 'DAILY' ? weekdayOnly : false,
         day_of_week: frequency === 'WEEKLY' ? dayOfWeek : undefined,
         day_of_month: frequency === 'MONTHLY' ? dayOfMonth : undefined,
-        silent_if_no_result: silentIfNoResult
+        silent_if_no_result: silentIfNoResult,
+        max_history_runs: autoCleanup ? (Number(maxHistoryRuns) > 0 ? Number(maxHistoryRuns) : 5) : null
       });
     } catch (err: any) {
       setError(err?.message || 'Failed to update schedule');
@@ -345,6 +351,68 @@ export const EditScheduleModal: React.FC<EditScheduleModalProps> = ({ isOpen, on
           </label>
           <div style={{ fontSize: '0.72rem', color: 'var(--color-text-light)', marginLeft: '1.5rem', marginTop: '0.15rem' }}>
             Do not send Telegram notification if 0 matching results are found.
+          </div>
+        </div>
+
+        {/* Auto cleanup old runs toggle */}
+        <div style={{ padding: '0.65rem 0.85rem', borderRadius: '8px', background: 'var(--color-bg-alt)', border: '1px solid var(--color-border)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <label
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+                cursor: 'pointer',
+                fontSize: '0.85rem',
+                color: 'var(--color-text-body)',
+                userSelect: 'none',
+                fontWeight: 500
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={autoCleanup}
+                onChange={(e) => setAutoCleanup(e.target.checked)}
+                disabled={isSaving}
+                style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+              />
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+                <History size={14} color="var(--color-primary)" />
+                Auto-cleanup older runs
+              </span>
+            </label>
+
+            {autoCleanup && (
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+                <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
+                  Keep latest
+                </span>
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={maxHistoryRuns}
+                  onChange={(e) => setMaxHistoryRuns(Math.max(1, parseInt(e.target.value, 10) || 1))}
+                  disabled={isSaving}
+                  style={{
+                    width: '60px',
+                    padding: '0.2rem 0.4rem',
+                    textAlign: 'center',
+                    fontSize: '0.85rem',
+                    fontWeight: 700,
+                    borderRadius: '6px'
+                  }}
+                />
+                <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
+                  runs
+                </span>
+              </div>
+            )}
+          </div>
+          <div style={{ fontSize: '0.72rem', color: 'var(--color-text-light)', marginLeft: '1.5rem', marginTop: '0.15rem' }}>
+            {autoCleanup
+              ? `Automatically deletes runs and log files older than the latest ${maxHistoryRuns} run(s).`
+              : 'Keep all historical task runs and logs indefinitely.'}
           </div>
         </div>
 
