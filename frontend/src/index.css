@@ -442,3 +442,17 @@ button.danger:hover:not(:disabled) {
 .leaflet-popup-tip {
     background: #ffffff !important;
 }
+
+.markdown-body a {
+    color: var(--color-primary);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    font-weight: 500;
+    transition: color 0.15s ease, opacity 0.15s ease;
+}
+
+.markdown-body a:hover {
+    color: var(--color-primary-hover);
+    opacity: 0.9;
+}
+

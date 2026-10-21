@@ -23,6 +23,30 @@ import { ContextSelectModal } from './ContextSelectModal';
 import { EditScheduleModal } from './EditScheduleModal';
 import { WsdotMap, WsdotMapAlertItem } from './WsdotMap';
 
+// Configure marked to open all output markdown links in a new tab
+marked.use({
+  renderer: {
+    link(this: any, arg: any, title?: string, text?: string) {
+      let href = '';
+      let titleStr = '';
+      let linkText = '';
+
+      if (typeof arg === 'object' && arg !== null) {
+        href = arg.href || '';
+        titleStr = arg.title || '';
+        linkText = arg.tokens && this?.parser?.parseInline ? this.parser.parseInline(arg.tokens) : (arg.text || href);
+      } else {
+        href = arg || '';
+        titleStr = title || '';
+        linkText = text || href;
+      }
+
+      const titleAttr = titleStr ? ` title="${titleStr}"` : '';
+      return `<a href="${href}" target="_blank" rel="noopener noreferrer"${titleAttr}>${linkText}</a>`;
+    }
+  }
+});
+
 interface TaskItemProps {
   task: Task;
   onDelete: (id: number, needCancel: boolean) => void;
@@ -179,9 +203,10 @@ export const TaskItem: React.FC<TaskItemProps> = ({
     return { cleanMarkdown: latestOutput, mapAlerts: [] as WsdotMapAlertItem[] };
   }, [latestOutput]);
 
-  const parsedHtml = hasOutput
-    ? (marked.parse(cleanMarkdown, { async: false, gfm: true, breaks: true }) as string)
-    : '';
+  const parsedHtml = useMemo(() => {
+    if (!hasOutput || !cleanMarkdown) return '';
+    return marked.parse(cleanMarkdown, { async: false, gfm: true, breaks: true }) as string;
+  }, [hasOutput, cleanMarkdown]);
 
   const canEditContext = task.frequency !== 'ONCE' || task.status === 'PENDING' || task.status === 'FAILED';
 
@@ -603,6 +628,13 @@ export const TaskItem: React.FC<TaskItemProps> = ({
 
           <div
             className="markdown-body"
+            onClick={(e) => {
+              const target = (e.target as HTMLElement).closest('a');
+              if (target && target.getAttribute('href')) {
+                target.setAttribute('target', '_blank');
+                target.setAttribute('rel', 'noopener noreferrer');
+              }
+            }}
             style={{
               fontSize: '0.95rem',
               lineHeight: 1.6,
