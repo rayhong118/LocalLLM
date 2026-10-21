@@ -6,6 +6,7 @@ Monitors watchlisted items via targeted keyword RSS feeds and/or tracks hot Fron
 
 import asyncio
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import html
 import json
 import logging
@@ -27,8 +28,9 @@ logger = logging.getLogger(__name__)
 # ==============================================================================
 
 BASE_SEARCH_RSS = "https://slickdeals.net/newsearch.php"
-FRONTPAGE_RSS_URL = "https://slickdeals.net/newsearch.php?mode=frontpage&searcharea=deals&searchin=first&rss=1"
-POPULAR_RSS_URL = "https://slickdeals.net/newsearch.php?mode=popdeals&searcharea=deals&searchin=first&rss=1"
+FRONTPAGE_RSS_URL = "https://slickdeals.net/newsearch.php?mode=frontpage&searcharea=deals&searchin=first&rss=1&hideexpired=1"
+POPULAR_RSS_URL = "https://slickdeals.net/newsearch.php?mode=popdeals&searcharea=deals&searchin=first&rss=1&hideexpired=1"
+MAX_DEAL_AGE_DAYS = 14  # Exclude deals posted more than 14 days ago
 
 DEFAULT_HEADERS = {
     "User-Agent": (
@@ -175,8 +177,12 @@ def extract_price_and_store(title: str, description: str) -> Tuple[str, str]:
     return price or "See deal", store or "Online"
 
 
-def parse_rss_items(xml_content: str, max_items: int = 25) -> List[Dict[str, Any]]:
-    """Parse RSS XML content into structured deal objects."""
+def parse_rss_items(
+    xml_content: str,
+    max_items: int = 25,
+    max_age_days: Optional[int] = MAX_DEAL_AGE_DAYS
+) -> List[Dict[str, Any]]:
+    """Parse RSS XML content into structured deal objects, filtering out expired and stale deals."""
     deals = []
     if not xml_content:
         return deals
@@ -187,8 +193,12 @@ def parse_rss_items(xml_content: str, max_items: int = 25) -> List[Dict[str, Any
         if channel is None:
             return deals
 
+        now_utc = datetime.now(timezone.utc)
         items = channel.findall("item")
-        for item in items[:max_items]:
+        for item in items:
+            if len(deals) >= max_items:
+                break
+
             title = clean_deal_title(item.findtext("title") or "")
             link = parse_clean_link(item.findtext("link") or "")
             pub_date = item.findtext("pubDate") or ""
@@ -197,6 +207,20 @@ def parse_rss_items(xml_content: str, max_items: int = 25) -> List[Dict[str, Any
 
             if not title or not link:
                 continue
+
+            # 1. Skip if title clearly indicates expired or dead deal
+            if re.search(r'\b(?:expired|deal is dead|deal dead|ended)\b', title, re.IGNORECASE):
+                continue
+
+            # 2. Skip if older than max_age_days
+            if pub_date and max_age_days:
+                try:
+                    dt = parsedate_to_datetime(pub_date)
+                    age_days = (now_utc - dt).total_seconds() / 86400
+                    if age_days > max_age_days:
+                        continue
+                except Exception:
+                    pass
 
             price, store = extract_price_and_store(title, clean_desc)
 
@@ -236,24 +260,26 @@ async def search_deals_for_item(
     item_query: str,
     client: httpx.AsyncClient,
     max_results: int = 5,
+    max_age_days: Optional[int] = MAX_DEAL_AGE_DAYS,
     log_path: str = ""
 ) -> List[Dict[str, Any]]:
     """
     Search deals for a specific target item.
     First tries searchin=title for precision, then falls back to searchin=first if needed.
+    Filters out expired threads via hideexpired=1 and recency threshold.
     """
     encoded_query = httpx.URL("", params={"q": item_query}).query.decode("utf-8")
     
     # 1. High precision title search
-    title_url = f"{BASE_SEARCH_RSS}?{encoded_query}&searcharea=deals&searchin=title&rss=1"
+    title_url = f"{BASE_SEARCH_RSS}?{encoded_query}&searcharea=deals&searchin=title&rss=1&hideexpired=1"
     xml_data = await fetch_rss_feed(title_url, client)
-    deals = parse_rss_items(xml_data, max_items=max_results)
+    deals = parse_rss_items(xml_data, max_items=max_results, max_age_days=max_age_days)
 
     # 2. Fallback to broad first-post search if title search returned 0 items
     if not deals:
-        first_url = f"{BASE_SEARCH_RSS}?{encoded_query}&searcharea=deals&searchin=first&rss=1"
+        first_url = f"{BASE_SEARCH_RSS}?{encoded_query}&searcharea=deals&searchin=first&rss=1&hideexpired=1"
         xml_data = await fetch_rss_feed(first_url, client)
-        all_broad = parse_rss_items(xml_data, max_items=15)
+        all_broad = parse_rss_items(xml_data, max_items=15, max_age_days=max_age_days)
         
         # Filter broad results so they actually mention the query keywords
         tokens = [t.lower() for t in item_query.split() if len(t) > 1]
@@ -264,7 +290,7 @@ async def search_deals_for_item(
                 if len(deals) >= max_results:
                     break
 
-    _log(log_path, f"Slickdeals: Found {len(deals)} deal(s) for '{item_query}'")
+    _log(log_path, f"Slickdeals: Found {len(deals)} active deal(s) for '{item_query}'")
     return deals
 
 
