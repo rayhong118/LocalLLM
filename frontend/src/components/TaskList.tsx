@@ -9,6 +9,37 @@ interface TaskListProps {
 }
 
 export const TaskList: React.FC<TaskListProps> = ({ tasks, onTasksUpdated }) => {
+  const [startingTaskIds, setStartingTaskIds] = useState<Set<number>>(new Set());
+
+  // Clean up startingTaskIds as tasks transition or appear in state
+  useEffect(() => {
+    if (startingTaskIds.size === 0) return;
+    setStartingTaskIds((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const id of prev) {
+        const hasChildInState = tasks.some((other) => other.parent_id === id);
+        const hasOnceTransitioned = tasks.some(
+          (other) => other.id === id && other.frequency === 'ONCE' && other.status !== 'PENDING'
+        );
+        if (hasChildInState || hasOnceTransitioned) {
+          next.delete(id);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [tasks, startingTaskIds]);
+
+  // Safety timeout to prevent permanent starting lock if a network request fails
+  useEffect(() => {
+    if (startingTaskIds.size === 0) return;
+    const timer = setTimeout(() => {
+      setStartingTaskIds(new Set());
+    }, 10000);
+    return () => clearTimeout(timer);
+  }, [startingTaskIds]);
+
   const deleteTask = async (taskId: number, needCancel: boolean) => {
     if (!confirm('Are you sure you want to delete this task?')) return;
     try {
@@ -25,26 +56,46 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, onTasksUpdated }) => 
   };
 
   const retryTask = async (taskId: number) => {
+    // Immediate on-click responsiveness: enter disabled / starting stage instantly
+    setStartingTaskIds((prev) => new Set(prev).add(taskId));
     try {
       const res = await fetch(`http://localhost:8000/tasks/${taskId}/retry`, { method: 'POST' });
       if (res.ok) {
-        const updatedTask = await res.json();
-        onTasksUpdated(tasks.map((t) => (t.id === taskId ? updatedTask : t)));
+        const listRes = await fetch('http://localhost:8000/tasks');
+        if (listRes.ok) {
+          const allTasks = await listRes.json();
+          onTasksUpdated(allTasks);
+        }
       }
     } catch (error) {
       console.error('Failed to retry task:', error);
+      setStartingTaskIds((prev) => {
+        const next = new Set(prev);
+        next.delete(taskId);
+        return next;
+      });
     }
   };
 
   const runNowTask = async (taskId: number) => {
+    // Immediate on-click responsiveness: enter disabled / starting stage instantly
+    setStartingTaskIds((prev) => new Set(prev).add(taskId));
     try {
       const res = await fetch(`http://localhost:8000/tasks/${taskId}/run_now`, { method: 'POST' });
       if (res.ok) {
-        const updatedTask = await res.json();
-        onTasksUpdated(tasks.map((t) => (t.id === taskId ? updatedTask : t)));
+        const listRes = await fetch('http://localhost:8000/tasks');
+        if (listRes.ok) {
+          const allTasks = await listRes.json();
+          onTasksUpdated(allTasks);
+        }
       }
     } catch (error) {
       console.error('Failed to run task now:', error);
+      setStartingTaskIds((prev) => {
+        const next = new Set(prev);
+        next.delete(taskId);
+        return next;
+      });
     }
   };
 
@@ -187,16 +238,27 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, onTasksUpdated }) => 
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             {recurring.map((t) => {
-              const isRunning = tasks.some(
-                (other) =>
-                  (other.parent_id === t.id && (other.status === 'RUNNING' || other.status === 'PENDING')) ||
-                  (other.id === t.id && other.status === 'RUNNING')
+              const isChildRunning = tasks.some(
+                (other) => other.parent_id === t.id && other.status === 'RUNNING'
               );
+              const isChildPending = tasks.some(
+                (other) => other.parent_id === t.id && other.status === 'PENDING'
+              );
+              const isLocallyStarting = startingTaskIds.has(t.id);
+
+              let runStage: 'IDLE' | 'STARTING' | 'RUNNING' = 'IDLE';
+              if (isChildRunning) {
+                runStage = 'RUNNING';
+              } else if (isChildPending || isLocallyStarting) {
+                runStage = 'STARTING';
+              }
+
               return (
                 <TaskItem
                   key={t.id}
                   task={t}
-                  isRecurringRunning={isRunning}
+                  isRecurringRunning={runStage === 'RUNNING'}
+                  runStage={runStage}
                   onDelete={deleteTask}
                   onRetry={retryTask}
                   onRunNow={runNowTask}
@@ -221,6 +283,7 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, onTasksUpdated }) => 
               <TaskItem
                 key={t.id}
                 task={t}
+                runStage={t.status === 'RUNNING' ? 'RUNNING' : 'STARTING'}
                 onDelete={deleteTask}
                 onRetry={retryTask}
                 onRunNow={runNowTask}
@@ -258,6 +321,7 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, onTasksUpdated }) => 
               <TaskItem
                 key={t.id}
                 task={t}
+                runStage={startingTaskIds.has(t.id) ? 'STARTING' : 'IDLE'}
                 onDelete={deleteTask}
                 onRetry={retryTask}
                 onRunNow={runNowTask}

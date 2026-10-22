@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Calendar, Clock, Sparkles, BookOpen, Plus, X, BellOff, History } from 'lucide-react';
+import { Calendar, Clock, Sparkles, BookOpen, Plus, X, BellOff, History, Play } from 'lucide-react';
 import { TaskFrequency, Context } from '../store';
 import { ContextSelectModal } from './ContextSelectModal';
 
@@ -70,7 +70,9 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '1rem' }}>
         <Sparkles size={20} color="var(--color-primary)" />
-        <h2 style={{ fontSize: '1.25rem', fontWeight: 700 }}>Schedule New Task</h2>
+        <h2 style={{ fontSize: '1.25rem', fontWeight: 700 }}>
+          {frequency === 'ONCE' ? 'Start New Task' : 'Schedule Recurring Task'}
+        </h2>
       </div>
 
       <textarea
@@ -426,11 +428,12 @@ export const TaskForm: React.FC<TaskFormProps> = ({ onTaskCreated }) => {
       >
         {loading ? (
           <>
-            <span className="spinner"></span> Scheduling...
+            <span className="spinner"></span> {frequency === 'ONCE' ? 'Starting task...' : 'Scheduling...'}
           </>
         ) : (
           <>
-            <Sparkles size={16} /> Schedule Task
+            {frequency === 'ONCE' ? <Play size={16} /> : <Sparkles size={16} />}
+            <span>{frequency === 'ONCE' ? ' Start Task' : ' Schedule Task'}</span>
           </>
         )}
       </button>

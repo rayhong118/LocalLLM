@@ -55,6 +55,7 @@ interface TaskItemProps {
   onCancel: (id: number) => void;
   onTaskUpdated?: (updatedTask: Task) => void;
   isRecurringRunning?: boolean;
+  runStage?: 'IDLE' | 'STARTING' | 'RUNNING';
 }
 
 export const TaskItem: React.FC<TaskItemProps> = ({
@@ -64,13 +65,40 @@ export const TaskItem: React.FC<TaskItemProps> = ({
   onRunNow,
   onCancel,
   onTaskUpdated,
-  isRecurringRunning = false
+  isRecurringRunning = false,
+  runStage
 }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const [tzAbbreviation, setTzAbbreviation] = useState('');
   const [showContextModal, setShowContextModal] = useState(false);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [isLocalStarting, setIsLocalStarting] = useState(false);
+  const [isLocalRetrying, setIsLocalRetrying] = useState(false);
+
+  useEffect(() => {
+    if (runStage === 'RUNNING' || runStage === 'IDLE') {
+      setIsLocalStarting(false);
+    }
+  }, [runStage]);
+
+  useEffect(() => {
+    if (!isLocalStarting) return;
+    const timer = setTimeout(() => setIsLocalStarting(false), 8000);
+    return () => clearTimeout(timer);
+  }, [isLocalStarting]);
+
+  useEffect(() => {
+    if (task.status === 'RUNNING' || task.status === 'SUCCESS' || task.status === 'FAILED') {
+      setIsLocalRetrying(false);
+    }
+  }, [task.status]);
+
+  useEffect(() => {
+    if (!isLocalRetrying) return;
+    const timer = setTimeout(() => setIsLocalRetrying(false), 8000);
+    return () => clearTimeout(timer);
+  }, [isLocalRetrying]);
 
   useEffect(() => {
     const tz =
@@ -256,9 +284,11 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                             ? 'var(--color-neutral-bg)'
                             : task.status === 'RUNNING'
                               ? 'var(--color-warning-bg)'
-                              : task.status === 'FAILED'
-                                ? 'var(--color-error-bg)'
-                                : 'var(--color-neutral-bg)',
+                              : task.status === 'PENDING'
+                                ? 'var(--color-primary-soft)'
+                                : task.status === 'FAILED'
+                                  ? 'var(--color-error-bg)'
+                                  : 'var(--color-neutral-bg)',
               color:
                 task.frequency === 'DAILY'
                   ? 'var(--color-primary-active)'
@@ -274,9 +304,11 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                             ? 'var(--color-text-muted)'
                             : task.status === 'RUNNING'
                               ? 'var(--color-warning)'
-                              : task.status === 'FAILED'
-                                ? 'var(--color-error)'
-                                : 'var(--color-neutral)'
+                              : task.status === 'PENDING'
+                                ? 'var(--color-primary-active)'
+                                : task.status === 'FAILED'
+                                  ? 'var(--color-error)'
+                                  : 'var(--color-neutral)'
             }}
           >
             {task.frequency !== 'ONCE'
@@ -287,7 +319,9 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                 ? 'PARTIAL SUCCESS'
                 : task.status === 'NO_RESULT'
                   ? 'NO RESULT'
-                  : task.status}
+                  : task.status === 'PENDING'
+                    ? 'STARTING'
+                    : task.status}
           </span>
           {task.silent_if_no_result && (
             <span
@@ -357,37 +391,96 @@ export const TaskItem: React.FC<TaskItemProps> = ({
               >
                 <Edit3 size={12} /> Edit Task
               </button>
-              <button
-                className="secondary"
-                disabled={isRecurringRunning}
-                style={{
-                  fontSize: '0.75rem',
-                  padding: '0.35rem 0.75rem',
-                  borderRadius: '6px',
-                  opacity: isRecurringRunning ? 0.5 : 1,
-                  cursor: isRecurringRunning ? 'not-allowed' : 'pointer'
-                }}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (!isRecurringRunning) onRunNow(task.id);
-                }}
-                title={isRecurringRunning ? 'Task is currently running or queued' : 'Run task immediately'}
-              >
-                <Play size={12} /> {isRecurringRunning ? 'Running...' : 'Run Now'}
-              </button>
+              {(() => {
+                const isStarting = runStage === 'STARTING' || isLocalStarting;
+                const isRunning = runStage === 'RUNNING' || (!isStarting && isRecurringRunning);
+                const isBusy = isStarting || isRunning;
+
+                return (
+                  <button
+                    className="secondary"
+                    disabled={isBusy}
+                    style={{
+                      fontSize: '0.75rem',
+                      padding: '0.35rem 0.75rem',
+                      borderRadius: '6px',
+                      opacity: isBusy ? 0.7 : 1,
+                      cursor: isBusy ? 'not-allowed' : 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '0.35rem'
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!isBusy) {
+                        setIsLocalStarting(true);
+                        onRunNow(task.id);
+                      }
+                    }}
+                    title={
+                      isStarting
+                        ? 'Starting task...'
+                        : isRunning
+                          ? 'Task is currently running'
+                          : 'Run task immediately'
+                    }
+                  >
+                    {isStarting ? (
+                      <>
+                        <span className="spinner" style={{ width: 11, height: 11, borderWidth: '2px' }}></span>
+                        <span>Starting task...</span>
+                      </>
+                    ) : isRunning ? (
+                      <>
+                        <span className="spinner" style={{ width: 11, height: 11, borderWidth: '2px' }}></span>
+                        <span>Task running...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Play size={12} />
+                        <span>Run Now</span>
+                      </>
+                    )}
+                  </button>
+                );
+              })()}
             </>
           )}
           {(task.status === 'FAILED' || task.status === 'CANCELLED' || task.status === 'NO_RESULT') &&
             task.frequency === 'ONCE' && (
               <button
                 className="primary"
-                style={{ fontSize: '0.75rem', padding: '0.35rem 0.75rem', borderRadius: '6px' }}
+                disabled={isLocalRetrying}
+                style={{
+                  fontSize: '0.75rem',
+                  padding: '0.35rem 0.75rem',
+                  borderRadius: '6px',
+                  opacity: isLocalRetrying ? 0.7 : 1,
+                  cursor: isLocalRetrying ? 'not-allowed' : 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '0.35rem'
+                }}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onRetry(task.id);
+                  if (!isLocalRetrying) {
+                    setIsLocalRetrying(true);
+                    onRetry(task.id);
+                  }
                 }}
+                title={isLocalRetrying ? 'Starting task...' : 'Retry this task'}
               >
-                <RotateCcw size={12} /> Retry
+                {isLocalRetrying ? (
+                  <>
+                    <span className="spinner" style={{ width: 11, height: 11, borderWidth: '2px' }}></span>
+                    <span>Starting task...</span>
+                  </>
+                ) : (
+                  <>
+                    <RotateCcw size={12} />
+                    <span>Retry</span>
+                  </>
+                )}
               </button>
             )}
           {(task.status === 'COMPLETED' ||
@@ -569,9 +662,11 @@ export const TaskItem: React.FC<TaskItemProps> = ({
             ? `${formatSchedule(task)} ${tzAbbreviation}`
             : task.status === 'RUNNING'
               ? `Started: ${toLocalDate(task.started_at).toLocaleTimeString()} ${tzAbbreviation}`
-              : task.status === 'CANCELLED'
-                ? `Cancelled at: ${toLocalDate(task.updated_at).toLocaleTimeString()} ${tzAbbreviation}`
-                : `Last Run: ${toLocalDate(task.updated_at).toLocaleString()} ${tzAbbreviation}`}
+              : task.status === 'PENDING'
+                ? `Queued / Starting: ${toLocalDate(task.created_at).toLocaleTimeString()} ${tzAbbreviation}`
+                : task.status === 'CANCELLED'
+                  ? `Cancelled at: ${toLocalDate(task.updated_at).toLocaleTimeString()} ${tzAbbreviation}`
+                  : `Last Run: ${toLocalDate(task.updated_at).toLocaleString()} ${tzAbbreviation}`}
         </span>
 
         {hasOutput && (

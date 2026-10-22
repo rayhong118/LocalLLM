@@ -66,7 +66,7 @@ def _clean_deal_description(desc: str) -> str:
     
     # Remove duplicate expiration (keep short form, drop long form)
     desc = re.sub(r'\|\s*Expires\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{1,2},?\s*\d{4}\s*', '', desc)
-    desc = re.sub(r'(\s*\|\s*){2,}', ' | ')
+    desc = re.sub(r'(\s*\|\s*){2,}', ' | ', desc)
     return desc.strip().strip('|').strip()
 
 def _format_deal_markdown(desc: str) -> str:
