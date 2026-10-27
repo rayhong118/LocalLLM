@@ -55,7 +55,7 @@ interface TaskItemProps {
   onCancel: (id: number) => void;
   onTaskUpdated?: (updatedTask: Task) => void;
   isRecurringRunning?: boolean;
-  runStage?: 'IDLE' | 'STARTING' | 'RUNNING';
+  runStage?: 'IDLE' | 'STARTING' | 'QUEUED' | 'RUNNING';
 }
 
 export const TaskItem: React.FC<TaskItemProps> = ({
@@ -77,7 +77,7 @@ export const TaskItem: React.FC<TaskItemProps> = ({
   const [isLocalRetrying, setIsLocalRetrying] = useState(false);
 
   useEffect(() => {
-    if (runStage === 'RUNNING' || runStage === 'IDLE') {
+    if (runStage === 'RUNNING' || runStage === 'QUEUED' || runStage === 'IDLE') {
       setIsLocalStarting(false);
     }
   }, [runStage]);
@@ -320,7 +320,9 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                 : task.status === 'NO_RESULT'
                   ? 'NO RESULT'
                   : task.status === 'PENDING'
-                    ? 'STARTING'
+                    ? runStage === 'STARTING' || isLocalStarting
+                      ? 'STARTING'
+                      : 'QUEUED'
                     : task.status}
           </span>
           {task.silent_if_no_result && (
@@ -393,8 +395,9 @@ export const TaskItem: React.FC<TaskItemProps> = ({
               </button>
               {(() => {
                 const isStarting = runStage === 'STARTING' || isLocalStarting;
-                const isRunning = runStage === 'RUNNING' || (!isStarting && isRecurringRunning);
-                const isBusy = isStarting || isRunning;
+                const isQueued = !isStarting && runStage === 'QUEUED';
+                const isRunning = !isStarting && !isQueued && (runStage === 'RUNNING' || isRecurringRunning);
+                const isBusy = isStarting || isQueued || isRunning;
 
                 return (
                   <button
@@ -420,15 +423,22 @@ export const TaskItem: React.FC<TaskItemProps> = ({
                     title={
                       isStarting
                         ? 'Starting task...'
-                        : isRunning
-                          ? 'Task is currently running'
-                          : 'Run task immediately'
+                        : isQueued
+                          ? 'Task is queued in database'
+                          : isRunning
+                            ? 'Task is currently running'
+                            : 'Run task immediately'
                     }
                   >
                     {isStarting ? (
                       <>
                         <span className="spinner" style={{ width: 11, height: 11, borderWidth: '2px' }}></span>
                         <span>Starting task...</span>
+                      </>
+                    ) : isQueued ? (
+                      <>
+                        <Clock size={12} color="var(--color-primary-active)" />
+                        <span>Queued...</span>
                       </>
                     ) : isRunning ? (
                       <>
@@ -663,7 +673,7 @@ export const TaskItem: React.FC<TaskItemProps> = ({
             : task.status === 'RUNNING'
               ? `Started: ${toLocalDate(task.started_at).toLocaleTimeString()} ${tzAbbreviation}`
               : task.status === 'PENDING'
-                ? `Queued / Starting: ${toLocalDate(task.created_at).toLocaleTimeString()} ${tzAbbreviation}`
+                ? `${runStage === 'STARTING' || isLocalStarting ? 'Starting' : 'Queued at'}: ${toLocalDate(task.created_at).toLocaleTimeString()} ${tzAbbreviation}`
                 : task.status === 'CANCELLED'
                   ? `Cancelled at: ${toLocalDate(task.updated_at).toLocaleTimeString()} ${tzAbbreviation}`
                   : `Last Run: ${toLocalDate(task.updated_at).toLocaleString()} ${tzAbbreviation}`}

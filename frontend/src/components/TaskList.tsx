@@ -246,18 +246,20 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, onTasksUpdated }) => 
               );
               const isLocallyStarting = startingTaskIds.has(t.id);
 
-              let runStage: 'IDLE' | 'STARTING' | 'RUNNING' = 'IDLE';
-              if (isChildRunning) {
-                runStage = 'RUNNING';
-              } else if (isChildPending || isLocallyStarting) {
+              let runStage: 'IDLE' | 'STARTING' | 'QUEUED' | 'RUNNING' = 'IDLE';
+              if (isLocallyStarting) {
                 runStage = 'STARTING';
+              } else if (isChildRunning) {
+                runStage = 'RUNNING';
+              } else if (isChildPending) {
+                runStage = 'QUEUED';
               }
 
               return (
                 <TaskItem
                   key={t.id}
                   task={t}
-                  isRecurringRunning={runStage === 'RUNNING'}
+                  isRecurringRunning={runStage === 'RUNNING' || runStage === 'QUEUED'}
                   runStage={runStage}
                   onDelete={deleteTask}
                   onRetry={retryTask}
@@ -283,7 +285,15 @@ export const TaskList: React.FC<TaskListProps> = ({ tasks, onTasksUpdated }) => 
               <TaskItem
                 key={t.id}
                 task={t}
-                runStage={t.status === 'RUNNING' ? 'RUNNING' : 'STARTING'}
+                runStage={
+                  startingTaskIds.has(t.id)
+                    ? 'STARTING'
+                    : t.status === 'RUNNING'
+                      ? 'RUNNING'
+                      : t.status === 'PENDING'
+                        ? 'QUEUED'
+                        : 'IDLE'
+                }
                 onDelete={deleteTask}
                 onRetry={retryTask}
                 onRunNow={runNowTask}
