@@ -4,10 +4,10 @@ import sys
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-from fastapi import FastAPI, BackgroundTasks, Depends, HTTPException, Response
+from fastapi import FastAPI, BackgroundTasks, Depends, HTTPException, Response, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from fastapi.responses import StreamingResponse
 import json
 from fastapi.middleware.cors import CORSMiddleware
@@ -161,8 +161,99 @@ def calculate_next_run(
     return None
 
 import threading
+import time
 
 active_agent_tasks = {}
+
+# In-Memory Event & Cache Infrastructure to minimize database reads
+main_loop: Optional[asyncio.AbstractEventLoop] = None
+task_update_condition: Optional[asyncio.Condition] = None
+task_data_version: int = 0
+_cached_tasks_json: Optional[str] = None
+_cached_tasks_etag: str = ""
+_completed_tasks_cache: Dict[int, dict] = {}
+worker_wake_event = threading.Event()
+cached_schedules: List[dict] = []
+cached_schedules_lock = threading.Lock()
+_cached_contexts_json: Optional[str] = None
+
+async def notify_task_changed():
+    global task_data_version, _cached_tasks_json
+    task_data_version += 1
+    _cached_tasks_json = None
+    if task_update_condition:
+        async with task_update_condition:
+            task_update_condition.notify_all()
+
+def trigger_task_update():
+    global main_loop
+    if main_loop and main_loop.is_running():
+        try:
+            main_loop.call_soon_threadsafe(asyncio.create_task, notify_task_changed())
+        except Exception as e:
+            print(f"Error triggering task update: {e}")
+
+def wake_worker():
+    worker_wake_event.set()
+
+def get_cached_tasks_json_sync() -> str:
+    global _cached_tasks_json, _cached_tasks_etag, _completed_tasks_cache
+    if _cached_tasks_json is not None:
+        return _cached_tasks_json
+        
+    db = SessionLocal()
+    try:
+        tasks = db.query(DBTask).order_by(DBTask.created_at.desc()).all()
+        tasks_data = []
+        terminal_statuses = {"SUCCESS", "COMPLETED", "FAILED", "NO_RESULT", "PARTIAL_SUCCESS", "CANCELLED"}
+        
+        for t in tasks:
+            if t.status in terminal_statuses and t.id in _completed_tasks_cache:
+                tasks_data.append(_completed_tasks_cache[t.id])
+            else:
+                dumped = TaskSchema.model_validate(t).model_dump(mode="json")
+                if t.status in terminal_statuses:
+                    _completed_tasks_cache[t.id] = dumped
+                tasks_data.append(dumped)
+                
+        payload = json.dumps(tasks_data)
+        _cached_tasks_json = payload
+        _cached_tasks_etag = f'"{abs(hash(payload))}"'
+        return payload
+    finally:
+        db.close()
+
+def reload_scheduled_tasks_cache(db: Optional[Session] = None):
+    global cached_schedules
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
+    try:
+        tasks = db.query(DBTask).filter(
+            DBTask.frequency.in_(["DAILY", "WEEKLY", "MONTHLY"])
+        ).all()
+        with cached_schedules_lock:
+            cached_schedules = [
+                {
+                    "id": t.id,
+                    "prompt": t.prompt,
+                    "frequency": t.frequency,
+                    "hour_of_day": t.hour_of_day,
+                    "day_of_week": t.day_of_week,
+                    "day_of_month": t.day_of_month,
+                    "weekday_only": t.weekday_only,
+                    "silent_if_no_result": t.silent_if_no_result,
+                    "next_run_at": t.next_run_at,
+                    "contexts": list(t.contexts),
+                }
+                for t in tasks
+            ]
+    except Exception as e:
+        print(f"Error reloading scheduled tasks cache: {e}")
+    finally:
+        if should_close:
+            db.close()
 
 def run_agent_process(task_id: int, prompt: str):
     """Run the agent in a totally separate process to preserve logs and prevent event loop crashes."""
@@ -183,16 +274,16 @@ def run_agent_process(task_id: int, prompt: str):
     finally:
         active_agent_tasks.pop(task_id, None)
 
-import time
-
 def background_worker_loop():
     while True:
+        had_work = False
         try:
             db = SessionLocal()
             running = db.query(DBTask).filter(DBTask.status == "RUNNING").first()
             if not running:
                 task = db.query(DBTask).filter(DBTask.status == "PENDING", DBTask.frequency == "ONCE").order_by(DBTask.created_at.asc()).first()
                 if task:
+                    had_work = True
                     task_id = task.id
                     prompt = task.prompt
                     db.close()
@@ -201,30 +292,48 @@ def background_worker_loop():
                     print(f" QUEUE: Starting task {task_id}: {prompt}")
                     print(f"================================================\n", flush=True)
 
+                    trigger_task_update()
+
                     # Process blocks here, giving us sequential queue behavior automatically
                     run_agent_process(task_id, prompt)
                     
                     print(f"\n================================================")
                     print(f" QUEUE: Finished task {task_id}")
                     print(f"================================================\n", flush=True)
+
+                    trigger_task_update()
                     continue
             db.close()
         except Exception as e:
             print(f"Error in background worker: {e}")
             
-        time.sleep(2)
+        if not had_work:
+            worker_wake_event.wait(timeout=15)
+            worker_wake_event.clear()
+        else:
+            time.sleep(1)
 
 async def check_scheduled_tasks():
+    global cached_schedules
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    
+    with cached_schedules_lock:
+        due_schedules = [
+            s for s in cached_schedules
+            if s.get("next_run_at") and s["next_run_at"] <= now
+        ]
+        
+    # If no schedules are due, skip DB connection completely (0 DB reads!)
+    if not due_schedules:
+        return
+
     db = SessionLocal()
     try:
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-        # Find recurring tasks that are due
-        tasks = db.query(DBTask).filter(
-            DBTask.frequency.in_(["DAILY", "WEEKLY", "MONTHLY"]),
-            DBTask.next_run_at <= now
-        ).all()
-        
-        for task in tasks:
+        for sched in due_schedules:
+            task = db.query(DBTask).filter(DBTask.id == sched["id"]).first()
+            if not task or not task.next_run_at or task.next_run_at > now:
+                continue
+                
             print(f"Triggering scheduled {task.frequency.lower()} task {task.id}: {task.prompt}")
             
             # Spawn ONCE task inheriting parent's contexts and silent_if_no_result setting
@@ -248,6 +357,9 @@ async def check_scheduled_tasks():
             )
             
         db.commit()
+        reload_scheduled_tasks_cache(db)
+        wake_worker()
+        trigger_task_update()
             
     except Exception as e:
         print(f"Error in scheduler: {e}")
@@ -259,6 +371,10 @@ scheduler.add_job(check_scheduled_tasks, 'interval', minutes=1)
 
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
+    global main_loop, task_update_condition
+    main_loop = asyncio.get_running_loop()
+    task_update_condition = asyncio.Condition()
+
     # Startup
     database.init_db()
     
@@ -272,6 +388,8 @@ async def lifespan(app: FastAPI):
         if hanging_tasks:
             db.commit()
             print(f"Cleaned up {len(hanging_tasks)} hanging tasks on startup.")
+            
+        reload_scheduled_tasks_cache(db)
     except Exception as e:
         print(f"Failed to clean up hanging tasks: {e}")
     finally:
@@ -357,57 +475,85 @@ async def create_task(task: TaskCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_task)
     
-    # Task will be picked up by the background worker loop automatically
+    if db_task.frequency != "ONCE":
+        reload_scheduled_tasks_cache(db)
+    else:
+        wake_worker()
+    trigger_task_update()
     
     return db_task
 
-@app.get("/tasks", response_model=List[TaskSchema])
-def list_tasks(response: Response, page: Optional[int] = None, limit: Optional[int] = None, db: Session = Depends(get_db)):
+@app.get("/tasks")
+def list_tasks(request: Request, response: Response, page: Optional[int] = None, limit: Optional[int] = None, db: Session = Depends(get_db)):
+    global _cached_tasks_etag
+    # If no pagination, serve from in-memory cache and support ETag 304 Not Modified
+    if page is None and limit is None:
+        if _cached_tasks_etag and request.headers.get("if-none-match") == _cached_tasks_etag:
+            return Response(status_code=304)
+        
+        cached_str = get_cached_tasks_json_sync()
+        headers = {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-cache"
+        }
+        if _cached_tasks_etag:
+            headers["ETag"] = _cached_tasks_etag
+        return Response(content=cached_str, media_type="application/json", headers=headers)
+
     query = db.query(DBTask).order_by(DBTask.created_at.desc())
     total_count = query.count()
     response.headers["X-Total-Count"] = str(total_count)
     response.headers["Access-Control-Expose-Headers"] = "X-Total-Count"
     
-    if page is not None and limit is not None:
-        offset = (page - 1) * limit
-        return query.offset(offset).limit(limit).all()
-    return query.all()
+    offset = (page - 1) * limit
+    return query.offset(offset).limit(limit).all()
 
 async def task_event_generator():
-    last_update = None
+    global task_data_version, task_update_condition
+    client_version = -1
+    
     while True:
-        db = SessionLocal()
-        try:
-            latest_task = db.query(DBTask).order_by(DBTask.updated_at.desc()).first()
-            latest_out = db.query(DBOutput).order_by(DBOutput.created_at.desc()).first()
-            
-            current_update = None
-            if latest_task:
-                current_update = latest_task.updated_at
-            if latest_out and (current_update is None or latest_out.created_at > current_update):
-                current_update = latest_out.created_at
+        # Check if client needs updated tasks
+        if client_version != task_data_version or _cached_tasks_json is None:
+            client_version = task_data_version
+            try:
+                tasks_data = await asyncio.to_thread(get_cached_tasks_json_sync)
+                yield f"data: {tasks_data}\n\n"
+            except Exception as e:
+                print(f"SSE serialization error: {e}")
                 
-            if current_update != last_update:
-                last_update = current_update
-                tasks = db.query(DBTask).order_by(DBTask.created_at.desc()).all()
-                tasks_data = [TaskSchema.model_validate(t).model_dump(mode="json") for t in tasks]
-                yield f"data: {json.dumps(tasks_data)}\n\n"
-        except Exception as e:
-            print(f"SSE Error: {e}")
-        finally:
-            db.close()
+        if task_update_condition is None:
+            await asyncio.sleep(2)
+            continue
             
-        await asyncio.sleep(1)
+        async with task_update_condition:
+            try:
+                # Wait for next update or periodic heartbeat (avoids proxy/browser timeouts with 0 DB reads)
+                await asyncio.wait_for(task_update_condition.wait(), timeout=25.0)
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
 
 @app.get("/tasks/stream")
 async def stream_tasks():
     return StreamingResponse(task_event_generator(), media_type="text/event-stream")
 
 @app.get("/tasks/{task_id}", response_model=TaskSchema)
-def get_task(task_id: int, db: Session = Depends(get_db)):
+def get_task(task_id: int, request: Request, response: Response, db: Session = Depends(get_db)):
     t = db.query(DBTask).filter(DBTask.id == task_id).first()
     if not t:
         raise HTTPException(status_code=404, detail="Task not found")
+        
+    etag = f'"{task_id}-{int(t.updated_at.timestamp()) if t.updated_at else 0}"'
+    response.headers["ETag"] = etag
+    
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304)
+        
+    if t.status in ("SUCCESS", "COMPLETED", "FAILED", "NO_RESULT", "PARTIAL_SUCCESS", "CANCELLED"):
+        response.headers["Cache-Control"] = "public, max-age=86400, immutable"
+    else:
+        response.headers["Cache-Control"] = "no-cache"
+        
     return t
 
 # Delete a task by ID
@@ -431,6 +577,10 @@ def delete_task(task_id: int, db: Session = Depends(get_db)):
     task.contexts.clear()
     db.delete(task)
     db.commit()
+    
+    _completed_tasks_cache.pop(task_id, None)
+    reload_scheduled_tasks_cache(db)
+    trigger_task_update()
     return {"message": "Task deleted successfully"}
 
 # Update a task by ID
@@ -483,16 +633,28 @@ def update_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db)
 
     db.commit()
     db.refresh(db_task)
+    
+    _completed_tasks_cache.pop(task_id, None)
+    reload_scheduled_tasks_cache(db)
+    trigger_task_update()
     return db_task
 
 # Context endpoints
-@app.get("/contexts", response_model=List[ContextSchema])
-def list_contexts(db: Session = Depends(get_db)):
+@app.get("/contexts")
+def list_contexts(response: Response, db: Session = Depends(get_db)):
+    global _cached_contexts_json
+    if _cached_contexts_json is not None:
+        return Response(content=_cached_contexts_json, media_type="application/json")
+        
     contexts = db.query(DBContext).all()
-    return contexts
+    data = [ContextSchema.model_validate(c).model_dump(mode="json") for c in contexts]
+    _cached_contexts_json = json.dumps(data)
+    return Response(content=_cached_contexts_json, media_type="application/json")
 
 @app.post("/contexts", response_model=ContextSchema)
 def create_context(context: ContextCreate, db: Session = Depends(get_db)):
+    global _cached_contexts_json
+    _cached_contexts_json = None
     db_context = DBContext(name=context.name, content=context.content)
     db.add(db_context)
     db.commit()
@@ -501,6 +663,8 @@ def create_context(context: ContextCreate, db: Session = Depends(get_db)):
 
 @app.delete("/contexts/{context_id}")
 def delete_context(context_id: int, db: Session = Depends(get_db)):
+    global _cached_contexts_json
+    _cached_contexts_json = None
     db_context = db.query(DBContext).filter(DBContext.id == context_id).first()
     if not db_context:
         raise HTTPException(status_code=404, detail="Context not found")
@@ -510,6 +674,8 @@ def delete_context(context_id: int, db: Session = Depends(get_db)):
 
 @app.put("/contexts/{context_id}", response_model=ContextSchema)
 def update_context(context_id: int, context: ContextCreate, db: Session = Depends(get_db)):
+    global _cached_contexts_json
+    _cached_contexts_json = None
     db_context = db.query(DBContext).filter(DBContext.id == context_id).first()
     if not db_context:
         raise HTTPException(status_code=404, detail="Context not found")
@@ -531,6 +697,9 @@ async def retry_task(task_id: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_task)
     
+    _completed_tasks_cache.pop(task_id, None)
+    wake_worker()
+    trigger_task_update()
     return db_task
 
 @app.post("/tasks/{task_id}/run_now", response_model=TaskSchema)
@@ -551,6 +720,8 @@ async def run_task_now(task_id: int, db: Session = Depends(get_db)):
     db.add(run_task)
     db.commit()
     
+    wake_worker()
+    trigger_task_update()
     return db_task
 
 # Task context management endpoints
@@ -563,6 +734,9 @@ def set_task_contexts(task_id: int, payload: TaskContextsUpdate, db: Session = D
     db_task.contexts = contexts
     db.commit()
     db.refresh(db_task)
+    _completed_tasks_cache.pop(task_id, None)
+    reload_scheduled_tasks_cache(db)
+    trigger_task_update()
     return db_task
 
 @app.post("/tasks/{task_id}/contexts/{context_id}", response_model=TaskSchema)
@@ -577,6 +751,9 @@ def add_context_to_task(task_id: int, context_id: int, db: Session = Depends(get
         db_task.contexts.append(db_context)
         db.commit()
         db.refresh(db_task)
+        _completed_tasks_cache.pop(task_id, None)
+        reload_scheduled_tasks_cache(db)
+        trigger_task_update()
     return db_task
 
 @app.delete("/tasks/{task_id}/contexts/{context_id}", response_model=TaskSchema)
@@ -587,6 +764,9 @@ def remove_context_from_task(task_id: int, context_id: int, db: Session = Depend
     db_task.contexts = [c for c in db_task.contexts if c.id != context_id]
     db.commit()
     db.refresh(db_task)
+    _completed_tasks_cache.pop(task_id, None)
+    reload_scheduled_tasks_cache(db)
+    trigger_task_update()
     return db_task
 
 @app.post("/tasks/{task_id}/cancel", response_model=TaskSchema)
@@ -612,6 +792,8 @@ async def cancel_task(task_id: int, db: Session = Depends(get_db)):
     db_task.status = "CANCELLED"
     db.commit()
     db.refresh(db_task)
+    _completed_tasks_cache[task_id] = TaskSchema.model_validate(db_task).model_dump(mode="json")
+    trigger_task_update()
     return db_task
 
 
