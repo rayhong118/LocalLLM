@@ -153,14 +153,59 @@ def parse_clean_link(raw_link: str) -> str:
 
 
 def extract_price_and_store(title: str, description: str) -> Tuple[str, str]:
-    """Extract price and store/merchant name from deal title and description."""
-    # Price extraction from title (e.g. $49.99, $1,299, from $15, Free)
+    """
+    Extract price and store/merchant name from deal title and description.
+    Returns empty string for price if no verified price ($XX, from $XX, Free) is found.
+    """
     price = ""
-    price_match = re.search(r'(?:from\s+)?\$[\d,]+(?:\.\d{2})?', title, re.IGNORECASE)
+
+    # Filter out order threshold mentions (e.g. "on $50+ orders", "spend $50") so they aren't confused with item price
+    filtered_title = re.sub(
+        r'\b(?:on|for|with|after)\s+\$[\d,]+(?:\.\d{2})?\+?\s+(?:orders?|purchases?|min(?:imum)?|cart)\b',
+        ' ',
+        title,
+        flags=re.IGNORECASE
+    )
+    filtered_title = re.sub(
+        r'\bspend\s+\$[\d,]+(?:\.\d{2})?',
+        ' ',
+        filtered_title,
+        flags=re.IGNORECASE
+    )
+
+    # 1. Price extraction from title (e.g. $49.99, $1,299, from $15, Free)
+    price_match = re.search(r'(?:from\s+)?\$[\d,]+(?:\.\d{2})?', filtered_title, re.IGNORECASE)
     if price_match:
         price = price_match.group(0).strip()
-    elif re.search(r'\bfree\b', title, re.IGNORECASE):
-        price = "Free"
+    elif re.search(r'\bfree\b', filtered_title, re.IGNORECASE):
+        # Exclude cases where "free" refers only to shipping, delivery, trial, or returns
+        if not re.search(r'\bfree\s+(?:shipping|delivery|pickup|returns?|trial|member(?:ship)?)\b', filtered_title, re.IGNORECASE):
+            price = "Free"
+        elif re.search(r'\b(?:100%\s+free|completely\s+free|free\s+after\s+rebate)\b', filtered_title, re.IGNORECASE):
+            price = "Free"
+
+    # 2. Fallback check in description if title doesn't specify price
+    if not price and description:
+        filtered_desc = re.sub(
+            r'\b(?:on|for|with|after)\s+\$[\d,]+(?:\.\d{2})?\+?\s+(?:orders?|purchases?|min(?:imum)?|cart)\b',
+            ' ',
+            description,
+            flags=re.IGNORECASE
+        )
+        filtered_desc = re.sub(
+            r'\bspend\s+\$[\d,]+(?:\.\d{2})?',
+            ' ',
+            filtered_desc,
+            flags=re.IGNORECASE
+        )
+        desc_price_match = re.search(r'(?:from\s+)?\$[\d,]+(?:\.\d{2})?', filtered_desc, re.IGNORECASE)
+        if desc_price_match:
+            price = desc_price_match.group(0).strip()
+        elif re.search(r'\bfree\b', filtered_desc, re.IGNORECASE):
+            if not re.search(r'\bfree\s+(?:shipping|delivery|pickup|returns?|trial|member(?:ship)?)\b', filtered_desc, re.IGNORECASE):
+                price = "Free"
+            elif re.search(r'\b(?:100%\s+free|completely\s+free|free\s+after\s+rebate)\b', filtered_desc, re.IGNORECASE):
+                price = "Free"
 
     # Store/merchant extraction (e.g. [amazon.com], via Best Buy, Costco Members:)
     store = ""
@@ -174,7 +219,7 @@ def extract_price_and_store(title: str, description: str) -> Tuple[str, str]:
             if len(cand) <= 25 and cand.lower() not in {"deal", "hot", "price", "open boxes", "refurb", "new"}:
                 store = cand
 
-    return price or "See deal", store or "Online"
+    return price, store or "Online"
 
 
 def parse_rss_items(
@@ -182,7 +227,7 @@ def parse_rss_items(
     max_items: int = 25,
     max_age_days: Optional[int] = MAX_DEAL_AGE_DAYS
 ) -> List[Dict[str, Any]]:
-    """Parse RSS XML content into structured deal objects, filtering out expired and stale deals."""
+    """Parse RSS XML content into structured deal objects, filtering out expired, stale, and priceless deals."""
     deals = []
     if not xml_content:
         return deals
@@ -223,6 +268,10 @@ def parse_rss_items(
                     pass
 
             price, store = extract_price_and_store(title, clean_desc)
+
+            # 3. Only take deals that have valid price info
+            if not price:
+                continue
 
             deals.append({
                 "title": title,
@@ -373,6 +422,11 @@ async def validate_candidate_deals_with_llm(
     Stage 2: Validate candidate deals against the original full item name and its details.
     Ensures model numbers match, rejects accessories/cables, and distinguishes specs from models.
     """
+    if not candidates:
+        return []
+
+    # Ensure only candidate deals with valid price information are evaluated
+    candidates = [d for d in candidates if d.get("price") and d.get("price") != "See deal"]
     if not candidates:
         return []
 
