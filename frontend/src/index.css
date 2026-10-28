@@ -456,3 +456,113 @@ button.danger:hover:not(:disabled) {
     opacity: 0.9;
 }
 
+/* Task Card Adaptive Layout */
+.task-card {
+    container-type: inline-size;
+    container-name: taskcard;
+}
+
+.task-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.85rem;
+    margin-bottom: 0.85rem;
+    flex-wrap: wrap;
+}
+
+.task-badges {
+    display: inline-flex;
+    gap: 0.45rem;
+    align-items: center;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+}
+
+.task-title {
+    font-weight: 600;
+    color: var(--color-text-body);
+    line-height: 1.45;
+    font-size: 0.95rem;
+    word-break: break-word;
+    flex: 1;
+    min-width: 0;
+}
+
+.task-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-shrink: 0;
+    margin-left: auto;
+    flex-wrap: wrap;
+}
+
+/* Adaptive narrow view: show task title on a separate line */
+@container taskcard (max-width: 768px) {
+    .task-header {
+        align-items: flex-start;
+        gap: 0.6rem 0.75rem;
+    }
+    .task-badges {
+        order: 1;
+    }
+    .task-actions {
+        order: 2;
+        margin-left: auto;
+    }
+    .task-title {
+        order: 3;
+        flex-basis: 100%;
+        width: 100%;
+        margin-top: 0.25rem;
+    }
+}
+
+@media (max-width: 768px) {
+    .task-header {
+        align-items: flex-start;
+        gap: 0.6rem 0.75rem;
+    }
+    .task-badges {
+        order: 1;
+    }
+    .task-actions {
+        order: 2;
+        margin-left: auto;
+    }
+    .task-title {
+        order: 3;
+        flex-basis: 100%;
+        width: 100%;
+        margin-top: 0.25rem;
+    }
+}
+
+/* Mobile extra narrow: stack badges, title, then actions */
+@container taskcard (max-width: 480px) {
+    .task-title {
+        order: 2;
+        margin-top: 0.2rem;
+    }
+    .task-actions {
+        order: 3;
+        margin-left: 0;
+        width: 100%;
+        margin-top: 0.25rem;
+    }
+}
+
+@media (max-width: 480px) {
+    .task-title {
+        order: 2;
+        margin-top: 0.2rem;
+    }
+    .task-actions {
+        order: 3;
+        margin-left: 0;
+        width: 100%;
+        margin-top: 0.25rem;
+    }
+}
+

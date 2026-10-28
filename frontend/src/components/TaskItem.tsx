@@ -249,16 +249,8 @@ export const TaskItem: React.FC<TaskItemProps> = ({
         borderWidth: task.status === 'RUNNING' ? '1.5px' : '1px'
       }}
     >
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'flex-start',
-          gap: '1.5rem',
-          marginBottom: '0.85rem'
-        }}
-      >
-        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flex: 1, minWidth: 0 }}>
+      <div className="task-header">
+        <div className="task-badges">
           <span
             className="status-badge"
             style={{
@@ -365,21 +357,14 @@ export const TaskItem: React.FC<TaskItemProps> = ({
               <History size={11} /> Keep {task.max_history_runs} runs
             </span>
           )}
-          <span
-            style={{
-              fontWeight: 600,
-              color: 'var(--color-text-body)',
-              lineHeight: 1.4,
-              fontSize: '0.95rem',
-              wordBreak: 'break-word'
-            }}
-          >
-            {task.prompt}
-          </span>
         </div>
 
+        <span className="task-title">
+          {task.prompt}
+        </span>
+
         {/* Task Actions */}
-        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexShrink: 0 }}>
+        <div className="task-actions">
           {task.frequency !== 'ONCE' && (
             <>
               <button
